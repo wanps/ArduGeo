@@ -89,7 +89,22 @@ struct AC_Geometric_Attitude_Output {
     Vector3f rate_target_body_rads;
 };
 
+struct AC_Geometric_Mapped_Output {
+    // Shadow ArduPilot-facing attitude command. This is R_c in body-to-NED
+    // form and is not applied to attitude_control yet.
+    Quaternion attitude_body_to_ned;
+    // Shadow body-frame rate command in rad/s. This is diagnostic only.
+    Vector3f rate_target_body_rads;
+    // Raw normalized throttle before limiting. Computed from f_d/m using the
+    // mapper hover throttle reference.
+    float throttle_norm_raw = 0.0f;
+    // Limited normalized throttle in ArduPilot's 0..1 command range.
+    float throttle_norm = 0.0f;
+    bool throttle_limited = false;
+};
+
 struct AC_Geometric_Output {
     AC_Geometric_Position_Output position;
     AC_Geometric_Attitude_Output attitude;
+    AC_Geometric_Mapped_Output mapped;
 };

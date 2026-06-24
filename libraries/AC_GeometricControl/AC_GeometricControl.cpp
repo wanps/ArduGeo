@@ -12,6 +12,7 @@
 #define AC_GEOMETRIC_ATT_KO_X_DEFAULT 0.2f
 #define AC_GEOMETRIC_ATT_KO_Y_DEFAULT 0.2f
 #define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.2f
+#define AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT 0.5f
 
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Param: POS_KX_XY
@@ -110,6 +111,14 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("ATT_KO_Z", 12, AC_GeometricControl, _att_ko_z, AC_GEOMETRIC_ATT_KO_Z_DEFAULT),
 
+    // @Param: HOV_THR
+    // @DisplayName: Geometric hover throttle
+    // @Description: Hover throttle reference used to normalize the geometric thrust shadow output. This currently affects only geometric observer logging.
+    // @Range: 0.05 0.95
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("HOV_THR", 13, AC_GeometricControl, _hover_throttle_norm, AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT),
+
     AP_GROUPEND
 };
 
@@ -167,4 +176,6 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     attitude_target.omega_dot_body_radss = _output.position.omega_dot_body_radss;
 
     _attitude_pd.update(state, attitude_target, dt, _output.attitude);
+
+    _output_mapper.update(_output.position, _output.attitude, _hover_throttle_norm.get(), _output.mapped);
 }

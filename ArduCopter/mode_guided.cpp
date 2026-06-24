@@ -1115,6 +1115,19 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: TVx: ArduPilot thrust vector, X-Axis
     // @Field: TVy: ArduPilot thrust vector, Y-Axis
     // @Field: TVz: ArduPilot thrust vector, Z-Axis
+
+    // @LoggerMessage: GEOO
+    // @Description: Geometric guided output mapper observer
+    // @Field: TimeUS: Time since system startup
+    // @Field: TRaw: Raw normalized throttle shadow output
+    // @Field: TNorm: Limited normalized throttle shadow output
+    // @Field: TLim: True if normalized throttle shadow output was limited
+    // @Field: RCr: Shadow attitude roll
+    // @Field: RCp: Shadow attitude pitch
+    // @Field: RCy: Shadow attitude yaw
+    // @Field: RTx: Shadow body-rate target, X-Axis
+    // @Field: RTy: Shadow body-rate target, Y-Axis
+    // @Field: RTz: Shadow body-rate target, Z-Axis
     if (guided_geometric_log_counter++ % 5 == 0) {
         const AC_Geometric_Output& output = copter.geometric_control.get_output();
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
@@ -1154,6 +1167,22 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)ap_thrust_vector_ned.x,
                                     (double)ap_thrust_vector_ned.y,
                                     (double)ap_thrust_vector_ned.z);
+
+        float mapped_roll_rad;
+        float mapped_pitch_rad;
+        float mapped_yaw_rad;
+        output.mapped.attitude_body_to_ned.to_euler(mapped_roll_rad, mapped_pitch_rad, mapped_yaw_rad);
+        AP::logger().WriteStreaming("GEOO", "TimeUS,TRaw,TNorm,TLim,RCr,RCp,RCy,RTx,RTy,RTz", "QffBffffff",
+                                    AP_HAL::micros64(),
+                                    (double)output.mapped.throttle_norm_raw,
+                                    (double)output.mapped.throttle_norm,
+                                    (uint8_t)output.mapped.throttle_limited,
+                                    (double)mapped_roll_rad,
+                                    (double)mapped_pitch_rad,
+                                    (double)mapped_yaw_rad,
+                                    (double)output.mapped.rate_target_body_rads.x,
+                                    (double)output.mapped.rate_target_body_rads.y,
+                                    (double)output.mapped.rate_target_body_rads.z);
     }
 #endif
 }

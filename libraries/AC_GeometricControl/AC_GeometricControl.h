@@ -4,6 +4,7 @@
 #include <AP_Param/AP_Param.h>
 
 #include "AC_Geometric_Attitude_PD.h"
+#include "AC_Geometric_OutputMapper.h"
 #include "AC_Geometric_Position_PID.h"
 #include "AC_Geometric_Types.h"
 
@@ -36,6 +37,7 @@ private:
     bool _enabled = false;
     AC_Geometric_Position_PID _position_pid;
     AC_Geometric_Attitude_PD _attitude_pd;
+    AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_Output _output;
 
     AP_Float _pos_kx_xy;
@@ -51,4 +53,6 @@ private:
     AP_Float _att_ko_x;
     AP_Float _att_ko_y;
     AP_Float _att_ko_z;
+
+    AP_Float _hover_throttle_norm;
 };

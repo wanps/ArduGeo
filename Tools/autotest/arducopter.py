@@ -15867,6 +15867,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_parameter('GEO_ATT_KR_Y', 4.0)
         self.set_parameter('GEO_ATT_KO_X', 0.2)
         self.set_parameter('GEO_ATT_KO_Y', 0.2)
+        self.set_parameter('GEO_HOV_THR', 0.5)
         self.takeoff(alt_min=10, mode='GUIDED')
 
         step_start_us = int(self.get_sim_time() * 1000000)
@@ -15877,8 +15878,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         dfreader = self.dfreader_for_current_onboard_log()
         geop_msgs = []
         geoa_msgs = []
+        geoo_msgs = []
         while True:
-            m = dfreader.recv_match(type=["GEOP", "GEOA"])
+            m = dfreader.recv_match(type=["GEOP", "GEOA", "GEOO"])
             if m is None:
                 break
             if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
@@ -15895,6 +15897,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite" % field)
+            if m.get_type() == "GEOO":
+                geoo_msgs.append(m)
+                for field in ("TRaw", "TNorm", "RCr", "RCp", "RCy", "RTx", "RTy", "RTz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOO.%s is not finite" % field)
 
         if len(geop_msgs) == 0:
             raise NotAchievedException("GEOP log message not found after position step")
@@ -15902,6 +15910,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if len(geoa_msgs) == 0:
             raise NotAchievedException("GEOA log message not found after position step")
         self.progress("Found %u GEOA messages after position step" % len(geoa_msgs))
+        if len(geoo_msgs) == 0:
+            raise NotAchievedException("GEOO log message not found after position step")
+        self.progress("Found %u GEOO messages after position step" % len(geoo_msgs))
 
         min_specific_force_z = min(m.SFz for m in geop_msgs)
         max_thrust = max(m.Thr for m in geop_msgs)
@@ -15953,6 +15964,16 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.progress("GEOA max moment xy=%f max moment=%f" % (max_moment_xy, max_moment))
         if max_moment_xy < 0.01:
             raise NotAchievedException("GEOA moment did not respond to position-generated R_c")
+
+        min_throttle_norm = min(m.TNorm for m in geoo_msgs)
+        max_throttle_norm = max(m.TNorm for m in geoo_msgs)
+        max_throttle_raw = max(m.TRaw for m in geoo_msgs)
+        self.progress("GEOO throttle norm min=%f max=%f raw max=%f" %
+                      (min_throttle_norm, max_throttle_norm, max_throttle_raw))
+        if min_throttle_norm < 0.0 or max_throttle_norm > 1.0:
+            raise NotAchievedException("GEOO normalized throttle is outside 0..1")
+        if max_throttle_norm < 0.05:
+            raise NotAchievedException("GEOO normalized throttle is unexpectedly small")
 
         self.do_RTL()
 
