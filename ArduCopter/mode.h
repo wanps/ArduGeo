@@ -1204,7 +1204,7 @@ private:
     // enum for GUID_OPTIONS parameter
     enum class Option : uint32_t {
         AllowArmingFromTX   = (1U << 0),
-        // this bit is still available, pilot yaw was mapped to bit 2 for symmetry with auto
+        GeometricObserver   = (1U << 1),
         IgnorePilotYaw      = (1U << 2),
         SetAttitudeTarget_ThrustAsThrust = (1U << 3),
         DoNotStabilizePositionXY = (1U << 4),

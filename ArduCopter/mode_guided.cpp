@@ -21,6 +21,8 @@ struct {
     bool use_thrust;
 } static guided_angle_state;
 
+static uint8_t guided_geometric_log_counter;
+
 struct Guided_Limit {
     uint32_t timeout_ms;        // timeout (in seconds) from the time that guided is invoked
     float alt_min_m;            // lower altitude limit in m above home (0 = no limit)
@@ -1039,7 +1041,9 @@ void ModeGuided::angle_control_run()
 
 void ModeGuided::update_geometric_angle_observer()
 {
-    if (!copter.geometric_control.enabled()) {
+    const bool enabled = option_is_enabled(Option::GeometricObserver);
+    copter.geometric_control.set_enabled(enabled);
+    if (!enabled) {
         return;
     }
 
@@ -1059,6 +1063,41 @@ void ModeGuided::update_geometric_angle_observer()
     geometric_target.yaw_rate_rads = geometric_target.omega_body_rads.z;
 
     copter.geometric_control.update(geometric_state, geometric_target, G_Dt);
+
+#if HAL_LOGGING_ENABLED
+// @LoggerMessage: GEOA
+// @Description: Geometric guided attitude observer
+// @Field: TimeUS: Time since system startup
+// @Field: ERx: Lee attitude error, X-Axis
+// @Field: ERy: Lee attitude error, Y-Axis
+// @Field: ERz: Lee attitude error, Z-Axis
+// @Field: EOx: Angular velocity error, X-Axis
+// @Field: EOy: Angular velocity error, Y-Axis
+// @Field: EOz: Angular velocity error, Z-Axis
+// @Field: Mx: Geometric body-moment proxy, X-Axis
+// @Field: My: Geometric body-moment proxy, Y-Axis
+// @Field: Mz: Geometric body-moment proxy, Z-Axis
+// @Field: RTx: Body-rate target proxy, X-Axis
+// @Field: RTy: Body-rate target proxy, Y-Axis
+// @Field: RTz: Body-rate target proxy, Z-Axis
+    if (guided_geometric_log_counter++ % 5 == 0) {
+        const AC_Geometric_Output& output = copter.geometric_control.get_output();
+        AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
+                                    AP_HAL::micros64(),
+                                    (double)output.attitude.attitude_error.x,
+                                    (double)output.attitude.attitude_error.y,
+                                    (double)output.attitude.attitude_error.z,
+                                    (double)output.attitude.omega_error_rads.x,
+                                    (double)output.attitude.omega_error_rads.y,
+                                    (double)output.attitude.omega_error_rads.z,
+                                    (double)output.attitude.moment.x,
+                                    (double)output.attitude.moment.y,
+                                    (double)output.attitude.moment.z,
+                                    (double)output.attitude.rate_target_body_rads.x,
+                                    (double)output.attitude.rate_target_body_rads.y,
+                                    (double)output.attitude.rate_target_body_rads.z);
+    }
+#endif
 }
 
 // helper function to set yaw state and targets
