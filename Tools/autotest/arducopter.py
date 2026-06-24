@@ -15870,21 +15870,32 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         dfreader = self.dfreader_for_current_onboard_log()
         geop_msgs = []
+        geoa_msgs = []
         while True:
-            m = dfreader.recv_match(type="GEOP")
+            m = dfreader.recv_match(type=["GEOP", "GEOA"])
             if m is None:
                 break
             if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
                 continue
-            geop_msgs.append(m)
-            for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp", "ATr", "ATp", "TVx", "TVy", "TVz"):
-                value = getattr(m, field)
-                if not math.isfinite(value):
-                    raise NotAchievedException("GEOP.%s is not finite" % field)
+            if m.get_type() == "GEOP":
+                geop_msgs.append(m)
+                for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp", "ATr", "ATp", "TVx", "TVy", "TVz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOP.%s is not finite" % field)
+            if m.get_type() == "GEOA":
+                geoa_msgs.append(m)
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOA.%s is not finite" % field)
 
         if len(geop_msgs) == 0:
             raise NotAchievedException("GEOP log message not found after position step")
         self.progress("Found %u GEOP messages after position step" % len(geop_msgs))
+        if len(geoa_msgs) == 0:
+            raise NotAchievedException("GEOA log message not found after position step")
+        self.progress("Found %u GEOA messages after position step" % len(geoa_msgs))
 
         min_specific_force_z = min(m.SFz for m in geop_msgs)
         max_thrust = max(m.Thr for m in geop_msgs)
@@ -15930,6 +15941,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                       (min(alignments), mean_alignment, len(alignments)))
         if min(alignments) <= 0.0:
             raise NotAchievedException("GEOP R_c opposes ArduPilot attitude target while accelerating toward target")
+
+        max_moment_xy = max(math.hypot(m.Mx, m.My) for m in geoa_msgs)
+        max_moment = max(max(abs(m.Mx), abs(m.My), abs(m.Mz)) for m in geoa_msgs)
+        self.progress("GEOA max moment xy=%f max moment=%f" % (max_moment_xy, max_moment))
+        if max_moment_xy < 0.01:
+            raise NotAchievedException("GEOA moment did not respond to position-generated R_c")
 
         self.do_RTL()
 
