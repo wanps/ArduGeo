@@ -15858,6 +15858,44 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedPositionObserver(self):
+        '''test Guided geometric position observer logging'''
+        self.set_parameter('GUID_OPTIONS', 2)
+        self.takeoff(alt_min=10, mode='GUIDED')
+
+        self.send_position_target_local_ned(5, 0, 10)
+        self.delay_sim_time(4, reason="geometric position observer to log position step")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geop_msgs = []
+        while True:
+            m = dfreader.recv_match(type="GEOP")
+            if m is None:
+                break
+            geop_msgs.append(m)
+            for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp"):
+                value = getattr(m, field)
+                if not math.isfinite(value):
+                    raise NotAchievedException("GEOP.%s is not finite" % field)
+
+        if len(geop_msgs) == 0:
+            raise NotAchievedException("GEOP log message not found")
+        self.progress("Found %u GEOP messages" % len(geop_msgs))
+
+        min_specific_force_z = min(m.SFz for m in geop_msgs)
+        max_thrust = max(m.Thr for m in geop_msgs)
+        max_horizontal_rc = max(max(abs(m.RCr), abs(m.RCp)) for m in geop_msgs)
+        self.progress("GEOP SFz min=%f Thr max=%f max tilt=%f" % (min_specific_force_z, max_thrust, max_horizontal_rc))
+
+        if min_specific_force_z > -5.0:
+            raise NotAchievedException("GEOP specific force did not point upward in NED")
+        if max_thrust < 1.0:
+            raise NotAchievedException("GEOP projected thrust is unexpectedly small")
+        if max_horizontal_rc < 0.005:
+            raise NotAchievedException("GEOP R_c did not tilt for local position step")
+
+        self.do_RTL()
+
     def AutoRTL(self):
         '''Test Auto RTL mode using do land start and return path start mission items'''
         alt = 50
@@ -17880,6 +17918,7 @@ return update, 1000
             self.LoiterToGuidedHomeVSOrigin,
             self.GuidedModeThrust,
             self.GeometricGuidedObserver,
+            self.GeometricGuidedPositionObserver,
             self.CompassMot,
             self.AutoRTL,
             self.EK3_OGN_HGT_MASK_climbing,

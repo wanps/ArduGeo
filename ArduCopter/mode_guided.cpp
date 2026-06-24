@@ -247,7 +247,12 @@ void ModeGuided::wp_control_run()
     pos_control->D_update_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_position_observer(guided_is_terrain_alt ? nullptr : &guided_pos_target_ned_m,
+                                       guided_vel_target_ned_ms,
+                                       guided_accel_target_ned_mss,
+                                       heading);
 }
 
 // initialise position controller
@@ -776,7 +781,12 @@ void ModeGuided::pos_control_run()
     pos_control->D_update_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_position_observer(guided_is_terrain_alt ? nullptr : &guided_pos_target_ned_m,
+                                       guided_vel_target_ned_ms,
+                                       guided_accel_target_ned_mss,
+                                       heading);
 }
 
 // velaccel_control_run - runs the guided velocity controller
@@ -821,7 +831,12 @@ void ModeGuided::accel_control_run()
     pos_control->D_update_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_position_observer(nullptr,
+                                       pos_control->get_vel_estimate_NED_ms(),
+                                       guided_accel_target_ned_mss,
+                                       heading);
 }
 
 // velaccel_control_run - runs the guided velocity and acceleration controller
@@ -876,7 +891,12 @@ void ModeGuided::velaccel_control_run()
     pos_control->D_update_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_position_observer(nullptr,
+                                       guided_vel_target_ned_ms,
+                                       guided_accel_target_ned_mss,
+                                       heading);
 }
 
 // pause_control_run - runs the guided mode pause controller
@@ -965,7 +985,12 @@ void ModeGuided::posvelaccel_control_run()
     pos_control->D_update_controller();
 
     // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_position_observer(&guided_pos_target_ned_m,
+                                       guided_vel_target_ned_ms,
+                                       guided_accel_target_ned_mss,
+                                       heading);
 }
 
 // angle_control_run - runs the guided angle controller
@@ -1039,7 +1064,7 @@ void ModeGuided::angle_control_run()
     }
 }
 
-void ModeGuided::update_geometric_angle_observer()
+void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
 {
     const bool enabled = option_is_enabled(Option::GeometricObserver);
     copter.geometric_control.set_enabled(enabled);
@@ -1054,32 +1079,46 @@ void ModeGuided::update_geometric_angle_observer()
     ahrs.get_quat_body_to_ned(geometric_state.attitude_body_to_ned);
     geometric_state.omega_body_rads = ahrs.get_gyro_latest();
 
-    AC_Geometric_Target geometric_target {};
-    geometric_target.position_ned_m = geometric_state.position_ned_m;
-    geometric_target.velocity_ned_ms = geometric_state.velocity_ned_ms;
-    geometric_target.attitude_body_to_ned = attitude_control->get_attitude_target_quat();
-    geometric_target.omega_body_rads = attitude_control->get_attitude_target_ang_vel();
-    geometric_target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
-    geometric_target.yaw_rate_rads = geometric_target.omega_body_rads.z;
+    AC_Geometric_Position_Gains position_gains {};
+    position_gains.p.x = pos_control->NE_get_pos_p().kP().get();
+    position_gains.p.y = position_gains.p.x;
+    position_gains.p.z = pos_control->D_get_pos_p().kP().get();
+    position_gains.d.x = pos_control->NE_get_vel_pid().kP().get();
+    position_gains.d.y = position_gains.d.x;
+    position_gains.d.z = pos_control->D_get_vel_pid().kP().get();
+    copter.geometric_control.set_position_gains(position_gains);
 
-    copter.geometric_control.update(geometric_state, geometric_target, G_Dt);
+    copter.geometric_control.update(geometric_state, target, G_Dt);
 
 #if HAL_LOGGING_ENABLED
-// @LoggerMessage: GEOA
-// @Description: Geometric guided attitude observer
-// @Field: TimeUS: Time since system startup
-// @Field: ERx: Lee attitude error, X-Axis
-// @Field: ERy: Lee attitude error, Y-Axis
-// @Field: ERz: Lee attitude error, Z-Axis
-// @Field: EOx: Angular velocity error, X-Axis
-// @Field: EOy: Angular velocity error, Y-Axis
-// @Field: EOz: Angular velocity error, Z-Axis
-// @Field: Mx: Geometric body-moment proxy, X-Axis
-// @Field: My: Geometric body-moment proxy, Y-Axis
-// @Field: Mz: Geometric body-moment proxy, Z-Axis
-// @Field: RTx: Body-rate target proxy, X-Axis
-// @Field: RTy: Body-rate target proxy, Y-Axis
-// @Field: RTz: Body-rate target proxy, Z-Axis
+    // @LoggerMessage: GEOA
+    // @Description: Geometric guided attitude observer
+    // @Field: TimeUS: Time since system startup
+    // @Field: ERx: Lee attitude error, X-Axis
+    // @Field: ERy: Lee attitude error, Y-Axis
+    // @Field: ERz: Lee attitude error, Z-Axis
+    // @Field: EOx: Angular velocity error, X-Axis
+    // @Field: EOy: Angular velocity error, Y-Axis
+    // @Field: EOz: Angular velocity error, Z-Axis
+    // @Field: Mx: Geometric body-moment proxy, X-Axis
+    // @Field: My: Geometric body-moment proxy, Y-Axis
+    // @Field: Mz: Geometric body-moment proxy, Z-Axis
+    // @Field: RTx: Body-rate target proxy, X-Axis
+    // @Field: RTy: Body-rate target proxy, Y-Axis
+    // @Field: RTz: Body-rate target proxy, Z-Axis
+
+    // @LoggerMessage: GEOP
+    // @Description: Geometric guided position observer
+    // @Field: TimeUS: Time since system startup
+    // @Field: PEx: Position error, X-Axis
+    // @Field: PEy: Position error, Y-Axis
+    // @Field: PEz: Position error, Z-Axis
+    // @Field: SFx: Specific force command, X-Axis
+    // @Field: SFy: Specific force command, Y-Axis
+    // @Field: SFz: Specific force command, Z-Axis
+    // @Field: Thr: Projected total thrust per mass
+    // @Field: RCr: Commanded attitude roll
+    // @Field: RCp: Commanded attitude pitch
     if (guided_geometric_log_counter++ % 5 == 0) {
         const AC_Geometric_Output& output = copter.geometric_control.get_output();
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
@@ -1096,8 +1135,65 @@ void ModeGuided::update_geometric_angle_observer()
                                     (double)output.attitude.rate_target_body_rads.x,
                                     (double)output.attitude.rate_target_body_rads.y,
                                     (double)output.attitude.rate_target_body_rads.z);
+
+        float rc_roll_rad;
+        float rc_pitch_rad;
+        float rc_yaw_rad;
+        output.position.attitude_body_to_ned.to_euler(rc_roll_rad, rc_pitch_rad, rc_yaw_rad);
+        AP::logger().WriteStreaming("GEOP", "TimeUS,PEx,PEy,PEz,SFx,SFy,SFz,Thr,RCr,RCp", "Qfffffffff",
+                                    AP_HAL::micros64(),
+                                    (double)output.position.position_error_m.x,
+                                    (double)output.position.position_error_m.y,
+                                    (double)output.position.position_error_m.z,
+                                    (double)output.position.specific_force_ned_mss.x,
+                                    (double)output.position.specific_force_ned_mss.y,
+                                    (double)output.position.specific_force_ned_mss.z,
+                                    (double)output.position.thrust,
+                                    (double)rc_roll_rad,
+                                    (double)rc_pitch_rad);
     }
 #endif
+}
+
+void ModeGuided::update_geometric_angle_observer()
+{
+    AC_Geometric_Target geometric_target {};
+    const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
+    geometric_target.position_ned_m = Vector3f{float(pos_estimate_ned_m.x), float(pos_estimate_ned_m.y), float(pos_estimate_ned_m.z)};
+    geometric_target.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
+    geometric_target.attitude_body_to_ned = attitude_control->get_attitude_target_quat();
+    geometric_target.omega_body_rads = attitude_control->get_attitude_target_ang_vel();
+    geometric_target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
+    geometric_target.yaw_rate_rads = geometric_target.omega_body_rads.z;
+
+    update_geometric_observer(geometric_target);
+}
+
+void ModeGuided::update_geometric_position_observer(const Vector3p* position_target_ned_m,
+                                                    const Vector3f& velocity_target_ned_ms,
+                                                    const Vector3f& accel_target_ned_mss,
+                                                    const AC_AttitudeControl::HeadingCommand& heading)
+{
+    AC_Geometric_Target geometric_target {};
+    if (position_target_ned_m != nullptr) {
+        geometric_target.position_ned_m = Vector3f{float(position_target_ned_m->x),
+                                                  float(position_target_ned_m->y),
+                                                  float(position_target_ned_m->z)};
+    } else {
+        const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
+        geometric_target.position_ned_m = Vector3f{float(pos_estimate_ned_m.x),
+                                                  float(pos_estimate_ned_m.y),
+                                                  float(pos_estimate_ned_m.z)};
+    }
+    geometric_target.velocity_ned_ms = velocity_target_ned_ms;
+    geometric_target.accel_ned_mss = accel_target_ned_mss;
+    geometric_target.build_attitude_from_position = true;
+    geometric_target.yaw_rad = (heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only) ?
+                               attitude_control->get_att_target_euler_rad().z : heading.yaw_angle_rad;
+    geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
+    geometric_target.omega_body_rads.z = heading.yaw_rate_rads;
+
+    update_geometric_observer(geometric_target);
 }
 
 // helper function to set yaw state and targets

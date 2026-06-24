@@ -1,5 +1,36 @@
 #include "AC_Geometric_Position_PID.h"
 
+namespace {
+
+Quaternion attitude_from_thrust_vector(Vector3f thrust_vector, float yaw_rad)
+{
+    const Vector3f thrust_vector_up{0.0f, 0.0f, -1.0f};
+
+    if (is_zero(thrust_vector.length_squared())) {
+        thrust_vector = thrust_vector_up;
+    } else {
+        thrust_vector.normalize();
+    }
+
+    Vector3f thrust_vec_cross = thrust_vector_up % thrust_vector;
+    const float thrust_vector_angle = acosf(constrain_float(thrust_vector_up * thrust_vector, -1.0f, 1.0f));
+    const float thrust_vector_length = thrust_vec_cross.length();
+    if (is_zero(thrust_vector_length) || is_zero(thrust_vector_angle)) {
+        thrust_vec_cross = thrust_vector_up;
+    } else {
+        thrust_vec_cross /= thrust_vector_length;
+    }
+
+    Quaternion thrust_vec_quat;
+    thrust_vec_quat.from_axis_angle(thrust_vec_cross, thrust_vector_angle);
+
+    Quaternion yaw_quat;
+    yaw_quat.from_axis_angle(Vector3f{0.0f, 0.0f, 1.0f}, yaw_rad);
+    return thrust_vec_quat * yaw_quat;
+}
+
+}
+
 void AC_Geometric_Position_PID::reset()
 {
     _position_error_integral_m.zero();
@@ -18,16 +49,32 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     }
 
     // Placeholder translational PID. This will later be replaced by the full
-    // Lee SE(3) construction of thrust direction, collective thrust and R_d.
+    // SE(3) construction of resultant force direction, collective thrust and R_c.
+    // Lee writes the resultant command as A; Gao uses F_d.
     Vector3f accel_cmd_ned = target.accel_ned_mss;
     accel_cmd_ned.x += -_gains.p.x * output.position_error_m.x - _gains.d.x * output.velocity_error_ms.x - _gains.i.x * _position_error_integral_m.x;
     accel_cmd_ned.y += -_gains.p.y * output.position_error_m.y - _gains.d.y * output.velocity_error_ms.y - _gains.i.y * _position_error_integral_m.y;
     accel_cmd_ned.z += -_gains.p.z * output.position_error_m.z - _gains.d.z * output.velocity_error_ms.z - _gains.i.z * _position_error_integral_m.z;
 
-    // Until the SE(3) attitude construction is implemented, pass through the
-    // supplied attitude target so the attitude channel can be tested independently.
-    output.attitude_body_to_ned = target.attitude_body_to_ned;
-    output.omega_body_rads = target.omega_body_rads;
-    output.omega_dot_body_radss = target.omega_dot_body_radss;
-    output.thrust = -accel_cmd_ned.z;
+    output.specific_force_ned_mss = accel_cmd_ned;
+    output.specific_force_ned_mss.z -= GRAVITY_MSS;
+    output.thrust_vector_ned = output.specific_force_ned_mss;
+
+    if (target.build_attitude_from_position) {
+        output.attitude_body_to_ned = attitude_from_thrust_vector(output.thrust_vector_ned, target.yaw_rad);
+        output.omega_body_rads = target.omega_body_rads;
+        output.omega_body_rads.z = target.yaw_rate_rads;
+        output.omega_dot_body_radss.zero();
+    } else {
+        // Direct SO(3) observer mode: pass through the supplied attitude target
+        // so Guided angle tests observe ArduPilot's shaped attitude target.
+        output.attitude_body_to_ned = target.attitude_body_to_ned;
+        output.omega_body_rads = target.omega_body_rads;
+        output.omega_dot_body_radss = target.omega_dot_body_radss;
+    }
+
+    Matrix3f attitude;
+    state.attitude_body_to_ned.rotation_matrix(attitude);
+    // Temporary scalar thrust placeholder for the paper quantity f_d/m.
+    output.thrust = -(output.specific_force_ned_mss * attitude.colz());
 }
