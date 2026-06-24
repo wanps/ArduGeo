@@ -15861,6 +15861,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
     def GeometricGuidedPositionObserver(self):
         '''test Guided geometric position observer logging'''
         self.set_parameter('GUID_OPTIONS', 2)
+        self.set_parameter('GEO_POS_KX_XY', 1.0)
+        self.set_parameter('GEO_POS_KV_XY', 2.0)
+        self.set_parameter('GEO_ATT_KR_X', 4.0)
+        self.set_parameter('GEO_ATT_KR_Y', 4.0)
+        self.set_parameter('GEO_ATT_KO_X', 0.2)
+        self.set_parameter('GEO_ATT_KO_Y', 0.2)
         self.takeoff(alt_min=10, mode='GUIDED')
 
         step_start_us = int(self.get_sim_time() * 1000000)

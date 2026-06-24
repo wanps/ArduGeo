@@ -1,6 +1,7 @@
 #pragma once
 
 #include <AP_Common/AP_Common.h>
+#include <AP_Param/AP_Param.h>
 
 #include "AC_Geometric_Attitude_PD.h"
 #include "AC_Geometric_Position_PID.h"
@@ -8,8 +9,10 @@
 
 class AC_GeometricControl {
 public:
-    AC_GeometricControl() = default;
+    AC_GeometricControl();
     CLASS_NO_COPY(AC_GeometricControl);
+
+    static const AP_Param::GroupInfo var_info[];
 
     // Clear controller integrators and cached outputs.
     void reset();
@@ -18,9 +21,6 @@ public:
     // accidentally consume stale geometric commands.
     void set_enabled(bool enabled);
     bool enabled() const { return _enabled; }
-
-    void set_position_gains(const AC_Geometric_Position_Gains& gains) { _position_pid.set_gains(gains); }
-    void set_attitude_gains(const AC_Geometric_Attitude_Gains& gains) { _attitude_pd.set_gains(gains); }
 
     // Run the geometric position-to-attitude and attitude PD cascade.
     // This currently computes internal outputs only; it does not write motors.
@@ -31,8 +31,24 @@ public:
     const AC_Geometric_Output& get_output() const { return _output; }
 
 private:
+    void update_gains_from_params();
+
     bool _enabled = false;
     AC_Geometric_Position_PID _position_pid;
     AC_Geometric_Attitude_PD _attitude_pd;
     AC_Geometric_Output _output;
+
+    AP_Float _pos_kx_xy;
+    AP_Float _pos_kx_z;
+    AP_Float _pos_ki_xy;
+    AP_Float _pos_ki_z;
+    AP_Float _pos_kv_xy;
+    AP_Float _pos_kv_z;
+
+    AP_Float _att_kr_x;
+    AP_Float _att_kr_y;
+    AP_Float _att_kr_z;
+    AP_Float _att_ko_x;
+    AP_Float _att_ko_y;
+    AP_Float _att_ko_z;
 };

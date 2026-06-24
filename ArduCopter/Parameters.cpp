@@ -576,6 +576,10 @@ const AP_Param::Info Copter::var_info[] = {
     GOBJECT(custom_control, "CC", AC_CustomControl),
 #endif
 
+    // @Group: GEO_
+    // @Path: ../libraries/AC_GeometricControl/AC_GeometricControl.cpp
+    GOBJECT(geometric_control, "GEO_", AC_GeometricControl),
+
     // @Group:
     // @Path: Parameters.cpp
     GOBJECT(g2, "",  ParametersG2),

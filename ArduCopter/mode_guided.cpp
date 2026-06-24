@@ -1079,24 +1079,6 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     ahrs.get_quat_body_to_ned(geometric_state.attitude_body_to_ned);
     geometric_state.omega_body_rads = ahrs.get_gyro_latest();
 
-    AC_Geometric_Position_Gains position_gains {};
-    position_gains.p.x = pos_control->NE_get_pos_p().kP().get();
-    position_gains.p.y = position_gains.p.x;
-    position_gains.p.z = pos_control->D_get_pos_p().kP().get();
-    position_gains.d.x = pos_control->NE_get_vel_pid().kP().get();
-    position_gains.d.y = position_gains.d.x;
-    position_gains.d.z = pos_control->D_get_vel_pid().kP().get();
-    copter.geometric_control.set_position_gains(position_gains);
-
-    AC_Geometric_Attitude_Gains attitude_gains {};
-    attitude_gains.attitude_p.x = attitude_control->get_angle_roll_p().kP().get();
-    attitude_gains.attitude_p.y = attitude_control->get_angle_pitch_p().kP().get();
-    attitude_gains.attitude_p.z = attitude_control->get_angle_yaw_p().kP().get();
-    attitude_gains.omega_p.x = attitude_control->get_rate_roll_pid().kP().get();
-    attitude_gains.omega_p.y = attitude_control->get_rate_pitch_pid().kP().get();
-    attitude_gains.omega_p.z = attitude_control->get_rate_yaw_pid().kP().get();
-    copter.geometric_control.set_attitude_gains(attitude_gains);
-
     copter.geometric_control.update(geometric_state, target, G_Dt);
 
 #if HAL_LOGGING_ENABLED

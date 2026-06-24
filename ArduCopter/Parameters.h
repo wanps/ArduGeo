@@ -205,6 +205,7 @@ public:
         k_param_circle_nav,
         k_param_loiter_nav,     // 105
         k_param_custom_control,
+        k_param_geometric_control,
 
         // 110: Telemetry control
         //
