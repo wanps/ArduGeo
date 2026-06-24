@@ -15775,33 +15775,86 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_parameter('GUID_OPTIONS', 2)
         self.takeoff(alt_min=10, mode='GUIDED')
 
+        attitude = self.assert_receive_message('ATTITUDE')
+        yaw_rad = attitude.yaw
+        for roll_deg, pitch_deg, yaw_offset_deg in (
+            (5, 0, 0),
+            (0, 5, 0),
+            (0, 0, 10),
+        ):
+            self.mav.mav.set_attitude_target_send(
+                0,  # time_boot_ms
+                1,  # target sysid
+                1,  # target compid
+                0,  # bitmask of things to ignore
+                mavextra.euler_to_quat([
+                    math.radians(roll_deg),
+                    math.radians(pitch_deg),
+                    yaw_rad + math.radians(yaw_offset_deg),
+                ]),
+                0,  # roll rate  (rad/s)
+                0,  # pitch rate (rad/s)
+                0,  # yaw rate   (rad/s)
+                0.5  # thrust, translated to climb/descent rate unless GUID_OPTIONS bit 3 is set
+            )
+            self.delay_sim_time(1, reason="geometric observer to log axis step")
+
         self.mav.mav.set_attitude_target_send(
             0,  # time_boot_ms
             1,  # target sysid
             1,  # target compid
             0,  # bitmask of things to ignore
-            mavextra.euler_to_quat([0, math.radians(5), 0]),
+            mavextra.euler_to_quat([0, 0, yaw_rad]),
             0,  # roll rate  (rad/s)
             0,  # pitch rate (rad/s)
             0,  # yaw rate   (rad/s)
             0.5  # thrust, translated to climb/descent rate unless GUID_OPTIONS bit 3 is set
         )
-        self.delay_sim_time(2, reason="geometric observer to log")
+        self.delay_sim_time(1, reason="geometric observer to return to level")
 
         dfreader = self.dfreader_for_current_onboard_log()
         msg_count = 0
+        gui_msgs = []
+        geo_msgs = []
         while True:
-            m = dfreader.recv_match(type="GEOA")
+            m = dfreader.recv_match(type=["GUIA", "GEOA"])
             if m is None:
                 break
-            msg_count += 1
-            for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz"):
-                value = getattr(m, field)
-                if not math.isfinite(value):
-                    raise NotAchievedException("GEOA.%s is not finite" % field)
+            if m.get_type() == "GUIA":
+                gui_msgs.append(m)
+            if m.get_type() == "GEOA":
+                geo_msgs.append(m)
+                msg_count += 1
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOA.%s is not finite" % field)
         if msg_count == 0:
             raise NotAchievedException("GEOA log message not found")
         self.progress("Found %u GEOA messages" % msg_count)
+
+        roll_target = next((m for m in gui_msgs if abs(m.Roll) > 4), None)
+        pitch_target = next((m for m in gui_msgs if roll_target is not None and m.TimeUS > roll_target.TimeUS and abs(m.Pitch) > 4), None)
+        yaw_target = next((m for m in gui_msgs if pitch_target is not None and m.TimeUS > pitch_target.TimeUS and abs(m.Roll) < 1 and abs(m.Pitch) < 1), None)
+
+        for name, target_msg, error_field in (
+            ("roll", roll_target, "ERx"),
+            ("pitch", pitch_target, "ERy"),
+            ("yaw", yaw_target, "ERz"),
+        ):
+            if target_msg is None:
+                raise NotAchievedException("GUIA %s target not found" % name)
+            samples = [
+                getattr(m, error_field)
+                for m in geo_msgs
+                if target_msg.TimeUS <= m.TimeUS <= target_msg.TimeUS + 1500000
+            ]
+            if not samples:
+                raise NotAchievedException("GEOA samples for %s target not found" % name)
+            min_error = min(samples)
+            self.progress("%s %s min=%f" % (name, error_field, min_error))
+            if min_error > -0.0005:
+                raise NotAchievedException("%s error did not show expected sign" % name)
 
         self.do_RTL()
 
