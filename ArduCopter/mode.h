@@ -1174,6 +1174,7 @@ public:
 
     void angle_control_start();
     void angle_control_run();
+    void update_geometric_angle_observer();
 
     // return guided mode timeout in milliseconds. Only used for velocity, acceleration, angle control, and angular rate control
     uint32_t get_timeout_ms() const;

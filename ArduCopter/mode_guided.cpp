@@ -1026,6 +1026,7 @@ void ModeGuided::angle_control_run()
     } else {
         attitude_control->input_quaternion(guided_angle_state.attitude_quat, guided_angle_state.ang_vel_body);
     }
+    update_geometric_angle_observer();
 
     // call position controller
     if (guided_angle_state.use_thrust) {
@@ -1034,6 +1035,30 @@ void ModeGuided::angle_control_run()
         pos_control->D_set_pos_target_from_climb_rate_ms(climb_rate_ms);
         pos_control->D_update_controller();
     }
+}
+
+void ModeGuided::update_geometric_angle_observer()
+{
+    if (!copter.geometric_control.enabled()) {
+        return;
+    }
+
+    AC_Geometric_State geometric_state {};
+    const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
+    geometric_state.position_ned_m = Vector3f{float(pos_estimate_ned_m.x), float(pos_estimate_ned_m.y), float(pos_estimate_ned_m.z)};
+    geometric_state.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
+    ahrs.get_quat_body_to_ned(geometric_state.attitude_body_to_ned);
+    geometric_state.omega_body_rads = ahrs.get_gyro_latest();
+
+    AC_Geometric_Target geometric_target {};
+    geometric_target.position_ned_m = geometric_state.position_ned_m;
+    geometric_target.velocity_ned_ms = geometric_state.velocity_ned_ms;
+    geometric_target.attitude_body_to_ned = attitude_control->get_attitude_target_quat();
+    geometric_target.omega_body_rads = attitude_control->get_attitude_target_ang_vel();
+    geometric_target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
+    geometric_target.yaw_rate_rads = geometric_target.omega_body_rads.z;
+
+    copter.geometric_control.update(geometric_state, geometric_target, G_Dt);
 }
 
 // helper function to set yaw state and targets

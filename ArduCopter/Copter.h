@@ -46,6 +46,7 @@
 #include <AC_AttitudeControl/AC_AttitudeControl_Heli.h>         // Attitude control library for traditional helicopter
 #include <AC_AttitudeControl/AC_PosControl.h>                   // Position control library
 #include <AC_AttitudeControl/AC_CommandModel.h>                 // Command model library
+#include <AC_GeometricControl/AC_GeometricControl.h>            // Geometric SE(3) control prototype
 #include <AP_Motors/AP_Motors.h>            // AP Motors library
 #include <Filter/Filter.h>                  // Filter library
 #include <AP_Vehicle/AP_Vehicle.h>          // needed for AHRS build
@@ -477,6 +478,7 @@ private:
     AC_AttitudeControl *attitude_control;
     const struct AP_Param::GroupInfo *attitude_control_var_info;
     AC_PosControl *pos_control;
+    AC_GeometricControl geometric_control;
     AC_WPNav *wp_nav;
     AC_Loiter *loiter_nav;
 
