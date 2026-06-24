@@ -15770,6 +15770,41 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_altitude(0.5, 100, relative=True, timeout=10)
         self.do_RTL()
 
+    def GeometricGuidedObserver(self):
+        '''test Guided geometric observer logging'''
+        self.set_parameter('GUID_OPTIONS', 2)
+        self.takeoff(alt_min=10, mode='GUIDED')
+
+        self.mav.mav.set_attitude_target_send(
+            0,  # time_boot_ms
+            1,  # target sysid
+            1,  # target compid
+            0,  # bitmask of things to ignore
+            mavextra.euler_to_quat([0, math.radians(5), 0]),
+            0,  # roll rate  (rad/s)
+            0,  # pitch rate (rad/s)
+            0,  # yaw rate   (rad/s)
+            0.5  # thrust, translated to climb/descent rate unless GUID_OPTIONS bit 3 is set
+        )
+        self.delay_sim_time(2, reason="geometric observer to log")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        msg_count = 0
+        while True:
+            m = dfreader.recv_match(type="GEOA")
+            if m is None:
+                break
+            msg_count += 1
+            for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz"):
+                value = getattr(m, field)
+                if not math.isfinite(value):
+                    raise NotAchievedException("GEOA.%s is not finite" % field)
+        if msg_count == 0:
+            raise NotAchievedException("GEOA log message not found")
+        self.progress("Found %u GEOA messages" % msg_count)
+
+        self.do_RTL()
+
     def AutoRTL(self):
         '''Test Auto RTL mode using do land start and return path start mission items'''
         alt = 50
@@ -17791,6 +17826,7 @@ return update, 1000
             self.CameraLogMessages,
             self.LoiterToGuidedHomeVSOrigin,
             self.GuidedModeThrust,
+            self.GeometricGuidedObserver,
             self.CompassMot,
             self.AutoRTL,
             self.EK3_OGN_HGT_MASK_climbing,
