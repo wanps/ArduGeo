@@ -1119,6 +1119,11 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: Thr: Projected total thrust per mass
     // @Field: RCr: Commanded attitude roll
     // @Field: RCp: Commanded attitude pitch
+    // @Field: ATr: ArduPilot attitude target roll
+    // @Field: ATp: ArduPilot attitude target pitch
+    // @Field: TVx: ArduPilot thrust vector, X-Axis
+    // @Field: TVy: ArduPilot thrust vector, Y-Axis
+    // @Field: TVz: ArduPilot thrust vector, Z-Axis
     if (guided_geometric_log_counter++ % 5 == 0) {
         const AC_Geometric_Output& output = copter.geometric_control.get_output();
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
@@ -1140,7 +1145,9 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
         float rc_pitch_rad;
         float rc_yaw_rad;
         output.position.attitude_body_to_ned.to_euler(rc_roll_rad, rc_pitch_rad, rc_yaw_rad);
-        AP::logger().WriteStreaming("GEOP", "TimeUS,PEx,PEy,PEz,SFx,SFy,SFz,Thr,RCr,RCp", "Qfffffffff",
+        const Vector3f ap_attitude_target_rad = attitude_control->get_att_target_euler_rad();
+        const Vector3f ap_thrust_vector_ned = pos_control->get_thrust_vector();
+        AP::logger().WriteStreaming("GEOP", "TimeUS,PEx,PEy,PEz,SFx,SFy,SFz,Thr,RCr,RCp,ATr,ATp,TVx,TVy,TVz", "Qffffffffffffff",
                                     AP_HAL::micros64(),
                                     (double)output.position.position_error_m.x,
                                     (double)output.position.position_error_m.y,
@@ -1150,7 +1157,12 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)output.position.specific_force_ned_mss.z,
                                     (double)output.position.thrust,
                                     (double)rc_roll_rad,
-                                    (double)rc_pitch_rad);
+                                    (double)rc_pitch_rad,
+                                    (double)ap_attitude_target_rad.x,
+                                    (double)ap_attitude_target_rad.y,
+                                    (double)ap_thrust_vector_ned.x,
+                                    (double)ap_thrust_vector_ned.y,
+                                    (double)ap_thrust_vector_ned.z);
     }
 #endif
 }
@@ -1188,8 +1200,9 @@ void ModeGuided::update_geometric_position_observer(const Vector3p* position_tar
     geometric_target.velocity_ned_ms = velocity_target_ned_ms;
     geometric_target.accel_ned_mss = accel_target_ned_mss;
     geometric_target.build_attitude_from_position = true;
-    geometric_target.yaw_rad = (heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only) ?
-                               attitude_control->get_att_target_euler_rad().z : heading.yaw_angle_rad;
+    // Use ArduPilot's shaped yaw target after input_thrust_vector_heading()
+    // so the geometric R_c observer is compared against the same yaw state.
+    geometric_target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
     geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
     geometric_target.omega_body_rads.z = heading.yaw_rate_rads;
 

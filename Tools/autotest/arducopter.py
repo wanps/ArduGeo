@@ -15863,6 +15863,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_parameter('GUID_OPTIONS', 2)
         self.takeoff(alt_min=10, mode='GUIDED')
 
+        step_start_us = int(self.get_sim_time() * 1000000)
+        step_end_us = step_start_us + 2500000
         self.send_position_target_local_ned(5, 0, 10)
         self.delay_sim_time(4, reason="geometric position observer to log position step")
 
@@ -15872,20 +15874,36 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             m = dfreader.recv_match(type="GEOP")
             if m is None:
                 break
+            if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
             geop_msgs.append(m)
-            for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp"):
+            for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp", "ATr", "ATp", "TVx", "TVy", "TVz"):
                 value = getattr(m, field)
                 if not math.isfinite(value):
                     raise NotAchievedException("GEOP.%s is not finite" % field)
 
         if len(geop_msgs) == 0:
-            raise NotAchievedException("GEOP log message not found")
-        self.progress("Found %u GEOP messages" % len(geop_msgs))
+            raise NotAchievedException("GEOP log message not found after position step")
+        self.progress("Found %u GEOP messages after position step" % len(geop_msgs))
 
         min_specific_force_z = min(m.SFz for m in geop_msgs)
         max_thrust = max(m.Thr for m in geop_msgs)
         max_horizontal_rc = max(max(abs(m.RCr), abs(m.RCp)) for m in geop_msgs)
-        self.progress("GEOP SFz min=%f Thr max=%f max tilt=%f" % (min_specific_force_z, max_thrust, max_horizontal_rc))
+        max_ap_target = max(max(abs(m.ATr), abs(m.ATp)) for m in geop_msgs)
+        max_ap_thrust_vector = max(math.hypot(m.TVx, m.TVy) for m in geop_msgs)
+        thrust_vector_alignments = []
+        alignments = []
+        for m in geop_msgs:
+            sf_norm = math.hypot(m.SFx, m.SFy)
+            tv_norm = math.hypot(m.TVx, m.TVy)
+            if m.SFx > 0.5 and m.TVx > 0.1 and sf_norm > 0.5 and tv_norm > 0.1:
+                thrust_vector_alignments.append((m.SFx * m.TVx + m.SFy * m.TVy) / (sf_norm * tv_norm))
+            rc_norm = math.hypot(m.RCr, m.RCp)
+            ap_norm = math.hypot(m.ATr, m.ATp)
+            if m.SFx > 0.5 and rc_norm > 0.02 and ap_norm > 0.002:
+                alignments.append((m.RCr * m.ATr + m.RCp * m.ATp) / (rc_norm * ap_norm))
+        self.progress("GEOP SFz min=%f Thr max=%f max tilt=%f AP tilt=%f AP TVxy=%f" %
+                      (min_specific_force_z, max_thrust, max_horizontal_rc, max_ap_target, max_ap_thrust_vector))
 
         if min_specific_force_z > -5.0:
             raise NotAchievedException("GEOP specific force did not point upward in NED")
@@ -15893,6 +15911,25 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("GEOP projected thrust is unexpectedly small")
         if max_horizontal_rc < 0.005:
             raise NotAchievedException("GEOP R_c did not tilt for local position step")
+        if max_ap_target < 0.002:
+            raise NotAchievedException("ArduPilot attitude target did not tilt for local position step")
+        if max_ap_thrust_vector < 0.1:
+            raise NotAchievedException("ArduPilot thrust vector did not tilt for local position step")
+        if len(thrust_vector_alignments) == 0:
+            raise NotAchievedException("No GEOP samples with geometric and ArduPilot thrust vector tilt")
+        self.progress("GEOP thrust vector alignment min=%f mean=%f samples=%u" %
+                      (min(thrust_vector_alignments),
+                       sum(thrust_vector_alignments) / len(thrust_vector_alignments),
+                       len(thrust_vector_alignments)))
+        if min(thrust_vector_alignments) <= 0.0:
+            raise NotAchievedException("GEOP specific force opposes ArduPilot thrust vector")
+        if len(alignments) == 0:
+            raise NotAchievedException("No GEOP samples with both R_c and ArduPilot attitude target tilt")
+        mean_alignment = sum(alignments) / len(alignments)
+        self.progress("GEOP R_c/AP attitude alignment min=%f mean=%f samples=%u" %
+                      (min(alignments), mean_alignment, len(alignments)))
+        if min(alignments) <= 0.0:
+            raise NotAchievedException("GEOP R_c opposes ArduPilot attitude target while accelerating toward target")
 
         self.do_RTL()
 
