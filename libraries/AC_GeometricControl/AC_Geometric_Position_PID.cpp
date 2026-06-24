@@ -2,6 +2,9 @@
 
 namespace {
 
+// Build a body-to-NED commanded attitude R_c from an ArduPilot-style thrust
+// vector expressed in NED and a yaw angle about NED +Z. In NED, hover thrust
+// points upward, so the level reference thrust direction is {0, 0, -1}.
 Quaternion attitude_from_thrust_vector(Vector3f thrust_vector, float yaw_rad)
 {
     const Vector3f thrust_vector_up{0.0f, 0.0f, -1.0f};
@@ -58,6 +61,7 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
 
     output.specific_force_ned_mss = accel_cmd_ned;
     output.specific_force_ned_mss.z -= GRAVITY_MSS;
+    // Keep the direction in NED for constructing R_c. Negative Z is upward.
     output.thrust_vector_ned = output.specific_force_ned_mss;
 
     if (target.build_attitude_from_position) {
@@ -76,5 +80,6 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     Matrix3f attitude;
     state.attitude_body_to_ned.rotation_matrix(attitude);
     // Temporary scalar thrust placeholder for the paper quantity f_d/m.
+    // attitude.colz() is the body +Z axis expressed in NED.
     output.thrust = -(output.specific_force_ned_mss * attitude.colz());
 }

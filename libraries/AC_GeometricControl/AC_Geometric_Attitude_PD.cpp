@@ -2,8 +2,10 @@
 
 namespace {
 
-// Lee/Gao attitude error e_R = vee(0.5 * (Rd^T * R - R^T * Rd))
-// using Matrix3 row-normal storage.
+// Lee/Gao attitude error e_R = vee(0.5 * (Rd^T * R - R^T * Rd)).
+// Both R and Rd are body-to-NED attitudes; their matrix columns are body
+// basis vectors expressed in NED. The vee extraction follows Matrix3 row
+// storage.
 Vector3f attitude_error_lee(const Quaternion& attitude_body_to_ned,
                             const Quaternion& attitude_target_to_ned)
 {
