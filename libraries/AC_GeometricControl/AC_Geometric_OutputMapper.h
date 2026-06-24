@@ -11,5 +11,6 @@ public:
     void update(const AC_Geometric_Position_Output& position,
                 const AC_Geometric_Attitude_Output& attitude,
                 float hover_throttle_norm,
+                const Vector3f& moment_norm,
                 AC_Geometric_Mapped_Output& output) const;
 };

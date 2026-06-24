@@ -55,4 +55,7 @@ private:
     AP_Float _att_ko_z;
 
     AP_Float _hover_throttle_norm;
+    AP_Float _mom_norm_x;
+    AP_Float _mom_norm_y;
+    AP_Float _mom_norm_z;
 };

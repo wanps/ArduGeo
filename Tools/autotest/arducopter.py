@@ -15868,6 +15868,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.set_parameter('GEO_ATT_KO_X', 0.2)
         self.set_parameter('GEO_ATT_KO_Y', 0.2)
         self.set_parameter('GEO_HOV_THR', 0.5)
+        self.set_parameter('GEO_MOM_NORM_X', 4.0)
+        self.set_parameter('GEO_MOM_NORM_Y', 4.0)
+        self.set_parameter('GEO_MOM_NORM_Z', 2.0)
         self.takeoff(alt_min=10, mode='GUIDED')
 
         step_start_us = int(self.get_sim_time() * 1000000)
@@ -15879,8 +15882,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         geop_msgs = []
         geoa_msgs = []
         geoo_msgs = []
+        geom_msgs = []
         while True:
-            m = dfreader.recv_match(type=["GEOP", "GEOA", "GEOO"])
+            m = dfreader.recv_match(type=["GEOP", "GEOA", "GEOO", "GEOM"])
             if m is None:
                 break
             if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
@@ -15903,6 +15907,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOO.%s is not finite" % field)
+            if m.get_type() == "GEOM":
+                geom_msgs.append(m)
+                for field in ("RRaw", "PRaw", "YRaw", "Roll", "Pitch", "Yaw"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOM.%s is not finite" % field)
 
         if len(geop_msgs) == 0:
             raise NotAchievedException("GEOP log message not found after position step")
@@ -15913,6 +15923,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if len(geoo_msgs) == 0:
             raise NotAchievedException("GEOO log message not found after position step")
         self.progress("Found %u GEOO messages after position step" % len(geoo_msgs))
+        if len(geom_msgs) == 0:
+            raise NotAchievedException("GEOM log message not found after position step")
+        self.progress("Found %u GEOM messages after position step" % len(geom_msgs))
 
         min_specific_force_z = min(m.SFz for m in geop_msgs)
         max_thrust = max(m.Thr for m in geop_msgs)
@@ -15974,6 +15987,19 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("GEOO normalized throttle is outside 0..1")
         if max_throttle_norm < 0.05:
             raise NotAchievedException("GEOO normalized throttle is unexpectedly small")
+
+        min_actuator = min(min(m.Roll, m.Pitch, m.Yaw) for m in geom_msgs)
+        max_actuator = max(max(m.Roll, m.Pitch, m.Yaw) for m in geom_msgs)
+        max_actuator_rp = max(math.hypot(m.Roll, m.Pitch) for m in geom_msgs)
+        max_actuator_raw_rp = max(math.hypot(m.RRaw, m.PRaw) for m in geom_msgs)
+        self.progress("GEOM actuator min=%f max=%f rp=%f raw_rp=%f" %
+                      (min_actuator, max_actuator, max_actuator_rp, max_actuator_raw_rp))
+        if min_actuator < -1.0 or max_actuator > 1.0:
+            raise NotAchievedException("GEOM actuator shadow output is outside -1..1")
+        if max_actuator_rp < 0.001:
+            raise NotAchievedException("GEOM roll/pitch actuator shadow output did not respond")
+        if max_actuator_raw_rp < 0.001:
+            raise NotAchievedException("GEOM raw roll/pitch actuator shadow output did not respond")
 
         self.do_RTL()
 

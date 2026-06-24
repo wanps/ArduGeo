@@ -101,6 +101,11 @@ struct AC_Geometric_Mapped_Output {
     // Limited normalized throttle in ArduPilot's 0..1 command range.
     float throttle_norm = 0.0f;
     bool throttle_limited = false;
+    // Shadow AP_Motors roll/pitch/yaw actuator commands. Vector axes map to
+    // set_roll(), set_pitch(), and set_yaw(); raw is before limiting.
+    Vector3f rpy_norm_raw;
+    Vector3f rpy_norm;
+    bool rpy_limited = false;
 };
 
 struct AC_Geometric_Output {

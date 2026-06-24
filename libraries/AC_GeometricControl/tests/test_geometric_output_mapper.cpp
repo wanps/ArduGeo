@@ -15,12 +15,13 @@ Quaternion attitude_from_euler(float roll_rad, float pitch_rad, float yaw_rad)
 
 AC_Geometric_Mapped_Output run_mapper(const AC_Geometric_Position_Output& position,
                                       const AC_Geometric_Attitude_Output& attitude,
-                                      float hover_throttle_norm)
+                                      float hover_throttle_norm,
+                                      const Vector3f& moment_norm = Vector3f{4.0f, 4.0f, 2.0f})
 {
     AC_Geometric_OutputMapper mapper;
     AC_Geometric_Mapped_Output output {};
 
-    mapper.update(position, attitude, hover_throttle_norm, output);
+    mapper.update(position, attitude, hover_throttle_norm, moment_norm, output);
 
     return output;
 }
@@ -82,6 +83,42 @@ TEST(AC_Geometric_OutputMapper, PassesThroughShadowAttitudeAndRate)
     EXPECT_NEAR(output.rate_target_body_rads.x, 0.4f, 1.0e-6f);
     EXPECT_NEAR(output.rate_target_body_rads.y, -0.5f, 1.0e-6f);
     EXPECT_NEAR(output.rate_target_body_rads.z, 0.6f, 1.0e-6f);
+}
+
+TEST(AC_Geometric_OutputMapper, MomentProxyMapsToMotorShadowOutput)
+{
+    AC_Geometric_Position_Output position {};
+
+    AC_Geometric_Attitude_Output attitude {};
+    attitude.moment = Vector3f{2.0f, -4.0f, 1.0f};
+
+    const AC_Geometric_Mapped_Output output = run_mapper(position, attitude, 0.5f);
+
+    EXPECT_NEAR(output.rpy_norm_raw.x, 0.5f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm_raw.y, -1.0f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm_raw.z, 0.5f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm.x, 0.5f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm.y, -1.0f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm.z, 0.5f, 1.0e-6f);
+    EXPECT_FALSE(output.rpy_limited);
+}
+
+TEST(AC_Geometric_OutputMapper, MotorShadowOutputIsLimited)
+{
+    AC_Geometric_Position_Output position {};
+
+    AC_Geometric_Attitude_Output attitude {};
+    attitude.moment = Vector3f{8.0f, -9.0f, 3.0f};
+
+    const AC_Geometric_Mapped_Output output = run_mapper(position, attitude, 0.5f);
+
+    EXPECT_NEAR(output.rpy_norm_raw.x, 2.0f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm_raw.y, -2.25f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm_raw.z, 1.5f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm.x, 1.0f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm.y, -1.0f, 1.0e-6f);
+    EXPECT_NEAR(output.rpy_norm.z, 1.0f, 1.0e-6f);
+    EXPECT_TRUE(output.rpy_limited);
 }
 
 AP_GTEST_MAIN()

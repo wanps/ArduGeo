@@ -1128,6 +1128,17 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: RTx: Shadow body-rate target, X-Axis
     // @Field: RTy: Shadow body-rate target, Y-Axis
     // @Field: RTz: Shadow body-rate target, Z-Axis
+
+    // @LoggerMessage: GEOM
+    // @Description: Geometric guided motor mapper observer
+    // @Field: TimeUS: Time since system startup
+    // @Field: RRaw: Raw normalized roll actuator shadow output
+    // @Field: PRaw: Raw normalized pitch actuator shadow output
+    // @Field: YRaw: Raw normalized yaw actuator shadow output
+    // @Field: Roll: Limited normalized roll actuator shadow output
+    // @Field: Pitch: Limited normalized pitch actuator shadow output
+    // @Field: Yaw: Limited normalized yaw actuator shadow output
+    // @Field: Lim: True if any actuator shadow output was limited
     if (guided_geometric_log_counter++ % 5 == 0) {
         const AC_Geometric_Output& output = copter.geometric_control.get_output();
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
@@ -1183,6 +1194,16 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)output.mapped.rate_target_body_rads.x,
                                     (double)output.mapped.rate_target_body_rads.y,
                                     (double)output.mapped.rate_target_body_rads.z);
+
+        AP::logger().WriteStreaming("GEOM", "TimeUS,RRaw,PRaw,YRaw,Roll,Pitch,Yaw,Lim", "QffffffB",
+                                    AP_HAL::micros64(),
+                                    (double)output.mapped.rpy_norm_raw.x,
+                                    (double)output.mapped.rpy_norm_raw.y,
+                                    (double)output.mapped.rpy_norm_raw.z,
+                                    (double)output.mapped.rpy_norm.x,
+                                    (double)output.mapped.rpy_norm.y,
+                                    (double)output.mapped.rpy_norm.z,
+                                    (uint8_t)output.mapped.rpy_limited);
     }
 #endif
 }

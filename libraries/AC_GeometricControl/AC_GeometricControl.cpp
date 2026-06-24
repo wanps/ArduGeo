@@ -13,6 +13,9 @@
 #define AC_GEOMETRIC_ATT_KO_Y_DEFAULT 0.2f
 #define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.2f
 #define AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT 0.5f
+#define AC_GEOMETRIC_MOMENT_NORM_X_DEFAULT 4.0f
+#define AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT 4.0f
+#define AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT 2.0f
 
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Param: POS_KX_XY
@@ -119,6 +122,30 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("HOV_THR", 13, AC_GeometricControl, _hover_throttle_norm, AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT),
 
+    // @Param: MOM_NORM_X
+    // @DisplayName: Geometric roll moment normalization
+    // @Description: Body X moment proxy magnitude that maps to full roll actuator shadow output. This currently affects only geometric observer logging.
+    // @Range: 0.01 100
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("MOM_NORM_X", 14, AC_GeometricControl, _mom_norm_x, AC_GEOMETRIC_MOMENT_NORM_X_DEFAULT),
+
+    // @Param: MOM_NORM_Y
+    // @DisplayName: Geometric pitch moment normalization
+    // @Description: Body Y moment proxy magnitude that maps to full pitch actuator shadow output. This currently affects only geometric observer logging.
+    // @Range: 0.01 100
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("MOM_NORM_Y", 15, AC_GeometricControl, _mom_norm_y, AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT),
+
+    // @Param: MOM_NORM_Z
+    // @DisplayName: Geometric yaw moment normalization
+    // @Description: Body Z moment proxy magnitude that maps to full yaw actuator shadow output. This currently affects only geometric observer logging.
+    // @Range: 0.01 100
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("MOM_NORM_Z", 16, AC_GeometricControl, _mom_norm_z, AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT),
+
     AP_GROUPEND
 };
 
@@ -177,5 +204,10 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
 
     _attitude_pd.update(state, attitude_target, dt, _output.attitude);
 
-    _output_mapper.update(_output.position, _output.attitude, _hover_throttle_norm.get(), _output.mapped);
+    const Vector3f moment_norm {
+        _mom_norm_x.get(),
+        _mom_norm_y.get(),
+        _mom_norm_z.get()
+    };
+    _output_mapper.update(_output.position, _output.attitude, _hover_throttle_norm.get(), moment_norm, _output.mapped);
 }
