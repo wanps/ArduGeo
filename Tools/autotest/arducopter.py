@@ -16003,6 +16003,87 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedMotorOutput(self):
+        '''test Guided geometric motor-output hook logging'''
+        self.set_parameters({
+            'GUID_OPTIONS': 2,
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_HOV_THR': 0.5,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+        })
+        self.takeoff(alt_min=10, mode='GUIDED')
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(1, reason="geometric observer to settle before motor-output test")
+
+        step_start_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 258)
+        self.delay_sim_time(1, reason="geometric motor-output hook to run")
+        step_end_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 2)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geox_msgs = []
+        while True:
+            m = dfreader.recv_match(type="GEOX")
+            if m is None:
+                break
+            if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
+            geox_msgs.append(m)
+            for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                value = getattr(m, field)
+                if not math.isfinite(value):
+                    raise NotAchievedException("GEOX.%s is not finite" % field)
+
+        if len(geox_msgs) == 0:
+            raise NotAchievedException("GEOX log message not found during geometric motor-output window")
+        self.progress("Found %u GEOX messages during geometric motor-output window" % len(geox_msgs))
+
+        allowed_msgs = [m for m in geox_msgs if m.Allow]
+        if len(allowed_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GUID_OPTIONS allowing geometric motor output")
+        written_msgs = [m for m in allowed_msgs if m.Wrote]
+        if len(written_msgs) == 0:
+            raise NotAchievedException("GEOX did not show geometric AP_Motors writes")
+
+        min_geometric_age_ms = min(m.GAge for m in allowed_msgs)
+        min_motor_output_age_ms = min(m.WAge for m in written_msgs)
+        min_actuator = min(min(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        max_actuator = max(max(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        min_throttle = min(m.Thr for m in allowed_msgs)
+        max_throttle = max(m.Thr for m in allowed_msgs)
+        limited_count = sum(1 for m in allowed_msgs if m.RLim or m.TLim)
+
+        self.progress("GEOX age min geo=%u motor=%u actuator min=%f max=%f throttle min=%f max=%f limited=%u/%u" %
+                      (min_geometric_age_ms,
+                       min_motor_output_age_ms,
+                       min_actuator,
+                       max_actuator,
+                       min_throttle,
+                       max_throttle,
+                       limited_count,
+                       len(allowed_msgs)))
+
+        if min_geometric_age_ms > 100:
+            raise NotAchievedException("GEOX geometric output was stale during motor-output window")
+        if min_motor_output_age_ms > 100:
+            raise NotAchievedException("GEOX motor-output write was stale during motor-output window")
+        if min_actuator < -1.0 or max_actuator > 1.0:
+            raise NotAchievedException("GEOX actuator output is outside -1..1")
+        if min_throttle < 0.0 or max_throttle > 1.0:
+            raise NotAchievedException("GEOX throttle output is outside 0..1")
+        if limited_count == len(allowed_msgs):
+            raise NotAchievedException("GEOX motor-output hook was limited for all samples")
+
+        self.do_RTL()
+
     def AutoRTL(self):
         '''Test Auto RTL mode using do land start and return path start mission items'''
         alt = 50
@@ -18026,6 +18107,7 @@ return update, 1000
             self.GuidedModeThrust,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
+            self.GeometricGuidedMotorOutput,
             self.CompassMot,
             self.AutoRTL,
             self.EK3_OGN_HGT_MASK_climbing,

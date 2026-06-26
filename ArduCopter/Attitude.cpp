@@ -57,9 +57,19 @@ bool Copter::geometric_motor_output_active() const
     return true;
 }
 
+uint32_t Copter::geometric_motor_output_age_ms(uint32_t now_ms) const
+{
+    if (geometric_motor_output_last_ms == 0) {
+        return UINT32_MAX;
+    }
+    return now_ms - geometric_motor_output_last_ms;
+}
+
 void Copter::geometric_motor_output_to_motors()
 {
     const AC_Geometric_Mapped_Output& mapped = geometric_control.get_output().mapped;
+
+    geometric_motor_output_last_ms = millis();
 
     motors->set_roll(mapped.rpy_norm.x);
     motors->set_roll_ff(0.0f);

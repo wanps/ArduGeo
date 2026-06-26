@@ -479,6 +479,7 @@ private:
     const struct AP_Param::GroupInfo *attitude_control_var_info;
     AC_PosControl *pos_control;
     AC_GeometricControl geometric_control;
+    uint32_t geometric_motor_output_last_ms = 0;
     AC_WPNav *wp_nav;
     AC_Loiter *loiter_nav;
 
@@ -740,6 +741,7 @@ private:
     float get_pilot_speed_dn_adjusted_ms() const;
     void run_rate_controller_main();
     bool geometric_motor_output_active() const;
+    uint32_t geometric_motor_output_age_ms(uint32_t now_ms) const;
     void geometric_motor_output_to_motors();
 
     // if AP_INERTIALSENSOR_FAST_SAMPLE_WINDOW_ENABLED

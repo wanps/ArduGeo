@@ -171,9 +171,17 @@ void AC_GeometricControl::set_enabled(bool enabled)
     _enabled = enabled;
 }
 
+uint32_t AC_GeometricControl::output_age_ms(uint32_t now_ms) const
+{
+    if (_last_update_ms == 0) {
+        return UINT32_MAX;
+    }
+    return now_ms - _last_update_ms;
+}
+
 bool AC_GeometricControl::output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const
 {
-    return _last_update_ms != 0 && now_ms - _last_update_ms <= max_age_ms;
+    return output_age_ms(now_ms) <= max_age_ms;
 }
 
 void AC_GeometricControl::update_gains_from_params()

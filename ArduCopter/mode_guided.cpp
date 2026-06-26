@@ -22,6 +22,7 @@ struct {
 } static guided_angle_state;
 
 static uint8_t guided_geometric_log_counter;
+static constexpr uint32_t guided_geometric_output_recent_ms = 100;
 
 struct Guided_Limit {
     uint32_t timeout_ms;        // timeout (in seconds) from the time that guided is invoked
@@ -1139,8 +1140,27 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: Pitch: Limited normalized pitch actuator shadow output
     // @Field: Yaw: Limited normalized yaw actuator shadow output
     // @Field: Lim: True if any actuator shadow output was limited
+
+    // @LoggerMessage: GEOX
+    // @Description: Geometric guided motor-output hook status
+    // @Field: TimeUS: Time since system startup
+    // @Field: Allow: True if GUID_OPTIONS allows geometric motor output
+    // @Field: Wrote: True if the geometric path recently wrote AP_Motors
+    // @Field: GAge: Geometric controller output age
+    // @Field: WAge: Geometric AP_Motors write age
+    // @Field: Roll: Limited normalized roll actuator output
+    // @Field: Pitch: Limited normalized pitch actuator output
+    // @Field: Yaw: Limited normalized yaw actuator output
+    // @Field: Thr: Limited normalized throttle output
+    // @Field: RLim: True if any roll/pitch/yaw actuator output was limited
+    // @Field: TLim: True if normalized throttle output was limited
     if (guided_geometric_log_counter++ % 5 == 0) {
         const AC_Geometric_Output& output = copter.geometric_control.get_output();
+        const uint32_t now_ms = AP_HAL::millis();
+        const uint32_t geometric_age_ms = copter.geometric_control.output_age_ms(now_ms);
+        const uint32_t motor_output_age_ms = copter.geometric_motor_output_age_ms(now_ms);
+        const bool motor_output_allowed = option_is_enabled(Option::GeometricMotorOutput);
+        const bool motor_output_written_recently = motor_output_age_ms <= guided_geometric_output_recent_ms;
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
                                     AP_HAL::micros64(),
                                     (double)output.attitude.attitude_error.x,
@@ -1204,6 +1224,19 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)output.mapped.rpy_norm.y,
                                     (double)output.mapped.rpy_norm.z,
                                     (uint8_t)output.mapped.rpy_limited);
+
+        AP::logger().WriteStreaming("GEOX", "TimeUS,Allow,Wrote,GAge,WAge,Roll,Pitch,Yaw,Thr,RLim,TLim", "QBBIIffffBB",
+                                    AP_HAL::micros64(),
+                                    (uint8_t)motor_output_allowed,
+                                    (uint8_t)motor_output_written_recently,
+                                    geometric_age_ms,
+                                    motor_output_age_ms,
+                                    (double)output.mapped.rpy_norm.x,
+                                    (double)output.mapped.rpy_norm.y,
+                                    (double)output.mapped.rpy_norm.z,
+                                    (double)output.mapped.throttle_norm,
+                                    (uint8_t)output.mapped.rpy_limited,
+                                    (uint8_t)output.mapped.throttle_limited);
     }
 #endif
 }

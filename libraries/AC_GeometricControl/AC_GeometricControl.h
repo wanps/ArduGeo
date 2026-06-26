@@ -22,6 +22,7 @@ public:
     // accidentally consume stale geometric commands.
     void set_enabled(bool enabled);
     bool enabled() const { return _enabled; }
+    uint32_t output_age_ms(uint32_t now_ms) const;
     bool output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const;
 
     // Run the geometric position-to-attitude and attitude PD cascade.
