@@ -16720,6 +16720,267 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedMotorOutputPositionYawStep(self):
+        '''test Guided geometric motor-output hook during combined position and yaw steps'''
+        def wrap_pi(angle_rad):
+            return math.atan2(math.sin(angle_rad), math.cos(angle_rad))
+
+        self.set_parameters({
+            'GUID_OPTIONS': 2,
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KR_Z': 2.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_ATT_KO_Z': 0.2,
+            'GEO_HOV_THR': 0.5,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
+        })
+        self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
+        self.context_set_message_rate_hz('ATTITUDE', 10)
+        self.takeoff(alt_min=10, mode='GUIDED')
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(2, reason="geometric controller to settle before active position+yaw step")
+        attitude_start = self.assert_receive_message('ATTITUDE')
+        start_yaw = attitude_start.yaw
+        target_yaw_delta = math.radians(45)
+        target_yaw = wrap_pi(start_yaw + target_yaw_delta)
+        yaw_direction = 1 if target_yaw_delta >= 0 else -1
+        self.drain_mav()
+
+        target_x = 5.0
+        target_y = 0.0
+        target_z_up = 10.0
+        positions = []
+        attitudes = []
+        step_start_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 258)
+        self.send_position_target_local_ned_yaw(target_x, target_y, target_z_up, target_yaw)
+        try:
+            active_start_time = self.get_sim_time()
+            while self.get_sim_time_cached() - active_start_time < 6:
+                m = self.mav.recv_match(type=["LOCAL_POSITION_NED", "ATTITUDE"], blocking=True, timeout=1)
+                if m is None:
+                    raise NotAchievedException("Did not receive position+yaw-step stability messages")
+                if m.get_type() == "LOCAL_POSITION_NED":
+                    positions.append(m)
+                if m.get_type() == "ATTITUDE":
+                    attitudes.append(m)
+        finally:
+            step_end_us = int(self.get_sim_time() * 1000000)
+            self.set_parameter('GUID_OPTIONS', 2)
+
+        if len(positions) < 5:
+            raise NotAchievedException("Not enough LOCAL_POSITION_NED samples during geometric position+yaw step")
+        if len(attitudes) < 5:
+            raise NotAchievedException("Not enough ATTITUDE samples during geometric position+yaw step")
+
+        start_position = positions[0]
+        start_distance = math.hypot(target_x - start_position.x, target_y - start_position.y)
+        final_position = positions[-1]
+        final_distance = math.hypot(target_x - final_position.x, target_y - final_position.y)
+        max_x_progress = max(m.x - start_position.x for m in positions)
+        min_x_progress = min(m.x - start_position.x for m in positions)
+        max_lateral_drift = max(abs(m.y - start_position.y) for m in positions)
+        max_vertical_drift = max(abs(m.z - start_position.z) for m in positions)
+        yaw_progress = [yaw_direction * wrap_pi(m.yaw - start_yaw) for m in attitudes]
+        max_yaw_progress = max(yaw_progress)
+        final_yaw_error = abs(wrap_pi(target_yaw - attitudes[-1].yaw))
+        max_roll = max(abs(m.roll) for m in attitudes)
+        max_pitch = max(abs(m.pitch) for m in attitudes)
+        self.progress("Geometric position+yaw step samples position=%u attitude=%u x progress=%fm distance %f->%f yaw progress=%fdeg final yaw error=%fdeg lateral drift=%fm vertical drift=%fm roll=%fdeg pitch=%fdeg" %
+                      (len(positions),
+                       len(attitudes),
+                       max_x_progress,
+                       start_distance,
+                       final_distance,
+                       math.degrees(max_yaw_progress),
+                       math.degrees(final_yaw_error),
+                       max_lateral_drift,
+                       max_vertical_drift,
+                       math.degrees(max_roll),
+                       math.degrees(max_pitch)))
+
+        if max_x_progress < 0.5:
+            raise NotAchievedException("Geometric position+yaw step did not move toward +X target")
+        if final_distance > start_distance - 0.25:
+            raise NotAchievedException("Geometric position+yaw step did not reduce horizontal target distance")
+        if abs(min_x_progress) > 1.0 and abs(min_x_progress) > max_x_progress:
+            raise NotAchievedException("Geometric position+yaw step moved primarily away from +X target")
+        if max_yaw_progress < math.radians(20):
+            raise NotAchievedException("Geometric position+yaw step did not rotate toward yaw target")
+        if final_yaw_error > abs(target_yaw_delta) - math.radians(15):
+            raise NotAchievedException("Geometric position+yaw step did not reduce yaw target error")
+        if max_lateral_drift > 5.0:
+            raise NotAchievedException("Geometric position+yaw step lateral drift is too large")
+        if max_vertical_drift > 4.0:
+            raise NotAchievedException("Geometric position+yaw step vertical drift is too large")
+        if max(max_roll, max_pitch) > math.radians(50):
+            raise NotAchievedException("Geometric position+yaw step tilt is too large")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geop_msgs = []
+        geoa_msgs = []
+        geoo_msgs = []
+        geom_msgs = []
+        geox_msgs = []
+        while True:
+            m = dfreader.recv_match(type=["GEOP", "GEOA", "GEOO", "GEOM", "GEOX"])
+            if m is None:
+                break
+            if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
+            msg_type = m.get_type()
+            if msg_type == "GEOP":
+                geop_msgs.append(m)
+                for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOP.%s is not finite during active position+yaw step" % field)
+            if msg_type == "GEOA":
+                geoa_msgs.append(m)
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOA.%s is not finite during active position+yaw step" % field)
+            if msg_type == "GEOO":
+                geoo_msgs.append(m)
+                for field in ("TRaw", "TNorm", "RCr", "RCp", "RCy", "RTx", "RTy", "RTz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOO.%s is not finite during active position+yaw step" % field)
+            if msg_type == "GEOM":
+                geom_msgs.append(m)
+                for field in ("RRaw", "PRaw", "YRaw", "Roll", "Pitch", "Yaw"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOM.%s is not finite during active position+yaw step" % field)
+            if msg_type == "GEOX":
+                geox_msgs.append(m)
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOX.%s is not finite during active position+yaw step" % field)
+
+        if len(geop_msgs) == 0:
+            raise NotAchievedException("GEOP log message not found during active position+yaw step")
+        if len(geoa_msgs) == 0:
+            raise NotAchievedException("GEOA log message not found during active position+yaw step")
+        if len(geoo_msgs) == 0:
+            raise NotAchievedException("GEOO log message not found during active position+yaw step")
+        if len(geom_msgs) == 0:
+            raise NotAchievedException("GEOM log message not found during active position+yaw step")
+        if len(geox_msgs) == 0:
+            raise NotAchievedException("GEOX log message not found during active position+yaw step")
+
+        min_position_error_x = min(m.PEx for m in geop_msgs)
+        max_specific_force_x = max(m.SFx for m in geop_msgs)
+        max_rc_tilt = max(math.hypot(m.RCr, m.RCp) for m in geop_msgs)
+        max_rc_yaw_progress = max(yaw_direction * wrap_pi(m.RCy - start_yaw) for m in geoo_msgs)
+        min_rc_target_error = min(abs(wrap_pi(target_yaw - m.RCy)) for m in geoo_msgs)
+        max_moment_xy = max(math.hypot(m.Mx, m.My) for m in geoa_msgs)
+        max_moment_z = max(abs(m.Mz) for m in geoa_msgs)
+        max_yaw_error = max(abs(m.ERz) for m in geoa_msgs)
+        max_actuator_rp = max(math.hypot(m.Roll, m.Pitch) for m in geom_msgs)
+        max_actuator_yaw = max(abs(m.Yaw) for m in geom_msgs)
+        max_actuator_raw_rp = max(math.hypot(m.RRaw, m.PRaw) for m in geom_msgs)
+        max_actuator_yaw_raw = max(abs(m.YRaw) for m in geom_msgs)
+        self.progress("Geometric position+yaw step logs GEOP=%u GEOA=%u GEOO=%u GEOM=%u GEOX=%u PEx min=%f SFx max=%f Rc tilt=%f RCy progress=%fdeg RCy target error=%fdeg moment_xy=%f Mz=%f ERz=%f actuator_rp=%f actuator_yaw=%f raw_rp=%f raw_yaw=%f" %
+                      (len(geop_msgs),
+                       len(geoa_msgs),
+                       len(geoo_msgs),
+                       len(geom_msgs),
+                       len(geox_msgs),
+                       min_position_error_x,
+                       max_specific_force_x,
+                       max_rc_tilt,
+                       math.degrees(max_rc_yaw_progress),
+                       math.degrees(min_rc_target_error),
+                       max_moment_xy,
+                       max_moment_z,
+                       max_yaw_error,
+                       max_actuator_rp,
+                       max_actuator_yaw,
+                       max_actuator_raw_rp,
+                       max_actuator_yaw_raw))
+
+        if min_position_error_x > -0.5:
+            raise NotAchievedException("GEOP position error did not show +X target step")
+        if max_specific_force_x < 0.5:
+            raise NotAchievedException("GEOP specific force did not accelerate toward +X target")
+        if max_rc_tilt < 0.005:
+            raise NotAchievedException("GEOP R_c did not tilt during active position+yaw step")
+        if max_rc_yaw_progress < math.radians(35):
+            raise NotAchievedException("GEOO R_c yaw did not follow yaw target during active position+yaw step")
+        if min_rc_target_error > math.radians(10):
+            raise NotAchievedException("GEOO R_c yaw stayed far from yaw target during active position+yaw step")
+        if max_moment_xy < 0.01:
+            raise NotAchievedException("GEOA roll/pitch moment did not respond during active position+yaw step")
+        if max_moment_z < 0.01:
+            raise NotAchievedException("GEOA yaw moment did not respond during active position+yaw step")
+        if max_yaw_error < 0.01:
+            raise NotAchievedException("GEOA yaw attitude error did not respond during active position+yaw step")
+        if max_actuator_rp < 0.001:
+            raise NotAchievedException("GEOM roll/pitch actuator output did not respond during active position+yaw step")
+        if max_actuator_yaw < 0.001:
+            raise NotAchievedException("GEOM yaw actuator output did not respond during active position+yaw step")
+        if max_actuator_raw_rp < 0.001:
+            raise NotAchievedException("GEOM raw roll/pitch actuator output did not respond during active position+yaw step")
+        if max_actuator_yaw_raw < 0.001:
+            raise NotAchievedException("GEOM raw yaw actuator output did not respond during active position+yaw step")
+
+        allowed_msgs = [m for m in geox_msgs if m.Allow]
+        if len(allowed_msgs) == 0:
+            raise NotAchievedException("GEOX did not allow geometric motor output during active position+yaw step")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric motor output during active position+yaw step")
+        rate_thread_msgs = [m for m in allowed_msgs if m.RT]
+        if len(rate_thread_msgs) != 0:
+            raise NotAchievedException("GEOX shows rate-thread active during active position+yaw step")
+        written_msgs = [m for m in allowed_msgs if m.Wrote]
+        if len(written_msgs) == 0:
+            raise NotAchievedException("GEOX did not write geometric motor output during active position+yaw step")
+
+        min_geometric_age_ms = min(m.GAge for m in allowed_msgs)
+        min_motor_output_age_ms = min(m.WAge for m in written_msgs)
+        min_actuator = min(min(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        max_actuator = max(max(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        max_geox_yaw = max(abs(m.Yaw) for m in allowed_msgs)
+        min_throttle = min(m.Thr for m in allowed_msgs)
+        max_throttle = max(m.Thr for m in allowed_msgs)
+        limited_count = sum(1 for m in allowed_msgs if m.RLim or m.TLim)
+        self.progress("GEOX position+yaw step age min geo=%u motor=%u actuator min=%f max=%f yaw=%f throttle min=%f max=%f limited=%u/%u" %
+                      (min_geometric_age_ms,
+                       min_motor_output_age_ms,
+                       min_actuator,
+                       max_actuator,
+                       max_geox_yaw,
+                       min_throttle,
+                       max_throttle,
+                       limited_count,
+                       len(allowed_msgs)))
+
+        if min_geometric_age_ms > 100:
+            raise NotAchievedException("GEOX geometric output was stale during active position+yaw step")
+        if min_motor_output_age_ms > 100:
+            raise NotAchievedException("GEOX motor-output write was stale during active position+yaw step")
+        if min_actuator < -1.0 or max_actuator > 1.0:
+            raise NotAchievedException("GEOX actuator output is outside -1..1 during active position+yaw step")
+        if max_geox_yaw < 0.001:
+            raise NotAchievedException("GEOX yaw actuator output did not respond during active position+yaw step")
+        if min_throttle < 0.0 or max_throttle > 1.0:
+            raise NotAchievedException("GEOX throttle output is outside 0..1 during active position+yaw step")
+        if limited_count > len(allowed_msgs) / 2:
+            raise NotAchievedException("GEOX motor-output hook was limited for most active position+yaw-step samples")
+
+        self.do_RTL()
+
     def AutoRTL(self):
         '''Test Auto RTL mode using do land start and return path start mission items'''
         alt = 50
@@ -18748,6 +19009,7 @@ return update, 1000
             self.GeometricGuidedMotorOutputHover,
             self.GeometricGuidedMotorOutputPositionStep,
             self.GeometricGuidedMotorOutputYawStep,
+            self.GeometricGuidedMotorOutputPositionYawStep,
             self.CompassMot,
             self.AutoRTL,
             self.EK3_OGN_HGT_MASK_climbing,
