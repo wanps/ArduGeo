@@ -1174,6 +1174,9 @@ public:
 
     void angle_control_start();
     void angle_control_run();
+    bool geometric_position_control_active() const;
+    bool wp_destination_reached() const;
+    void restore_native_position_control_after_geometric();
     void update_geometric_observer(const AC_Geometric_Target& target);
     void update_geometric_angle_observer();
     void update_geometric_position_observer(const Vector3p* position_target_ned_m,

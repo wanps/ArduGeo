@@ -44,12 +44,17 @@ struct AC_Geometric_Target {
     // the full desired attitude from thrust direction plus heading.
     float yaw_rad = 0.0f;
     float yaw_rate_rads = 0.0f;
+    // True asks the geometric shaper to derive yaw/yaw-rate from its own
+    // shaped horizontal velocity/acceleration. This keeps Guided WP yaw-follow
+    // independent from AC_PosControl's native yaw target.
+    bool yaw_from_trajectory = false;
 };
 
 // Limits for the optional geometric reference shaper. The shaper converts raw
 // Guided targets into smooth position, velocity and acceleration references.
-// Yaw shaping is separately gated because Copter Guided may already provide a
-// shaped yaw target through AutoYaw.
+// Explicit yaw commands are separately gated because Copter Guided may already
+// provide a shaped yaw target through AutoYaw. Geometric trajectory yaw-follow
+// still uses the yaw rate/acceleration limits when yaw_from_trajectory is true.
 struct AC_Geometric_Setpoint_Shaper_Limits {
     float vel_xy_max_ms = 0.0f;
     float accel_xy_max_mss = 0.0f;

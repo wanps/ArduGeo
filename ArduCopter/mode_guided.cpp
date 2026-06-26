@@ -11,6 +11,7 @@ static bool guided_is_terrain_alt;              // true if guided_pos_target_ned
 static Vector3f guided_vel_target_ned_ms;       // velocity target (used by pos_vel_accel controller and vel_accel controller)
 static Vector3f guided_accel_target_ned_mss;    // acceleration target (used by pos_vel_accel controller vel_accel controller and accel controller)
 static uint32_t update_time_ms;                 // system time of last target update to pos_vel_accel, vel_accel or accel controller
+static bool guided_geometric_position_was_active;
 
 struct {
     uint32_t update_time_ms;
@@ -46,6 +47,7 @@ bool ModeGuided::init(bool ignore_checks)
 
     // clear pause state when entering guided mode
     _paused = false;
+    guided_geometric_position_was_active = false;
 
     return true;
 }
@@ -83,7 +85,7 @@ void ModeGuided::run()
     case SubMode::WP:
         // run waypoint controller
         wp_control_run();
-        if (send_notification && wp_nav->reached_wp_destination()) {
+        if (send_notification && wp_destination_reached()) {
             send_notification = false;
             gcs().send_mission_item_reached_message(0);
         }
@@ -128,6 +130,38 @@ bool ModeGuided::allows_arming(AP_Arming::Method method) const
     // optionally allow arming from the transmitter
     return option_is_enabled(Option::AllowArmingFromTX);
 };
+
+bool ModeGuided::geometric_position_control_active() const
+{
+    if (!option_is_enabled(Option::GeometricObserver) || !option_is_enabled(Option::GeometricMotorOutput)) {
+        return false;
+    }
+    if (!copter.geometric_control.output_enabled()) {
+        return false;
+    }
+    return !copter.geometric_motor_output_blocked_by_rate_thread();
+}
+
+bool ModeGuided::wp_destination_reached() const
+{
+    if (!geometric_position_control_active() || guided_mode != SubMode::WP || guided_is_terrain_alt) {
+        return wp_nav->reached_wp_destination();
+    }
+
+    const Vector2f curr_pos_ne_m = pos_control->get_pos_estimate_NED_m().xy().tofloat();
+    const Vector2f target_pos_ne_m = guided_pos_target_ned_m.xy().tofloat();
+    return get_horizontal_distance(curr_pos_ne_m, target_pos_ne_m) <= wp_nav->get_wp_radius_m();
+}
+
+void ModeGuided::restore_native_position_control_after_geometric()
+{
+    if (!guided_geometric_position_was_active) {
+        return;
+    }
+    pos_control->NE_init_controller();
+    pos_control->D_init_controller();
+    guided_geometric_position_was_active = false;
+}
 
 #if WEATHERVANE_ENABLED
 bool ModeGuided::allows_weathervaning() const
@@ -240,6 +274,20 @@ void ModeGuided::wp_control_run()
 
     // set motors to full range
     motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+    if (geometric_position_control_active() && !guided_is_terrain_alt) {
+        guided_geometric_position_was_active = true;
+        guided_vel_target_ned_ms.zero();
+        guided_accel_target_ned_mss.zero();
+        const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+        update_geometric_position_observer(&guided_pos_target_ned_m,
+                                           guided_vel_target_ned_ms,
+                                           guided_accel_target_ned_mss,
+                                           heading,
+                                           true);
+        return;
+    }
+    restore_native_position_control_after_geometric();
 
     // run waypoint controller
     copter.failsafe_terrain_set_status(wp_nav->update_wpnav());
@@ -396,6 +444,12 @@ bool ModeGuided::set_pos_NED_m(const Vector3p& pos_ned_m, bool use_yaw, float ya
         // set yaw state
         set_yaw_state_rad(use_yaw, yaw_rad, use_yaw_rate, yaw_rate_rads, relative_yaw);
 
+        guided_pos_target_ned_m = pos_ned_m;
+        guided_is_terrain_alt = is_terrain_alt;
+        guided_vel_target_ned_ms.zero();
+        guided_accel_target_ned_mss.zero();
+        update_time_ms = millis();
+
         // no need to check return status because terrain data is not used
         wp_nav->set_wp_destination_NED_m(pos_ned_m, is_terrain_alt);
 
@@ -485,6 +539,10 @@ bool ModeGuided::set_destination(const Location& dest_loc, bool use_yaw, float y
     }
 #endif
 
+    Vector3p pos_target_ned_m;
+    bool is_terrain_alt;
+    const bool have_pos_target = wp_nav->get_vector_NED_m(dest_loc, pos_target_ned_m, is_terrain_alt);
+
     // if using wpnav for position control
     if (use_wpnav_for_position_control()) {
         if (guided_mode != SubMode::WP) {
@@ -501,6 +559,14 @@ bool ModeGuided::set_destination(const Location& dest_loc, bool use_yaw, float y
         // set yaw state
         set_yaw_state_rad(use_yaw, yaw_rad, use_yaw_rate, yaw_rate_rads, relative_yaw);
 
+        if (have_pos_target) {
+            guided_pos_target_ned_m = pos_target_ned_m;
+            guided_is_terrain_alt = is_terrain_alt;
+            guided_vel_target_ned_ms.zero();
+            guided_accel_target_ned_mss.zero();
+            update_time_ms = millis();
+        }
+
 #if HAL_LOGGING_ENABLED
         // log target
         copter.Log_Write_Guided_Position_Target(guided_mode, Vector3p(dest_loc.lat, dest_loc.lng, dest_loc.alt), (dest_loc.get_alt_frame() == Location::AltFrame::ABOVE_TERRAIN), Vector3f(), Vector3f());
@@ -511,9 +577,7 @@ bool ModeGuided::set_destination(const Location& dest_loc, bool use_yaw, float y
     }
 
     // set position target and zero velocity and acceleration
-    Vector3p pos_target_ned_m;
-    bool is_terrain_alt;
-    if (!wp_nav->get_vector_NED_m(dest_loc, pos_target_ned_m, is_terrain_alt)) {
+    if (!have_pos_target) {
         return false;
     }
 
@@ -761,6 +825,25 @@ void ModeGuided::pos_control_run()
 
     // set motors to full range
     motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
+
+    if (geometric_position_control_active() && !guided_is_terrain_alt) {
+        guided_geometric_position_was_active = true;
+        guided_accel_target_ned_mss.zero();
+        guided_vel_target_ned_ms.zero();
+        if (millis() - update_time_ms > get_timeout_ms()) {
+            if ((auto_yaw.mode() == AutoYaw::Mode::RATE) || (auto_yaw.mode() == AutoYaw::Mode::ANGLE_RATE)) {
+                auto_yaw.set_mode(AutoYaw::Mode::HOLD);
+            }
+        }
+        const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+        update_geometric_position_observer(&guided_pos_target_ned_m,
+                                           guided_vel_target_ned_ms,
+                                           guided_accel_target_ned_mss,
+                                           heading,
+                                           true);
+        return;
+    }
+    restore_native_position_control_after_geometric();
 
     // send position and velocity targets to position controller
     guided_accel_target_ned_mss.zero();
@@ -1326,11 +1409,23 @@ void ModeGuided::update_geometric_position_observer(const Vector3p* position_tar
     geometric_target.accel_ned_mss = accel_target_ned_mss;
     geometric_target.build_attitude_from_position = true;
     geometric_target.shape_position_target = shape_position_target;
-    // Use ArduPilot's shaped yaw target after input_thrust_vector_heading()
-    // so the geometric R_c observer is compared against the same yaw state.
-    geometric_target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
-    geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
-    geometric_target.omega_body_rads.z = heading.yaw_rate_rads;
+    geometric_target.yaw_from_trajectory = shape_position_target &&
+                                           ((auto_yaw.mode() == AutoYaw::Mode::LOOK_AT_NEXT_WP) ||
+                                            (auto_yaw.mode() == AutoYaw::Mode::LOOK_AHEAD));
+    // Geometric yaw-follow must not read back AC_PosControl's native yaw
+    // target. When AutoYaw is in an automatic path-following mode, the
+    // setpoint shaper derives yaw from its own shaped velocity/acceleration.
+    if (geometric_target.yaw_from_trajectory) {
+        geometric_target.yaw_rad = ahrs.get_yaw_rad();
+        geometric_target.yaw_rate_rads = 0.0f;
+    } else if (heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only) {
+        geometric_target.yaw_rad = ahrs.get_yaw_rad();
+        geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
+    } else {
+        geometric_target.yaw_rad = heading.yaw_angle_rad;
+        geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
+    }
+    geometric_target.omega_body_rads.z = geometric_target.yaw_rate_rads;
 
     update_geometric_observer(geometric_target);
 }

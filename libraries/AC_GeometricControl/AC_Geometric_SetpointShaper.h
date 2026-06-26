@@ -20,7 +20,8 @@ private:
     void init_from_state(const AC_Geometric_State& state);
     void shape_xy(const Vector3f& goal_ned_m, float dt);
     void shape_z(float goal_z_ned_m, float dt);
-    void shape_yaw(float yaw_goal_rad, float dt);
+    void shape_yaw(float yaw_goal_rad, float yaw_rate_goal_rads, float dt);
+    void shape_yaw_from_trajectory(float dt);
 
     AC_Geometric_Setpoint_Shaper_Limits _limits;
     Vector3f _pos_ref_ned_m;

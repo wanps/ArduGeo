@@ -156,6 +156,48 @@ TEST(AC_Geometric_SetpointShaper, YawReferencePassesThroughWhenYawShaperDisabled
     EXPECT_NEAR(shaped_target.omega_body_rads.z, raw_target.omega_body_rads.z, 1.0e-6f);
 }
 
+TEST(AC_Geometric_SetpointShaper, TrajectoryYawUsesShapedVelocityDirection)
+{
+    AC_Geometric_SetpointShaper shaper;
+    AC_Geometric_Setpoint_Shaper_Limits limits = default_limits();
+    limits.yaw_enabled = false;
+    shaper.set_limits(limits);
+
+    const AC_Geometric_State state = state_at_origin();
+    AC_Geometric_Target raw_target = target_from_position(Vector3f{0.0f, 10.0f, 0.0f});
+    raw_target.yaw_rad = -1.0f;
+    raw_target.yaw_from_trajectory = true;
+    AC_Geometric_Target shaped_target {};
+
+    shaper.update(state, raw_target, 1.0f, shaped_target);
+
+    EXPECT_NEAR(shaped_target.velocity_ned_ms.y, 1.0f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.yaw_rad, 0.25f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.yaw_rate_rads, 0.5f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.omega_body_rads.z, 0.5f, 1.0e-6f);
+}
+
+TEST(AC_Geometric_SetpointShaper, TrajectoryYawHoldsLastReferenceAtLowSpeed)
+{
+    AC_Geometric_SetpointShaper shaper;
+    shaper.set_limits(default_limits());
+
+    AC_Geometric_State state = state_at_origin();
+    state.attitude_body_to_ned = attitude_from_yaw(0.7f);
+    state.omega_body_rads.z = 0.4f;
+    AC_Geometric_Target raw_target = target_from_position(Vector3f{0.0f, 0.0f, 0.0f});
+    raw_target.yaw_rad = -1.0f;
+    raw_target.yaw_from_trajectory = true;
+    AC_Geometric_Target shaped_target {};
+
+    shaper.update(state, raw_target, 1.0f, shaped_target);
+
+    EXPECT_NEAR(shaped_target.velocity_ned_ms.xy().length(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(wrap_PI(shaped_target.yaw_rad - 0.7f), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.yaw_rate_rads, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.omega_body_rads.z, 0.0f, 1.0e-6f);
+}
+
 TEST(AC_Geometric_SetpointShaper, ResetInitializesFromCurrentState)
 {
     AC_Geometric_SetpointShaper shaper;
