@@ -27,7 +27,7 @@ public:
     bool output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const;
 
     // Run the geometric position-to-attitude and attitude PD cascade.
-    // This currently computes internal outputs only; it does not write motors.
+    // This library only computes outputs; vehicle code decides whether to write motors.
     void update(const AC_Geometric_State& state,
                 const AC_Geometric_Target& target,
                 float dt);
