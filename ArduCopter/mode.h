@@ -1215,7 +1215,8 @@ private:
         DoNotStabilizePositionXY = (1U << 4),
         DoNotStabilizeVelocityXY = (1U << 5),
         WPNavUsedForPosControl = (1U << 6),
-        AllowWeatherVaning = (1U << 7)
+        AllowWeatherVaning = (1U << 7),
+        GeometricMotorOutput = (1U << 8)
     };
 
     // returns true if the Guided-mode-option is set (see GUID_OPTIONS)

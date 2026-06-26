@@ -22,6 +22,7 @@ public:
     // accidentally consume stale geometric commands.
     void set_enabled(bool enabled);
     bool enabled() const { return _enabled; }
+    bool output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const;
 
     // Run the geometric position-to-attitude and attitude PD cascade.
     // This currently computes internal outputs only; it does not write motors.
@@ -39,6 +40,7 @@ private:
     AC_Geometric_Attitude_PD _attitude_pd;
     AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_Output _output;
+    uint32_t _last_update_ms = 0;
 
     AP_Float _pos_kx_xy;
     AP_Float _pos_kx_z;

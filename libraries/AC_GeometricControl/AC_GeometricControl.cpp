@@ -1,5 +1,7 @@
 #include "AC_GeometricControl.h"
 
+#include <AP_HAL/AP_HAL.h>
+
 #define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f
 #define AC_GEOMETRIC_POS_KX_Z_DEFAULT 1.0f
 #define AC_GEOMETRIC_POS_KI_XY_DEFAULT 0.0f
@@ -158,6 +160,7 @@ void AC_GeometricControl::reset()
 {
     _position_pid.reset();
     _output = {};
+    _last_update_ms = 0;
 }
 
 void AC_GeometricControl::set_enabled(bool enabled)
@@ -166,6 +169,11 @@ void AC_GeometricControl::set_enabled(bool enabled)
         reset();
     }
     _enabled = enabled;
+}
+
+bool AC_GeometricControl::output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const
+{
+    return _last_update_ms != 0 && now_ms - _last_update_ms <= max_age_ms;
 }
 
 void AC_GeometricControl::update_gains_from_params()
@@ -210,4 +218,5 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         _mom_norm_z.get()
     };
     _output_mapper.update(_output.position, _output.attitude, _hover_throttle_norm.get(), moment_norm, _output.mapped);
+    _last_update_ms = AP_HAL::millis();
 }

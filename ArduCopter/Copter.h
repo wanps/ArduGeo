@@ -739,6 +739,8 @@ private:
     float get_pilot_speed_up_adjusted_ms() const;
     float get_pilot_speed_dn_adjusted_ms() const;
     void run_rate_controller_main();
+    bool geometric_motor_output_active() const;
+    void geometric_motor_output_to_motors();
 
     // if AP_INERTIALSENSOR_FAST_SAMPLE_WINDOW_ENABLED
     struct RateControllerRates {

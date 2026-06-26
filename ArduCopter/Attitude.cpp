@@ -1,5 +1,12 @@
 #include "Copter.h"
 
+namespace {
+
+constexpr uint32_t GUID_OPTIONS_GEOMETRIC_MOTOR_OUTPUT = (1U << 8);
+constexpr uint32_t GEOMETRIC_OUTPUT_MAX_AGE_MS = 100;
+
+}
+
 /*************************************************************
  *  Attitude Rate controllers and timing
  ****************************************************************/
@@ -16,11 +23,52 @@ void Copter::run_rate_controller_main()
 
     if (!using_rate_thread) {
         motors->set_dt_s(last_loop_time_s);
-        // only run the rate controller if we are not using the rate thread
-        attitude_control->rate_controller_run();
+        // Only one path should write roll/pitch/yaw/throttle to AP_Motors
+        // before motors_output_main() pushes the values to the HAL.
+        if (geometric_motor_output_active()) {
+            geometric_motor_output_to_motors();
+        } else {
+            // only run the rate controller if we are not using the rate thread
+            attitude_control->rate_controller_run();
+        }
     }
     // reset sysid and other temporary inputs
     attitude_control->rate_controller_target_reset();
+}
+
+bool Copter::geometric_motor_output_active() const
+{
+    if (flightmode == nullptr || flightmode->mode_number() != Mode::Number::GUIDED) {
+        return false;
+    }
+    if ((uint32_t(g2.guided_options.get()) & GUID_OPTIONS_GEOMETRIC_MOTOR_OUTPUT) == 0) {
+        return false;
+    }
+    if (!motors->armed()) {
+        return false;
+    }
+    if (!geometric_control.enabled()) {
+        return false;
+    }
+    if (!geometric_control.output_is_fresh(millis(), GEOMETRIC_OUTPUT_MAX_AGE_MS)) {
+        return false;
+    }
+
+    return true;
+}
+
+void Copter::geometric_motor_output_to_motors()
+{
+    const AC_Geometric_Mapped_Output& mapped = geometric_control.get_output().mapped;
+
+    motors->set_roll(mapped.rpy_norm.x);
+    motors->set_roll_ff(0.0f);
+    motors->set_pitch(mapped.rpy_norm.y);
+    motors->set_pitch_ff(0.0f);
+    motors->set_yaw(mapped.rpy_norm.z);
+    motors->set_yaw_ff(0.0f);
+    motors->set_throttle(mapped.throttle_norm);
+    motors->set_throttle_avg_max(mapped.throttle_norm);
 }
 
 /*************************************************************
