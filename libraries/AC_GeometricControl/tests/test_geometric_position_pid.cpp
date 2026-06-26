@@ -142,6 +142,61 @@ TEST(AC_Geometric_Position_PID, YawDoesNotChangeRcThrustDirection)
     EXPECT_NEAR(yaw_rad, target.yaw_rad, 2.0e-3f);
 }
 
+TEST(AC_Geometric_Position_PID, PositionGeneratedRcProducesBodyRateFeedForward)
+{
+    AC_Geometric_Position_PID controller;
+    AC_Geometric_Position_Gains gains {};
+    gains.p = Vector3f{1.0f, 1.0f, 1.0f};
+    controller.set_gains(gains);
+
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Output output {};
+    controller.update(state, target, 0.1f, output);
+
+    target.yaw_rad = 0.1f;
+    controller.update(state, target, 0.1f, output);
+
+    EXPECT_NEAR(output.omega_body_rads.x, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.y, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.z, 1.0f, 2.0e-3f);
+}
+
+TEST(AC_Geometric_Position_PID, OptionalOmegaTargetFiltersSmoothRcDifferentiation)
+{
+    AC_Geometric_Position_PID controller;
+
+    AC_Geometric_Position_Gains gains {};
+    gains.p = Vector3f{1.0f, 1.0f, 1.0f};
+    controller.set_gains(gains);
+
+    AC_Geometric_Position_Filter_Hz filter_hz {};
+    filter_hz.omega_c = 1.0f;
+    filter_hz.omega_dot_c = 1.0f;
+    controller.set_filter_hz(filter_hz);
+
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Output output {};
+    controller.update(state, target, 0.1f, output);
+
+    target.yaw_rad = 0.1f;
+    controller.update(state, target, 0.1f, output);
+
+    EXPECT_GT(output.omega_body_rads.z, 0.0f);
+    EXPECT_LT(output.omega_body_rads.z, 1.0f);
+    EXPECT_GT(output.omega_dot_body_radss.z, 0.0f);
+    EXPECT_LT(output.omega_dot_body_radss.z, 10.0f);
+}
+
 TEST(AC_Geometric_Position_PID, OptionalErrorFiltersSmoothStateErrorSteps)
 {
     AC_Geometric_Position_PID controller;
@@ -183,6 +238,66 @@ TEST(AC_Geometric_Position_PID, OptionalErrorFiltersSmoothStateErrorSteps)
     EXPECT_NEAR(output.specific_force_ned_mss.y,
                 -output.position_error_m.y - output.velocity_error_ms.y,
                 1.0e-6f);
+}
+
+TEST(AC_Geometric_Position_PID, IntegralStateIsConstrainedByImax)
+{
+    AC_Geometric_Position_PID controller;
+    AC_Geometric_Position_Gains gains {};
+    gains.i = Vector3f{1.0f, 1.0f, 1.0f};
+    gains.integral_error_p = Vector3f{1.0f, 1.0f, 1.0f};
+    controller.set_gains(gains);
+
+    AC_Geometric_Position_Integral_Limits integral_limits {};
+    integral_limits.integral_error_m = Vector3f{0.5f, 0.25f, 0.125f};
+    controller.set_integral_limits(integral_limits);
+
+    AC_Geometric_State state {};
+    state.position_ned_m = Vector3f{10.0f, -10.0f, 10.0f};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Output output {};
+    for (uint8_t i = 0; i < 10; i++) {
+        controller.update(state, target, 1.0f, output);
+    }
+
+    EXPECT_NEAR(output.specific_force_ned_mss.x, -0.5f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.y, 0.25f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.z, -GRAVITY_MSS - 0.125f, 1.0e-5f);
+}
+
+TEST(AC_Geometric_Position_PID, IntegralStateUsesVelocityPlusPositionWeight)
+{
+    AC_Geometric_Position_PID controller;
+    AC_Geometric_Position_Gains gains {};
+    gains.i = Vector3f{1.0f, 1.0f, 1.0f};
+    gains.integral_error_p = Vector3f{0.5f, 0.5f, 0.5f};
+    controller.set_gains(gains);
+
+    AC_Geometric_Position_Integral_Limits integral_limits {};
+    integral_limits.integral_error_m = Vector3f{10.0f, 10.0f, 10.0f};
+    controller.set_integral_limits(integral_limits);
+
+    AC_Geometric_State state {};
+    state.position_ned_m = Vector3f{2.0f, -4.0f, 6.0f};
+    state.velocity_ned_ms = Vector3f{1.0f, 2.0f, -3.0f};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Output output {};
+    controller.update(state, target, 1.0f, output);
+
+    EXPECT_NEAR(output.integral_error_m.x, 2.0f, 1.0e-6f);
+    EXPECT_NEAR(output.integral_error_m.y, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.integral_error_m.z, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.x, -2.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.y, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.z, -GRAVITY_MSS, 1.0e-5f);
 }
 
 AP_GTEST_MAIN()

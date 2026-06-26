@@ -425,6 +425,9 @@ public:
     // Returns target NED acceleration in m/s².
     const Vector3f& get_accel_target_NED_mss() const { return _accel_target_ned_mss; }
 
+    // Returns desired NED acceleration feed-forward in m/s².
+    const Vector3f& get_accel_desired_NED_mss() const { return _accel_desired_ned_mss; }
+
 
     /// Terrain
 

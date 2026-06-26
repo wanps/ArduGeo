@@ -15884,6 +15884,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
     def GeometricGuidedPositionObserver(self):
         '''test Guided geometric position observer logging'''
         self.set_parameter('GUID_OPTIONS', 2)
+        self.set_parameter('GEO_SHAPE_EN', 0)
         self.set_parameter('GEO_POS_KX_XY', 1.0)
         self.set_parameter('GEO_POS_KV_XY', 2.0)
         self.set_parameter('GEO_ATT_KR_X', 4.0)
@@ -15920,7 +15921,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                         raise NotAchievedException("GEOP.%s is not finite" % field)
             if m.get_type() == "GEOA":
                 geoa_msgs.append(m)
-                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz", "EIx", "EIy", "EIz"):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite" % field)
@@ -16041,6 +16042,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 0,
+            'GEO_SHAPE_EN': 0,
         })
         self.takeoff(alt_min=10, mode='GUIDED')
         self.send_position_target_local_ned(0, 0, 10)
@@ -16103,6 +16105,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 0,
         })
         self.takeoff(alt_min=10, mode='GUIDED')
         self.send_position_target_local_ned(0, 0, 10)
@@ -16192,6 +16195,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 0,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -16321,6 +16325,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_VEL_FLTE': 5.0,
             'GEO_OMG_FLTE': 20.0,
             'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 0,
             'SIM_GYR1_RND': 5,
             'SIM_ACC1_RND': 1,
             'SIM_GPS1_NOISE': 0.3,
@@ -16395,7 +16400,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                         raise NotAchievedException("GEOP.%s is not finite during filtered-noise test" % field)
             if msg_type == "GEOA":
                 geoa_msgs.append(m)
-                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz", "EIx", "EIy", "EIz"):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite during filtered-noise test" % field)
@@ -16476,6 +16481,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 0,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -16565,7 +16571,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                         raise NotAchievedException("GEOP.%s is not finite during active position step" % field)
             if msg_type == "GEOA":
                 geoa_msgs.append(m)
-                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz", "EIx", "EIy", "EIz"):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite during active position step" % field)
@@ -16665,6 +16671,219 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedMotorOutputPositionStepShaper(self):
+        '''test Guided geometric motor-output hook with the setpoint shaper enabled'''
+        self.set_parameters({
+            'GUID_OPTIONS': 2,
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_HOV_THR': 0.5,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 1,
+            'GEO_SHAPE_VXY': 1.0,
+            'GEO_SHAPE_AXY': 0.5,
+            'GEO_SHAPE_VUP': 1.0,
+            'GEO_SHAPE_VDN': 1.0,
+            'GEO_SHAPE_AZ': 0.5,
+            'GEO_SHAPE_YRAT': 1.0,
+            'GEO_SHAPE_YACC': 1.0,
+        })
+        self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
+        self.context_set_message_rate_hz('ATTITUDE', 10)
+        self.takeoff(alt_min=10, mode='GUIDED')
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(2, reason="geometric controller to settle before shaped active position step")
+        self.drain_mav()
+
+        target_x = 8.0
+        target_y = 0.0
+        target_z_up = 10.0
+        positions = []
+        attitudes = []
+        step_start_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 258)
+        self.send_position_target_local_ned(target_x, target_y, target_z_up)
+        try:
+            active_start_time = self.get_sim_time()
+            while self.get_sim_time_cached() - active_start_time < 7:
+                m = self.mav.recv_match(type=["LOCAL_POSITION_NED", "ATTITUDE"], blocking=True, timeout=1)
+                if m is None:
+                    raise NotAchievedException("Did not receive shaped position-step stability messages")
+                if m.get_type() == "LOCAL_POSITION_NED":
+                    positions.append(m)
+                if m.get_type() == "ATTITUDE":
+                    attitudes.append(m)
+        finally:
+            step_end_us = int(self.get_sim_time() * 1000000)
+            self.set_parameter('GUID_OPTIONS', 2)
+
+        if len(positions) < 5:
+            raise NotAchievedException("Not enough LOCAL_POSITION_NED samples during shaped position step")
+        if len(attitudes) < 5:
+            raise NotAchievedException("Not enough ATTITUDE samples during shaped position step")
+
+        start_position = positions[0]
+        start_distance = math.hypot(target_x - start_position.x, target_y - start_position.y)
+        final_position = positions[-1]
+        final_distance = math.hypot(target_x - final_position.x, target_y - final_position.y)
+        max_x_progress = max(m.x - start_position.x for m in positions)
+        max_lateral_drift = max(abs(m.y - start_position.y) for m in positions)
+        max_vertical_drift = max(abs(m.z - start_position.z) for m in positions)
+        max_roll = max(abs(m.roll) for m in attitudes)
+        max_pitch = max(abs(m.pitch) for m in attitudes)
+        self.progress("Geometric shaped position step samples position=%u attitude=%u x progress=%fm distance %f->%f lateral drift=%fm vertical drift=%fm roll=%fdeg pitch=%fdeg" %
+                      (len(positions),
+                       len(attitudes),
+                       max_x_progress,
+                       start_distance,
+                       final_distance,
+                       max_lateral_drift,
+                       max_vertical_drift,
+                       math.degrees(max_roll),
+                       math.degrees(max_pitch)))
+
+        if max_x_progress < 0.5:
+            raise NotAchievedException("Geometric shaped position step did not move toward +X target")
+        if final_distance > start_distance - 0.25:
+            raise NotAchievedException("Geometric shaped position step did not reduce horizontal target distance")
+        if max_lateral_drift > 4.0:
+            raise NotAchievedException("Geometric shaped position step lateral drift is too large")
+        if max_vertical_drift > 4.0:
+            raise NotAchievedException("Geometric shaped position step vertical drift is too large")
+        if max(max_roll, max_pitch) > math.radians(30):
+            raise NotAchievedException("Geometric shaped position step tilt is too large")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geop_msgs = []
+        geoa_msgs = []
+        geom_msgs = []
+        geox_msgs = []
+        while True:
+            m = dfreader.recv_match(type=["GEOP", "GEOA", "GEOM", "GEOX"])
+            if m is None:
+                break
+            if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
+            msg_type = m.get_type()
+            if msg_type == "GEOP":
+                geop_msgs.append(m)
+                for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr", "RCr", "RCp"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOP.%s is not finite during shaped position step" % field)
+            if msg_type == "GEOA":
+                geoa_msgs.append(m)
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz", "EIx", "EIy", "EIz"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOA.%s is not finite during shaped position step" % field)
+            if msg_type == "GEOM":
+                geom_msgs.append(m)
+                for field in ("RRaw", "PRaw", "YRaw", "Roll", "Pitch", "Yaw"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOM.%s is not finite during shaped position step" % field)
+            if msg_type == "GEOX":
+                geox_msgs.append(m)
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOX.%s is not finite during shaped position step" % field)
+
+        if len(geop_msgs) == 0:
+            raise NotAchievedException("GEOP log message not found during shaped position step")
+        if len(geoa_msgs) == 0:
+            raise NotAchievedException("GEOA log message not found during shaped position step")
+        if len(geom_msgs) == 0:
+            raise NotAchievedException("GEOM log message not found during shaped position step")
+        if len(geox_msgs) == 0:
+            raise NotAchievedException("GEOX log message not found during shaped position step")
+
+        min_position_error_x = min(m.PEx for m in geop_msgs)
+        max_specific_force_x = max(m.SFx for m in geop_msgs)
+        max_rc_tilt = max(math.hypot(m.RCr, m.RCp) for m in geop_msgs)
+        max_moment_xy = max(math.hypot(m.Mx, m.My) for m in geoa_msgs)
+        max_actuator_rp = max(math.hypot(m.Roll, m.Pitch) for m in geom_msgs)
+        max_actuator_raw_rp = max(math.hypot(m.RRaw, m.PRaw) for m in geom_msgs)
+        self.progress("Geometric shaped position step logs GEOP=%u GEOA=%u GEOM=%u GEOX=%u PEx min=%f SFx max=%f Rc tilt=%f moment_xy=%f actuator_rp=%f raw_rp=%f" %
+                      (len(geop_msgs),
+                       len(geoa_msgs),
+                       len(geom_msgs),
+                       len(geox_msgs),
+                       min_position_error_x,
+                       max_specific_force_x,
+                       max_rc_tilt,
+                       max_moment_xy,
+                       max_actuator_rp,
+                       max_actuator_raw_rp))
+
+        if min_position_error_x < -3.0:
+            raise NotAchievedException("GEOP shaped position error is too large for the configured shaper")
+        if max_specific_force_x < 0.1:
+            raise NotAchievedException("GEOP shaped specific force did not accelerate toward +X target")
+        if max_specific_force_x > 4.0:
+            raise NotAchievedException("GEOP shaped specific force is too large for the configured shaper")
+        if max_rc_tilt < 0.001:
+            raise NotAchievedException("GEOP shaped R_c did not tilt during active position step")
+        if max_rc_tilt > 0.4:
+            raise NotAchievedException("GEOP shaped R_c tilt is too large for the configured shaper")
+        if max_moment_xy < 0.001:
+            raise NotAchievedException("GEOA moment did not respond during shaped position step")
+        if max_actuator_rp < 0.0001:
+            raise NotAchievedException("GEOM roll/pitch actuator output did not respond during shaped position step")
+        if max_actuator_raw_rp < 0.0001:
+            raise NotAchievedException("GEOM raw roll/pitch actuator output did not respond during shaped position step")
+
+        allowed_msgs = [m for m in geox_msgs if m.Allow]
+        if len(allowed_msgs) == 0:
+            raise NotAchievedException("GEOX did not allow geometric motor output during shaped position step")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric motor output during shaped position step")
+        rate_thread_msgs = [m for m in allowed_msgs if m.RT]
+        if len(rate_thread_msgs) != 0:
+            raise NotAchievedException("GEOX shows rate-thread active during shaped position step")
+        written_msgs = [m for m in allowed_msgs if m.Wrote]
+        if len(written_msgs) == 0:
+            raise NotAchievedException("GEOX did not write geometric motor output during shaped position step")
+
+        min_geometric_age_ms = min(m.GAge for m in allowed_msgs)
+        min_motor_output_age_ms = min(m.WAge for m in written_msgs)
+        min_actuator = min(min(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        max_actuator = max(max(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        min_throttle = min(m.Thr for m in allowed_msgs)
+        max_throttle = max(m.Thr for m in allowed_msgs)
+        limited_count = sum(1 for m in allowed_msgs if m.RLim or m.TLim)
+        self.progress("GEOX shaped position step age min geo=%u motor=%u actuator min=%f max=%f throttle min=%f max=%f limited=%u/%u" %
+                      (min_geometric_age_ms,
+                       min_motor_output_age_ms,
+                       min_actuator,
+                       max_actuator,
+                       min_throttle,
+                       max_throttle,
+                       limited_count,
+                       len(allowed_msgs)))
+
+        if min_geometric_age_ms > 100:
+            raise NotAchievedException("GEOX geometric output was stale during shaped position step")
+        if min_motor_output_age_ms > 100:
+            raise NotAchievedException("GEOX motor-output write was stale during shaped position step")
+        if min_actuator < -1.0 or max_actuator > 1.0:
+            raise NotAchievedException("GEOX actuator output is outside -1..1 during shaped position step")
+        if min_throttle < 0.0 or max_throttle > 1.0:
+            raise NotAchievedException("GEOX throttle output is outside 0..1 during shaped position step")
+        if limited_count > len(allowed_msgs) / 2:
+            raise NotAchievedException("GEOX motor-output hook was limited for most shaped position-step samples")
+
+        self.do_RTL()
+
     def GeometricGuidedMotorOutputYawStep(self):
         '''test Guided geometric motor-output hook during a yaw target step'''
         def wrap_pi(angle_rad):
@@ -16685,6 +16904,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 0,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -16768,7 +16988,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             msg_type = m.get_type()
             if msg_type == "GEOA":
                 geoa_msgs.append(m)
-                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz", "EIx", "EIy", "EIz"):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite during active yaw step" % field)
@@ -16898,6 +17118,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 0,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -17002,7 +17223,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                         raise NotAchievedException("GEOP.%s is not finite during active position+yaw step" % field)
             if msg_type == "GEOA":
                 geoa_msgs.append(m)
-                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz"):
+                for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz", "Mx", "My", "Mz", "EIx", "EIy", "EIz"):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite during active position+yaw step" % field)
@@ -17234,6 +17455,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
             'GEO_OUT_EN': 0,
+            'GEO_SHAPE_EN': 0,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -19333,6 +19555,7 @@ return update, 1000
             self.GeometricGuidedMotorOutputHover,
             self.GeometricGuidedMotorOutputFilteredNoise,
             self.GeometricGuidedMotorOutputPositionStep,
+            self.GeometricGuidedMotorOutputPositionStepShaper,
             self.GeometricGuidedMotorOutputYawStep,
             self.GeometricGuidedMotorOutputPositionYawStep,
             self.GeometricGuidedMotorOutputSwitching,

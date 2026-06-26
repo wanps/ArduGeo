@@ -1179,7 +1179,8 @@ public:
     void update_geometric_position_observer(const Vector3p* position_target_ned_m,
                                             const Vector3f& velocity_target_ned_ms,
                                             const Vector3f& accel_target_ned_mss,
-                                            const AC_AttitudeControl::HeadingCommand& heading);
+                                            const AC_AttitudeControl::HeadingCommand& heading,
+                                            bool shape_position_target = true);
 
     // return guided mode timeout in milliseconds. Only used for velocity, acceleration, angle control, and angular rate control
     uint32_t get_timeout_ms() const;

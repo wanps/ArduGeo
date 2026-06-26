@@ -12,6 +12,9 @@ public:
     void set_filter_hz(const AC_Geometric_Position_Filter_Hz& filter_hz) { _filter_hz = filter_hz; }
     const AC_Geometric_Position_Filter_Hz& get_filter_hz() const { return _filter_hz; }
 
+    void set_integral_limits(const AC_Geometric_Position_Integral_Limits& integral_limits) { _integral_limits = integral_limits; }
+    const AC_Geometric_Position_Integral_Limits& get_integral_limits() const { return _integral_limits; }
+
     void reset();
 
     void update(const AC_Geometric_State& state,
@@ -22,8 +25,13 @@ public:
 private:
     AC_Geometric_Position_Gains _gains;
     AC_Geometric_Position_Filter_Hz _filter_hz;
-    Vector3f _position_error_integral_m;
+    AC_Geometric_Position_Integral_Limits _integral_limits;
+    Vector3f _integral_error_m;
     Vector3f _position_error_filtered_m;
     Vector3f _velocity_error_filtered_ms;
+    Quaternion _last_attitude_target_body_to_ned;
+    Vector3f _omega_c_filtered_rads;
+    Vector3f _omega_dot_c_filtered_radss;
     bool _filter_reset = true;
+    bool _attitude_target_reset = true;
 };

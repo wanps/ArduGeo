@@ -16,6 +16,19 @@ Vector3f apply_optional_lowpass(const Vector3f& input,
     return filtered;
 }
 
+void constrain_integral(Vector3f& integral, const Vector3f& limits)
+{
+    const Vector3f safe_limits {
+        MAX(fabsf(limits.x), 0.0f),
+        MAX(fabsf(limits.y), 0.0f),
+        MAX(fabsf(limits.z), 0.0f)
+    };
+
+    integral.x = constrain_float(integral.x, -safe_limits.x, safe_limits.x);
+    integral.y = constrain_float(integral.y, -safe_limits.y, safe_limits.y);
+    integral.z = constrain_float(integral.z, -safe_limits.z, safe_limits.z);
+}
+
 // Build a body-to-NED commanded attitude R_c from an ArduPilot-style thrust
 // vector expressed in NED and a yaw angle about NED +Z. In NED, hover thrust
 // points upward, so the level reference thrust direction is {0, 0, -1}.
@@ -46,14 +59,42 @@ Quaternion attitude_from_thrust_vector(Vector3f thrust_vector, float yaw_rad)
     return thrust_vec_quat * yaw_quat;
 }
 
+// Estimate desired body-frame angular velocity from the change in commanded
+// body-to-NED attitude. For body-to-inertial R, R_prev^T * R_curr is the small
+// body-frame rotation over dt.
+Vector3f attitude_delta_to_body_rate(const Quaternion& last_attitude_body_to_ned,
+                                     const Quaternion& attitude_body_to_ned,
+                                     float dt)
+{
+    if (!is_positive(dt)) {
+        return Vector3f{};
+    }
+
+    Matrix3f last_attitude;
+    Matrix3f attitude;
+    last_attitude_body_to_ned.rotation_matrix(last_attitude);
+    attitude_body_to_ned.rotation_matrix(attitude);
+
+    const Matrix3f attitude_delta = last_attitude.transposed() * attitude;
+    const Vector3f delta_vee {
+        attitude_delta.c.y - attitude_delta.b.z,
+        attitude_delta.a.z - attitude_delta.c.x,
+        attitude_delta.b.x - attitude_delta.a.y
+    };
+    return delta_vee * (0.5f / dt);
+}
+
 }
 
 void AC_Geometric_Position_PID::reset()
 {
-    _position_error_integral_m.zero();
+    _integral_error_m.zero();
     _position_error_filtered_m.zero();
     _velocity_error_filtered_ms.zero();
+    _omega_c_filtered_rads.zero();
+    _omega_dot_c_filtered_radss.zero();
     _filter_reset = true;
+    _attitude_target_reset = true;
 }
 
 void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
@@ -82,17 +123,24 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     output.position_error_m = _position_error_filtered_m;
     output.velocity_error_ms = _velocity_error_filtered_ms;
 
+    const Vector3f integral_input {
+        output.velocity_error_ms.x + _gains.integral_error_p.x * output.position_error_m.x,
+        output.velocity_error_ms.y + _gains.integral_error_p.y * output.position_error_m.y,
+        output.velocity_error_ms.z + _gains.integral_error_p.z * output.position_error_m.z
+    };
     if (is_positive(dt)) {
-        _position_error_integral_m += output.position_error_m * dt;
+        _integral_error_m += integral_input * dt;
     }
+    constrain_integral(_integral_error_m, _integral_limits.integral_error_m);
+    output.integral_error_m = _integral_error_m;
 
-    // Placeholder translational PID. This will later be replaced by the full
-    // SE(3) construction of resultant force direction, collective thrust and R_c.
+    // Lee/Gao geometric PID position channel. The integral state follows the
+    // geometric PID form e_XI = integral(e_v + c_x * e_x).
     // Lee writes the resultant command as A; Gao uses F_d.
     Vector3f accel_cmd_ned = target.accel_ned_mss;
-    accel_cmd_ned.x += -_gains.p.x * output.position_error_m.x - _gains.d.x * output.velocity_error_ms.x - _gains.i.x * _position_error_integral_m.x;
-    accel_cmd_ned.y += -_gains.p.y * output.position_error_m.y - _gains.d.y * output.velocity_error_ms.y - _gains.i.y * _position_error_integral_m.y;
-    accel_cmd_ned.z += -_gains.p.z * output.position_error_m.z - _gains.d.z * output.velocity_error_ms.z - _gains.i.z * _position_error_integral_m.z;
+    accel_cmd_ned.x += -_gains.p.x * output.position_error_m.x - _gains.d.x * output.velocity_error_ms.x - _gains.i.x * output.integral_error_m.x;
+    accel_cmd_ned.y += -_gains.p.y * output.position_error_m.y - _gains.d.y * output.velocity_error_ms.y - _gains.i.y * output.integral_error_m.y;
+    accel_cmd_ned.z += -_gains.p.z * output.position_error_m.z - _gains.d.z * output.velocity_error_ms.z - _gains.i.z * output.integral_error_m.z;
 
     output.specific_force_ned_mss = accel_cmd_ned;
     output.specific_force_ned_mss.z -= GRAVITY_MSS;
@@ -101,15 +149,39 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
 
     if (target.build_attitude_from_position) {
         output.attitude_body_to_ned = attitude_from_thrust_vector(output.thrust_vector_ned, target.yaw_rad);
-        output.omega_body_rads = target.omega_body_rads;
-        output.omega_body_rads.z = target.yaw_rate_rads;
-        output.omega_dot_body_radss.zero();
+        Vector3f fallback_omega_body_rads = target.omega_body_rads;
+        fallback_omega_body_rads.z = target.yaw_rate_rads;
+        if (_attitude_target_reset) {
+            _omega_c_filtered_rads = fallback_omega_body_rads;
+            _omega_dot_c_filtered_radss.zero();
+            output.omega_body_rads = _omega_c_filtered_rads;
+            output.omega_dot_body_radss = _omega_dot_c_filtered_radss;
+            _attitude_target_reset = false;
+        } else {
+            const Vector3f omega_c_raw_rads = attitude_delta_to_body_rate(_last_attitude_target_body_to_ned,
+                                                                          output.attitude_body_to_ned,
+                                                                          dt);
+            const Vector3f omega_c_previous_rads = _omega_c_filtered_rads;
+            output.omega_body_rads = apply_optional_lowpass(omega_c_raw_rads,
+                                                            _filter_hz.omega_c,
+                                                            dt,
+                                                            _omega_c_filtered_rads);
+            const Vector3f omega_dot_c_raw_radss = is_positive(dt) ? (output.omega_body_rads - omega_c_previous_rads) / dt : Vector3f{};
+            output.omega_dot_body_radss = apply_optional_lowpass(omega_dot_c_raw_radss,
+                                                                 _filter_hz.omega_dot_c,
+                                                                 dt,
+                                                                 _omega_dot_c_filtered_radss);
+        }
+        _last_attitude_target_body_to_ned = output.attitude_body_to_ned;
     } else {
         // Direct SO(3) observer mode: pass through the supplied attitude target
         // so Guided angle tests observe ArduPilot's shaped attitude target.
         output.attitude_body_to_ned = target.attitude_body_to_ned;
         output.omega_body_rads = target.omega_body_rads;
         output.omega_dot_body_radss = target.omega_dot_body_radss;
+        _omega_c_filtered_rads.zero();
+        _omega_dot_c_filtered_radss.zero();
+        _attitude_target_reset = true;
     }
 
     Matrix3f attitude;

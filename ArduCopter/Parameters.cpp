@@ -30,6 +30,10 @@
 #define DEFAULT_FRAME_CLASS 0
 #endif
 
+// This development branch treats Guided geometric control as the default
+// controller: bit 1 enables the observer and bit 8 allows motor output.
+#define GUID_OPTIONS_GEOMETRIC_DEFAULT ((1U << 1) | (1U << 8))
+
 const AP_Param::Info Copter::var_info[] = {
     // @Param: FORMAT_VERSION
     // @DisplayName: Eeprom format version number
@@ -826,10 +830,10 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
 #if MODE_GUIDED_ENABLED
     // @Param: GUID_OPTIONS
     // @DisplayName: Guided mode options
-    // @Description: Options that can be applied to change guided mode behaviour
+    // @Description: Options that can be applied to change guided mode behaviour. This geometric-control branch defaults to enabling the geometric observer and geometric motor output.
     // @Bitmask: 0:Allow Arming from Transmitter,1:Geometric observer,2:Ignore pilot yaw,3:SetAttitudeTarget interprets Thrust As Thrust,4:Do not stabilize PositionXY,5:Do not stabilize VelocityXY,6:Waypoint navigation used for position targets,7:Allow weathervaning,8:Geometric motor output
     // @User: Advanced
-    AP_GROUPINFO("GUID_OPTIONS", 41, ParametersG2, guided_options, 0),
+    AP_GROUPINFO("GUID_OPTIONS", 41, ParametersG2, guided_options, GUID_OPTIONS_GEOMETRIC_DEFAULT),
 #endif
 
     // @Param: FS_GCS_TIMEOUT
