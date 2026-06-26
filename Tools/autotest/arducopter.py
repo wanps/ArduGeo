@@ -16981,6 +16981,172 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedMotorOutputSwitching(self):
+        '''test in-flight switching between Guided and geometric motor-output paths'''
+        def collect_window(label, duration_s):
+            positions = []
+            attitudes = []
+            start_us = int(self.get_sim_time() * 1000000)
+            start_time = self.get_sim_time()
+            while self.get_sim_time_cached() - start_time < duration_s:
+                m = self.mav.recv_match(type=["LOCAL_POSITION_NED", "ATTITUDE"], blocking=True, timeout=1)
+                if m is None:
+                    raise NotAchievedException("Did not receive %s switching stability messages" % label)
+                if m.get_type() == "LOCAL_POSITION_NED":
+                    positions.append(m)
+                if m.get_type() == "ATTITUDE":
+                    attitudes.append(m)
+            end_us = int(self.get_sim_time() * 1000000)
+            if len(positions) < 3:
+                raise NotAchievedException("Not enough LOCAL_POSITION_NED samples during %s switching window" % label)
+            if len(attitudes) < 3:
+                raise NotAchievedException("Not enough ATTITUDE samples during %s switching window" % label)
+            return (start_us, end_us, positions, attitudes)
+
+        def check_geox_window(label, messages, expect_allow, expect_output_enabled, expect_written):
+            if len(messages) == 0:
+                raise NotAchievedException("GEOX log message not found during %s switching window" % label)
+            for m in messages:
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    value = getattr(m, field)
+                    if not math.isfinite(value):
+                        raise NotAchievedException("GEOX.%s is not finite during %s switching window" % (field, label))
+            allowed_msgs = [m for m in messages if m.Allow]
+            output_enabled_msgs = [m for m in messages if m.OEn]
+            rate_thread_msgs = [m for m in messages if m.RT]
+            written_msgs = [m for m in messages if m.Wrote]
+            if expect_allow and len(allowed_msgs) == 0:
+                raise NotAchievedException("GEOX did not show GUID_OPTIONS allowing geometric output during %s" % label)
+            if not expect_allow and len(allowed_msgs) != 0:
+                raise NotAchievedException("GEOX showed GUID_OPTIONS allowing geometric output during %s" % label)
+            if expect_output_enabled and len(output_enabled_msgs) == 0:
+                raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric output during %s" % label)
+            if not expect_output_enabled and len(output_enabled_msgs) != 0:
+                raise NotAchievedException("GEOX showed GEO_OUT_EN allowing geometric output during %s" % label)
+            if len(rate_thread_msgs) != 0:
+                raise NotAchievedException("GEOX shows rate-thread active during %s switching window" % label)
+            if expect_written and len(written_msgs) == 0:
+                raise NotAchievedException("GEOX did not show geometric AP_Motors writes during %s" % label)
+            if not expect_written and len(written_msgs) != 0:
+                raise NotAchievedException("GEOX showed geometric AP_Motors writes during %s" % label)
+
+            min_geometric_age_ms = min(m.GAge for m in messages)
+            min_motor_output_age_ms = min(m.WAge for m in messages)
+            min_actuator = min(min(m.Roll, m.Pitch, m.Yaw) for m in messages)
+            max_actuator = max(max(m.Roll, m.Pitch, m.Yaw) for m in messages)
+            min_throttle = min(m.Thr for m in messages)
+            max_throttle = max(m.Thr for m in messages)
+            limited_count = sum(1 for m in messages if m.RLim or m.TLim)
+            self.progress("GEOX switching %s samples=%u allow=%u oen=%u wrote=%u age min geo=%u motor=%u actuator min=%f max=%f throttle min=%f max=%f limited=%u/%u" %
+                          (label,
+                           len(messages),
+                           len(allowed_msgs),
+                           len(output_enabled_msgs),
+                           len(written_msgs),
+                           min_geometric_age_ms,
+                           min_motor_output_age_ms,
+                           min_actuator,
+                           max_actuator,
+                           min_throttle,
+                           max_throttle,
+                           limited_count,
+                           len(messages)))
+
+            if expect_written and min_geometric_age_ms > 100:
+                raise NotAchievedException("GEOX geometric output was stale during %s switching window" % label)
+            if expect_written and min(m.WAge for m in written_msgs) > 100:
+                raise NotAchievedException("GEOX motor-output write was stale during %s switching window" % label)
+            if min_actuator < -1.0 or max_actuator > 1.0:
+                raise NotAchievedException("GEOX actuator output is outside -1..1 during %s switching window" % label)
+            if min_throttle < 0.0 or max_throttle > 1.0:
+                raise NotAchievedException("GEOX throttle output is outside 0..1 during %s switching window" % label)
+            if limited_count > len(messages) / 2:
+                raise NotAchievedException("GEOX motor-output hook was limited for most %s switching samples" % label)
+
+        self.set_parameters({
+            'GUID_OPTIONS': 2,
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_HOV_THR': 0.5,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 0,
+        })
+        self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
+        self.context_set_message_rate_hz('ATTITUDE', 10)
+        self.takeoff(alt_min=10, mode='GUIDED')
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(2, reason="Guided controller to settle before geometric switching test")
+        self.drain_mav()
+
+        official_window = collect_window("official-before", 1.0)
+
+        self.set_parameter('GEO_OUT_EN', 1)
+        self.set_parameter('GUID_OPTIONS', 258)
+        first_geometric_window = collect_window("geometric-first", 1.2)
+
+        self.set_parameter('GUID_OPTIONS', 2)
+        self.delay_sim_time(0.5, reason="geometric write age to expire before returning to Guided path")
+        official_return_window = collect_window("official-return", 1.0)
+
+        self.set_parameter('GUID_OPTIONS', 258)
+        second_geometric_window = collect_window("geometric-second", 1.2)
+        self.set_parameter('GUID_OPTIONS', 2)
+
+        windows = {
+            "official-before": official_window,
+            "geometric-first": first_geometric_window,
+            "official-return": official_return_window,
+            "geometric-second": second_geometric_window,
+        }
+        all_positions = []
+        all_attitudes = []
+        for _, _, positions, attitudes in windows.values():
+            all_positions.extend(positions)
+            all_attitudes.extend(attitudes)
+
+        start_position = all_positions[0]
+        max_horizontal_drift = max(math.hypot(m.x - start_position.x, m.y - start_position.y) for m in all_positions)
+        max_vertical_drift = max(abs(m.z - start_position.z) for m in all_positions)
+        max_roll = max(abs(m.roll) for m in all_attitudes)
+        max_pitch = max(abs(m.pitch) for m in all_attitudes)
+        self.progress("Geometric switching samples position=%u attitude=%u horizontal drift=%fm vertical drift=%fm roll=%fdeg pitch=%fdeg" %
+                      (len(all_positions),
+                       len(all_attitudes),
+                       max_horizontal_drift,
+                       max_vertical_drift,
+                       math.degrees(max_roll),
+                       math.degrees(max_pitch)))
+
+        if max_horizontal_drift > 5.0:
+            raise NotAchievedException("Geometric switching horizontal drift is too large")
+        if max_vertical_drift > 4.0:
+            raise NotAchievedException("Geometric switching vertical drift is too large")
+        if max(max_roll, max_pitch) > math.radians(30):
+            raise NotAchievedException("Geometric switching tilt is too large")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geox_by_window = {name: [] for name in windows}
+        while True:
+            m = dfreader.recv_match(type="GEOX")
+            if m is None:
+                break
+            for name, (start_us, end_us, _, _) in windows.items():
+                if start_us <= m.TimeUS <= end_us:
+                    geox_by_window[name].append(m)
+
+        check_geox_window("official-before", geox_by_window["official-before"], False, False, False)
+        check_geox_window("geometric-first", geox_by_window["geometric-first"], True, True, True)
+        check_geox_window("official-return", geox_by_window["official-return"], False, True, False)
+        check_geox_window("geometric-second", geox_by_window["geometric-second"], True, True, True)
+
+        self.do_RTL()
+
     def AutoRTL(self):
         '''Test Auto RTL mode using do land start and return path start mission items'''
         alt = 50
@@ -19010,6 +19176,7 @@ return update, 1000
             self.GeometricGuidedMotorOutputPositionStep,
             self.GeometricGuidedMotorOutputYawStep,
             self.GeometricGuidedMotorOutputPositionYawStep,
+            self.GeometricGuidedMotorOutputSwitching,
             self.CompassMot,
             self.AutoRTL,
             self.EK3_OGN_HGT_MASK_climbing,
