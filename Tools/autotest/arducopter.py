@@ -16049,6 +16049,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         allowed_msgs = [m for m in geox_msgs if m.Allow]
         if len(allowed_msgs) == 0:
             raise NotAchievedException("GEOX did not show GUID_OPTIONS allowing geometric motor output")
+        rate_thread_msgs = [m for m in allowed_msgs if m.RT]
+        if len(rate_thread_msgs) != 0:
+            raise NotAchievedException("GEOX shows rate-thread active; geometric motor-output hook is not supported there yet")
         written_msgs = [m for m in allowed_msgs if m.Wrote]
         if len(written_msgs) == 0:
             raise NotAchievedException("GEOX did not show geometric AP_Motors writes")
@@ -16061,9 +16064,10 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         max_throttle = max(m.Thr for m in allowed_msgs)
         limited_count = sum(1 for m in allowed_msgs if m.RLim or m.TLim)
 
-        self.progress("GEOX age min geo=%u motor=%u actuator min=%f max=%f throttle min=%f max=%f limited=%u/%u" %
+        self.progress("GEOX age min geo=%u motor=%u rate_thread=%u actuator min=%f max=%f throttle min=%f max=%f limited=%u/%u" %
                       (min_geometric_age_ms,
                        min_motor_output_age_ms,
+                       len(rate_thread_msgs),
                        min_actuator,
                        max_actuator,
                        min_throttle,

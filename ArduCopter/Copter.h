@@ -741,6 +741,7 @@ private:
     float get_pilot_speed_dn_adjusted_ms() const;
     void run_rate_controller_main();
     bool geometric_motor_output_active() const;
+    bool geometric_motor_output_blocked_by_rate_thread() const;
     uint32_t geometric_motor_output_age_ms(uint32_t now_ms) const;
     void geometric_motor_output_to_motors();
 
