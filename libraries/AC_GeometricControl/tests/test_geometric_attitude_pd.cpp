@@ -122,4 +122,39 @@ TEST(AC_Geometric_Attitude_PD, AttitudeGainScalesMoment)
     EXPECT_NEAR(high_output.moment.z, 2.0f * low_output.moment.z, 1.0e-5f);
 }
 
+TEST(AC_Geometric_Attitude_PD, OptionalOmegaFilterSmoothsRateErrorStep)
+{
+    AC_Geometric_Attitude_PD controller;
+
+    AC_Geometric_Attitude_Gains gains {};
+    gains.omega_p = Vector3f{1.0f, 1.0f, 1.0f};
+    controller.set_gains(gains);
+
+    AC_Geometric_Attitude_Filter_Hz filter_hz {};
+    filter_hz.omega_error = 20.0f;
+    controller.set_filter_hz(filter_hz);
+
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Attitude_Output output {};
+    controller.update(state, target, 0.01f, output);
+
+    state.omega_body_rads = Vector3f{1.0f, -1.0f, 0.5f};
+    controller.update(state, target, 0.01f, output);
+
+    EXPECT_GT(output.omega_error_rads.x, 0.0f);
+    EXPECT_LT(output.omega_error_rads.x, state.omega_body_rads.x);
+    EXPECT_LT(output.omega_error_rads.y, 0.0f);
+    EXPECT_GT(output.omega_error_rads.y, state.omega_body_rads.y);
+    EXPECT_GT(output.omega_error_rads.z, 0.0f);
+    EXPECT_LT(output.omega_error_rads.z, state.omega_body_rads.z);
+    EXPECT_NEAR(output.moment.x, -output.omega_error_rads.x, 1.0e-6f);
+    EXPECT_NEAR(output.moment.y, -output.omega_error_rads.y, 1.0e-6f);
+    EXPECT_NEAR(output.moment.z, -output.omega_error_rads.z, 1.0e-6f);
+}
+
 AP_GTEST_MAIN()

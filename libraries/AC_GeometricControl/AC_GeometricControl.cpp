@@ -19,6 +19,7 @@
 #define AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT 4.0f
 #define AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT 2.0f
 #define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 0
+#define AC_GEOMETRIC_FILTER_DISABLED 0.0f
 
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Param: POS_KX_XY
@@ -156,6 +157,33 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("OUT_EN", 17, AC_GeometricControl, _output_enabled, AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT),
 
+    // @Param: POS_FLTE
+    // @DisplayName: Geometric position error filter
+    // @Description: Optional first-order low-pass cutoff applied to Lee position error before the geometric position PID channel. A value of zero disables this filter and preserves the raw state-error path.
+    // @Range: 0 50
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("POS_FLTE", 18, AC_GeometricControl, _pos_error_filt_hz, AC_GEOMETRIC_FILTER_DISABLED),
+
+    // @Param: VEL_FLTE
+    // @DisplayName: Geometric velocity error filter
+    // @Description: Optional first-order low-pass cutoff applied to Lee velocity error before the geometric position PID channel. A value of zero disables this filter and preserves the raw state-error path.
+    // @Range: 0 50
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("VEL_FLTE", 19, AC_GeometricControl, _vel_error_filt_hz, AC_GEOMETRIC_FILTER_DISABLED),
+
+    // @Param: OMG_FLTE
+    // @DisplayName: Geometric angular velocity error filter
+    // @Description: Optional first-order low-pass cutoff applied to Lee angular velocity error before the SO(3) attitude PD channel. A value of zero disables this filter and preserves the raw angular-rate error path.
+    // @Range: 0 100
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("OMG_FLTE", 20, AC_GeometricControl, _omega_error_filt_hz, AC_GEOMETRIC_FILTER_DISABLED),
+
     AP_GROUPEND
 };
 
@@ -167,6 +195,7 @@ AC_GeometricControl::AC_GeometricControl()
 void AC_GeometricControl::reset()
 {
     _position_pid.reset();
+    _attitude_pd.reset();
     _output = {};
     _last_update_ms = 0;
 }
@@ -199,11 +228,18 @@ void AC_GeometricControl::update_gains_from_params()
     position_gains.i = Vector3f{_pos_ki_xy.get(), _pos_ki_xy.get(), _pos_ki_z.get()};
     position_gains.d = Vector3f{_pos_kv_xy.get(), _pos_kv_xy.get(), _pos_kv_z.get()};
     _position_pid.set_gains(position_gains);
+    AC_Geometric_Position_Filter_Hz position_filter_hz {};
+    position_filter_hz.position_error = _pos_error_filt_hz.get();
+    position_filter_hz.velocity_error = _vel_error_filt_hz.get();
+    _position_pid.set_filter_hz(position_filter_hz);
 
     AC_Geometric_Attitude_Gains attitude_gains {};
     attitude_gains.attitude_p = Vector3f{_att_kr_x.get(), _att_kr_y.get(), _att_kr_z.get()};
     attitude_gains.omega_p = Vector3f{_att_ko_x.get(), _att_ko_y.get(), _att_ko_z.get()};
     _attitude_pd.set_gains(attitude_gains);
+    AC_Geometric_Attitude_Filter_Hz attitude_filter_hz {};
+    attitude_filter_hz.omega_error = _omega_error_filt_hz.get();
+    _attitude_pd.set_filter_hz(attitude_filter_hz);
 }
 
 void AC_GeometricControl::update(const AC_Geometric_State& state,

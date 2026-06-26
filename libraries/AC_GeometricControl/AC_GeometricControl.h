@@ -50,6 +50,8 @@ private:
     AP_Float _pos_ki_z;
     AP_Float _pos_kv_xy;
     AP_Float _pos_kv_z;
+    AP_Float _pos_error_filt_hz;
+    AP_Float _vel_error_filt_hz;
 
     AP_Float _att_kr_x;
     AP_Float _att_kr_y;
@@ -57,6 +59,7 @@ private:
     AP_Float _att_ko_x;
     AP_Float _att_ko_y;
     AP_Float _att_ko_z;
+    AP_Float _omega_error_filt_hz;
 
     AP_Float _hover_throttle_norm;
     AP_Float _mom_norm_x;

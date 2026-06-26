@@ -67,12 +67,31 @@ All parameters use the `GEO_` prefix in Copter.
 | `GEO_ATT_KO_X` | Angular velocity error gain for body X. |
 | `GEO_ATT_KO_Y` | Angular velocity error gain for body Y. |
 | `GEO_ATT_KO_Z` | Angular velocity error gain for body Z. |
+| `GEO_POS_FLTE` | Optional first-order low-pass filter for position error. `0` disables it. |
+| `GEO_VEL_FLTE` | Optional first-order low-pass filter for velocity error. `0` disables it. |
+| `GEO_OMG_FLTE` | Optional first-order low-pass filter for angular velocity error. `0` disables it. |
 | `GEO_HOV_THR` | Hover throttle reference used to normalize geometric thrust. |
 | `GEO_MOM_NORM_X` | Body-X moment proxy magnitude that maps to full roll output. |
 | `GEO_MOM_NORM_Y` | Body-Y moment proxy magnitude that maps to full pitch output. |
 | `GEO_MOM_NORM_Z` | Body-Z moment proxy magnitude that maps to full yaw output. |
 
 The gain parameters affect the observer path whenever `GUID_OPTIONS bit 1` is set. They also affect active motor output when both `GEO_OUT_EN` and `GUID_OPTIONS bit 8` are set.
+
+The error filters are disabled by default so the controller preserves the
+validated raw Lee state-error path. For SITL noise experiments, a conservative
+starting point is:
+
+```text
+GEO_POS_FLTE = 5
+GEO_VEL_FLTE = 5
+GEO_OMG_FLTE = 20
+```
+
+The 5 Hz translational filters follow the same order of magnitude as
+ArduPilot's position/velocity controller filters and the previous PDNN
+prototype. The 20 Hz angular-velocity filter follows the multicopter rate-loop
+filter order and keeps attitude damping latency lower than the translational
+path.
 
 ## Logs
 
@@ -104,6 +123,7 @@ Current autotests cover these Guided scenarios:
 - Active local position step
 - Active yaw step
 - Active combined local position and yaw step
+- Active filtered hover with SITL IMU/GPS/barometer noise
 - Disabled active output with `GUID_OPTIONS bit 8` set and `GEO_OUT_EN=0`
 - In-flight switching from normal Guided output to geometric output, back to normal Guided output, then back to geometric output
 

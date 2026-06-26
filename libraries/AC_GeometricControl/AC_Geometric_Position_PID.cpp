@@ -2,6 +2,20 @@
 
 namespace {
 
+Vector3f apply_optional_lowpass(const Vector3f& input,
+                                float cutoff_hz,
+                                float dt,
+                                Vector3f& filtered)
+{
+    if (!is_positive(cutoff_hz) || !is_positive(dt)) {
+        filtered = input;
+        return input;
+    }
+
+    filtered += (input - filtered) * calc_lowpass_alpha_dt(dt, cutoff_hz);
+    return filtered;
+}
+
 // Build a body-to-NED commanded attitude R_c from an ArduPilot-style thrust
 // vector expressed in NED and a yaw angle about NED +Z. In NED, hover thrust
 // points upward, so the level reference thrust direction is {0, 0, -1}.
@@ -37,6 +51,9 @@ Quaternion attitude_from_thrust_vector(Vector3f thrust_vector, float yaw_rad)
 void AC_Geometric_Position_PID::reset()
 {
     _position_error_integral_m.zero();
+    _position_error_filtered_m.zero();
+    _velocity_error_filtered_ms.zero();
+    _filter_reset = true;
 }
 
 void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
@@ -44,8 +61,26 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
                                        float dt,
                                        AC_Geometric_Position_Output& output)
 {
-    output.position_error_m = state.position_ned_m - target.position_ned_m;
-    output.velocity_error_ms = state.velocity_ned_ms - target.velocity_ned_ms;
+    const Vector3f position_error_raw_m = state.position_ned_m - target.position_ned_m;
+    const Vector3f velocity_error_raw_ms = state.velocity_ned_ms - target.velocity_ned_ms;
+
+    if (_filter_reset) {
+        _position_error_filtered_m = position_error_raw_m;
+        _velocity_error_filtered_ms = velocity_error_raw_ms;
+        _filter_reset = false;
+    } else {
+        _position_error_filtered_m = apply_optional_lowpass(position_error_raw_m,
+                                                            _filter_hz.position_error,
+                                                            dt,
+                                                            _position_error_filtered_m);
+        _velocity_error_filtered_ms = apply_optional_lowpass(velocity_error_raw_ms,
+                                                             _filter_hz.velocity_error,
+                                                             dt,
+                                                             _velocity_error_filtered_ms);
+    }
+
+    output.position_error_m = _position_error_filtered_m;
+    output.velocity_error_ms = _velocity_error_filtered_ms;
 
     if (is_positive(dt)) {
         _position_error_integral_m += output.position_error_m * dt;

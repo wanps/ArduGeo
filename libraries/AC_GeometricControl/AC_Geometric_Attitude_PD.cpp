@@ -2,6 +2,20 @@
 
 namespace {
 
+Vector3f apply_optional_lowpass(const Vector3f& input,
+                                float cutoff_hz,
+                                float dt,
+                                Vector3f& filtered)
+{
+    if (!is_positive(cutoff_hz) || !is_positive(dt)) {
+        filtered = input;
+        return input;
+    }
+
+    filtered += (input - filtered) * calc_lowpass_alpha_dt(dt, cutoff_hz);
+    return filtered;
+}
+
 // Lee/Gao attitude error e_R = vee(0.5 * (Rd^T * R - R^T * Rd)).
 // Both R and Rd are body-to-NED attitudes; their matrix columns are body
 // basis vectors expressed in NED. The vee extraction follows Matrix3 row
@@ -25,15 +39,29 @@ Vector3f attitude_error_lee(const Quaternion& attitude_body_to_ned,
 
 }
 
+void AC_Geometric_Attitude_PD::reset()
+{
+    _omega_error_filtered_rads.zero();
+    _filter_reset = true;
+}
+
 void AC_Geometric_Attitude_PD::update(const AC_Geometric_State& state,
                                       const AC_Geometric_Target& target,
                                       float dt,
-                                      AC_Geometric_Attitude_Output& output) const
+                                      AC_Geometric_Attitude_Output& output)
 {
-    (void)dt;
-
     output.attitude_error = attitude_error_lee(state.attitude_body_to_ned, target.attitude_body_to_ned);
-    output.omega_error_rads = state.omega_body_rads - target.omega_body_rads;
+    const Vector3f omega_error_raw_rads = state.omega_body_rads - target.omega_body_rads;
+    if (_filter_reset) {
+        _omega_error_filtered_rads = omega_error_raw_rads;
+        _filter_reset = false;
+    } else {
+        _omega_error_filtered_rads = apply_optional_lowpass(omega_error_raw_rads,
+                                                            _filter_hz.omega_error,
+                                                            dt,
+                                                            _omega_error_filtered_rads);
+    }
+    output.omega_error_rads = _omega_error_filtered_rads;
 
     // Lee SO(3) PD core without inertia/feedforward/Gao compensation terms yet.
     // In Gao notation this is the baseline part of M_d, retained here as a

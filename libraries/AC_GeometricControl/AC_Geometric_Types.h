@@ -56,6 +56,17 @@ struct AC_Geometric_Attitude_Gains {
     Vector3f omega_p;
 };
 
+// Optional first-order low-pass cutoff frequencies. A value of zero bypasses
+// the corresponding filter and keeps the current unfiltered control path.
+struct AC_Geometric_Position_Filter_Hz {
+    float position_error = 0.0f;
+    float velocity_error = 0.0f;
+};
+
+struct AC_Geometric_Attitude_Filter_Hz {
+    float omega_error = 0.0f;
+};
+
 struct AC_Geometric_Position_Output {
     // Commanded body-to-NED attitude/rate passed from the position channel
     // to the attitude channel. In Lee notation this is R_c, not the external
