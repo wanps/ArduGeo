@@ -16088,6 +16088,128 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedMotorOutputHover(self):
+        '''test Guided geometric motor-output hook during bounded hover'''
+        self.set_parameters({
+            'GUID_OPTIONS': 2,
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_HOV_THR': 0.5,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+        })
+        self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
+        self.context_set_message_rate_hz('ATTITUDE', 10)
+        self.takeoff(alt_min=10, mode='GUIDED')
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(2, reason="geometric controller to settle before active hover")
+        self.drain_mav()
+
+        positions = []
+        attitudes = []
+        step_start_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 258)
+        try:
+            active_start_time = self.get_sim_time()
+            while self.get_sim_time_cached() - active_start_time < 5:
+                m = self.mav.recv_match(type=["LOCAL_POSITION_NED", "ATTITUDE"], blocking=True, timeout=1)
+                if m is None:
+                    raise NotAchievedException("Did not receive hover stability messages")
+                if m.get_type() == "LOCAL_POSITION_NED":
+                    positions.append(m)
+                if m.get_type() == "ATTITUDE":
+                    attitudes.append(m)
+        finally:
+            step_end_us = int(self.get_sim_time() * 1000000)
+            self.set_parameter('GUID_OPTIONS', 2)
+
+        if len(positions) < 5:
+            raise NotAchievedException("Not enough LOCAL_POSITION_NED samples during geometric hover")
+        if len(attitudes) < 5:
+            raise NotAchievedException("Not enough ATTITUDE samples during geometric hover")
+
+        start_position = positions[0]
+        max_horizontal_drift = max(math.hypot(m.x - start_position.x, m.y - start_position.y) for m in positions)
+        max_vertical_drift = max(abs(m.z - start_position.z) for m in positions)
+        max_roll = max(abs(m.roll) for m in attitudes)
+        max_pitch = max(abs(m.pitch) for m in attitudes)
+        self.progress("Geometric hover samples position=%u attitude=%u horizontal drift=%fm vertical drift=%fm roll=%fdeg pitch=%fdeg" %
+                      (len(positions),
+                       len(attitudes),
+                       max_horizontal_drift,
+                       max_vertical_drift,
+                       math.degrees(max_roll),
+                       math.degrees(max_pitch)))
+
+        if max_horizontal_drift > 5.0:
+            raise NotAchievedException("Geometric hover horizontal drift is too large")
+        if max_vertical_drift > 3.0:
+            raise NotAchievedException("Geometric hover vertical drift is too large")
+        if max(max_roll, max_pitch) > math.radians(30):
+            raise NotAchievedException("Geometric hover tilt is too large")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geox_msgs = []
+        while True:
+            m = dfreader.recv_match(type="GEOX")
+            if m is None:
+                break
+            if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
+            geox_msgs.append(m)
+            for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                value = getattr(m, field)
+                if not math.isfinite(value):
+                    raise NotAchievedException("GEOX.%s is not finite during hover" % field)
+
+        if len(geox_msgs) == 0:
+            raise NotAchievedException("GEOX log message not found during geometric hover")
+        allowed_msgs = [m for m in geox_msgs if m.Allow]
+        if len(allowed_msgs) == 0:
+            raise NotAchievedException("GEOX did not allow geometric motor output during hover")
+        rate_thread_msgs = [m for m in allowed_msgs if m.RT]
+        if len(rate_thread_msgs) != 0:
+            raise NotAchievedException("GEOX shows rate-thread active during geometric hover")
+        written_msgs = [m for m in allowed_msgs if m.Wrote]
+        if len(written_msgs) == 0:
+            raise NotAchievedException("GEOX did not write geometric motor output during hover")
+
+        min_geometric_age_ms = min(m.GAge for m in allowed_msgs)
+        min_motor_output_age_ms = min(m.WAge for m in written_msgs)
+        min_actuator = min(min(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        max_actuator = max(max(m.Roll, m.Pitch, m.Yaw) for m in allowed_msgs)
+        min_throttle = min(m.Thr for m in allowed_msgs)
+        max_throttle = max(m.Thr for m in allowed_msgs)
+        limited_count = sum(1 for m in allowed_msgs if m.RLim or m.TLim)
+        self.progress("GEOX hover samples=%u age min geo=%u motor=%u actuator min=%f max=%f throttle min=%f max=%f limited=%u/%u" %
+                      (len(geox_msgs),
+                       min_geometric_age_ms,
+                       min_motor_output_age_ms,
+                       min_actuator,
+                       max_actuator,
+                       min_throttle,
+                       max_throttle,
+                       limited_count,
+                       len(allowed_msgs)))
+
+        if min_geometric_age_ms > 100:
+            raise NotAchievedException("GEOX geometric output was stale during hover")
+        if min_motor_output_age_ms > 100:
+            raise NotAchievedException("GEOX motor-output write was stale during hover")
+        if min_actuator < -1.0 or max_actuator > 1.0:
+            raise NotAchievedException("GEOX actuator output is outside -1..1 during hover")
+        if min_throttle < 0.0 or max_throttle > 1.0:
+            raise NotAchievedException("GEOX throttle output is outside 0..1 during hover")
+        if limited_count > len(allowed_msgs) / 2:
+            raise NotAchievedException("GEOX motor-output hook was limited for most hover samples")
+
+        self.do_RTL()
+
     def AutoRTL(self):
         '''Test Auto RTL mode using do land start and return path start mission items'''
         alt = 50
@@ -18112,6 +18234,7 @@ return update, 1000
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricGuidedMotorOutput,
+            self.GeometricGuidedMotorOutputHover,
             self.CompassMot,
             self.AutoRTL,
             self.EK3_OGN_HGT_MASK_climbing,
