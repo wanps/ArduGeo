@@ -18,11 +18,12 @@
 #define AC_GEOMETRIC_MOMENT_NORM_X_DEFAULT 4.0f
 #define AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT 4.0f
 #define AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT 2.0f
+#define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 0
 
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Param: POS_KX_XY
     // @DisplayName: Geometric position horizontal Kx
-    // @Description: Lee SE(3) position error gain k_x for the horizontal axes. This currently affects only the geometric observer.
+    // @Description: Lee SE(3) position error gain k_x for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -30,7 +31,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KX_Z
     // @DisplayName: Geometric position vertical Kx
-    // @Description: Lee SE(3) position error gain k_x for the vertical axis. This currently affects only the geometric observer.
+    // @Description: Lee SE(3) position error gain k_x for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -38,7 +39,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KI_XY
     // @DisplayName: Geometric position horizontal Ki
-    // @Description: Integral position error gain for the horizontal axes. This is an implementation extension to the Lee position channel and currently affects only the geometric observer.
+    // @Description: Integral position error gain for the horizontal axes. This is an implementation extension to the Lee position channel. It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -46,7 +47,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KI_Z
     // @DisplayName: Geometric position vertical Ki
-    // @Description: Integral position error gain for the vertical axis. This is an implementation extension to the Lee position channel and currently affects only the geometric observer.
+    // @Description: Integral position error gain for the vertical axis. This is an implementation extension to the Lee position channel. It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -54,7 +55,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KV_XY
     // @DisplayName: Geometric velocity horizontal Kv
-    // @Description: Lee SE(3) velocity error gain k_v for the horizontal axes. This currently affects only the geometric observer.
+    // @Description: Lee SE(3) velocity error gain k_v for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -62,7 +63,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KV_Z
     // @DisplayName: Geometric velocity vertical Kv
-    // @Description: Lee SE(3) velocity error gain k_v for the vertical axis. This currently affects only the geometric observer.
+    // @Description: Lee SE(3) velocity error gain k_v for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -70,7 +71,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KR_X
     // @DisplayName: Geometric attitude roll KR
-    // @Description: Lee SO(3) attitude error gain k_R for the body X axis. This currently affects only the geometric observer moment proxy.
+    // @Description: Lee SO(3) attitude error gain k_R for the body X axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric roll output.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -78,7 +79,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KR_Y
     // @DisplayName: Geometric attitude pitch KR
-    // @Description: Lee SO(3) attitude error gain k_R for the body Y axis. This currently affects only the geometric observer moment proxy.
+    // @Description: Lee SO(3) attitude error gain k_R for the body Y axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric pitch output.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -86,7 +87,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KR_Z
     // @DisplayName: Geometric attitude yaw KR
-    // @Description: Lee SO(3) attitude error gain k_R for the body Z axis. This currently affects only the geometric observer moment proxy.
+    // @Description: Lee SO(3) attitude error gain k_R for the body Z axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric yaw output.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -94,7 +95,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KO_X
     // @DisplayName: Geometric angular velocity roll KOmega
-    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body X axis. This currently affects only the geometric observer moment proxy.
+    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body X axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric roll output.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -102,7 +103,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KO_Y
     // @DisplayName: Geometric angular velocity pitch KOmega
-    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body Y axis. This currently affects only the geometric observer moment proxy.
+    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body Y axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric pitch output.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -110,7 +111,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KO_Z
     // @DisplayName: Geometric angular velocity yaw KOmega
-    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body Z axis. This currently affects only the geometric observer moment proxy.
+    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body Z axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric yaw output.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -118,7 +119,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: HOV_THR
     // @DisplayName: Geometric hover throttle
-    // @Description: Hover throttle reference used to normalize the geometric thrust shadow output. This currently affects only geometric observer logging.
+    // @Description: Hover throttle reference used to normalize the geometric thrust output. This affects geometric observer logging and, when geometric motor output is enabled, the active normalized throttle output.
     // @Range: 0.05 0.95
     // @Increment: 0.01
     // @User: Advanced
@@ -126,7 +127,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: MOM_NORM_X
     // @DisplayName: Geometric roll moment normalization
-    // @Description: Body X moment proxy magnitude that maps to full roll actuator shadow output. This currently affects only geometric observer logging.
+    // @Description: Body X moment proxy magnitude that maps to full normalized roll actuator output. This affects geometric observer logging and, when geometric motor output is enabled, the active roll output scale.
     // @Range: 0.01 100
     // @Increment: 0.01
     // @User: Advanced
@@ -134,7 +135,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: MOM_NORM_Y
     // @DisplayName: Geometric pitch moment normalization
-    // @Description: Body Y moment proxy magnitude that maps to full pitch actuator shadow output. This currently affects only geometric observer logging.
+    // @Description: Body Y moment proxy magnitude that maps to full normalized pitch actuator output. This affects geometric observer logging and, when geometric motor output is enabled, the active pitch output scale.
     // @Range: 0.01 100
     // @Increment: 0.01
     // @User: Advanced
@@ -142,11 +143,18 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: MOM_NORM_Z
     // @DisplayName: Geometric yaw moment normalization
-    // @Description: Body Z moment proxy magnitude that maps to full yaw actuator shadow output. This currently affects only geometric observer logging.
+    // @Description: Body Z moment proxy magnitude that maps to full normalized yaw actuator output. This affects geometric observer logging and, when geometric motor output is enabled, the active yaw output scale.
     // @Range: 0.01 100
     // @Increment: 0.01
     // @User: Advanced
     AP_GROUPINFO("MOM_NORM_Z", 16, AC_GeometricControl, _mom_norm_z, AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT),
+
+    // @Param: OUT_EN
+    // @DisplayName: Geometric motor output enable
+    // @Description: Enables the geometric controller to write normalized roll, pitch, yaw and throttle outputs to AP_Motors when the vehicle-specific mode also allows it. For Copter Guided mode, GUID_OPTIONS bit 8 must also be set. Leave disabled until the geometric controller has been validated in simulation for the vehicle and parameter set.
+    // @Values: 0:Disable,1:Enable
+    // @User: Advanced
+    AP_GROUPINFO("OUT_EN", 17, AC_GeometricControl, _output_enabled, AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT),
 
     AP_GROUPEND
 };

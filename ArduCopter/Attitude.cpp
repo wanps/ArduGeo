@@ -44,6 +44,9 @@ bool Copter::geometric_motor_output_active() const
     if ((uint32_t(g2.guided_options.get()) & GUID_OPTIONS_GEOMETRIC_MOTOR_OUTPUT) == 0) {
         return false;
     }
+    if (!geometric_control.output_enabled()) {
+        return false;
+    }
     if (geometric_motor_output_blocked_by_rate_thread()) {
         return false;
     }

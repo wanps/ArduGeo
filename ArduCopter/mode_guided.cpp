@@ -1145,6 +1145,7 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Description: Geometric guided motor-output hook status
     // @Field: TimeUS: Time since system startup
     // @Field: Allow: True if GUID_OPTIONS allows geometric motor output
+    // @Field: OEn: True if GEO_OUT_EN allows geometric motor output
     // @Field: RT: True if rate thread is active
     // @Field: Wrote: True if the geometric path recently wrote AP_Motors
     // @Field: GAge: Geometric controller output age
@@ -1161,6 +1162,7 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
         const uint32_t geometric_age_ms = copter.geometric_control.output_age_ms(now_ms);
         const uint32_t motor_output_age_ms = copter.geometric_motor_output_age_ms(now_ms);
         const bool motor_output_allowed = option_is_enabled(Option::GeometricMotorOutput);
+        const bool geometric_output_enabled = copter.geometric_control.output_enabled();
         const bool rate_thread_active = copter.geometric_motor_output_blocked_by_rate_thread();
         const bool motor_output_written_recently = motor_output_age_ms <= guided_geometric_output_recent_ms;
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,RTx,RTy,RTz", "Qffffffffffff",
@@ -1227,9 +1229,10 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)output.mapped.rpy_norm.z,
                                     (uint8_t)output.mapped.rpy_limited);
 
-        AP::logger().WriteStreaming("GEOX", "TimeUS,Allow,RT,Wrote,GAge,WAge,Roll,Pitch,Yaw,Thr,RLim,TLim", "QBBBIIffffBB",
+        AP::logger().WriteStreaming("GEOX", "TimeUS,Allow,OEn,RT,Wrote,GAge,WAge,Roll,Pitch,Yaw,Thr,RLim,TLim", "QBBBBIIffffBB",
                                     AP_HAL::micros64(),
                                     (uint8_t)motor_output_allowed,
+                                    (uint8_t)geometric_output_enabled,
                                     (uint8_t)rate_thread_active,
                                     (uint8_t)motor_output_written_recently,
                                     geometric_age_ms,

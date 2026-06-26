@@ -22,6 +22,7 @@ public:
     // accidentally consume stale geometric commands.
     void set_enabled(bool enabled);
     bool enabled() const { return _enabled; }
+    bool output_enabled() const { return _output_enabled; }
     uint32_t output_age_ms(uint32_t now_ms) const;
     bool output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const;
 
@@ -61,4 +62,5 @@ private:
     AP_Float _mom_norm_x;
     AP_Float _mom_norm_y;
     AP_Float _mom_norm_z;
+    AP_Int8 _output_enabled;
 };

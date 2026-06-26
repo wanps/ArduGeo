@@ -16026,6 +16026,68 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedMotorOutputDisabled(self):
+        '''test Guided geometric motor-output hook requires GEO_OUT_EN'''
+        self.set_parameters({
+            'GUID_OPTIONS': 2,
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_HOV_THR': 0.5,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 0,
+        })
+        self.takeoff(alt_min=10, mode='GUIDED')
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(1, reason="geometric observer to settle before disabled motor-output test")
+
+        step_start_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 258)
+        self.delay_sim_time(1, reason="geometric disabled motor-output hook to remain blocked")
+        step_end_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GUID_OPTIONS', 2)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geox_msgs = []
+        while True:
+            m = dfreader.recv_match(type="GEOX")
+            if m is None:
+                break
+            if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
+            geox_msgs.append(m)
+            for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                value = getattr(m, field)
+                if not math.isfinite(value):
+                    raise NotAchievedException("GEOX.%s is not finite during disabled motor-output test" % field)
+
+        if len(geox_msgs) == 0:
+            raise NotAchievedException("GEOX log message not found during disabled motor-output window")
+        allowed_msgs = [m for m in geox_msgs if m.Allow]
+        if len(allowed_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GUID_OPTIONS allowing geometric motor output")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) != 0:
+            raise NotAchievedException("GEOX showed GEO_OUT_EN enabled during disabled motor-output test")
+        rate_thread_msgs = [m for m in allowed_msgs if m.RT]
+        if len(rate_thread_msgs) != 0:
+            raise NotAchievedException("GEOX shows rate-thread active during disabled motor-output test")
+        written_msgs = [m for m in allowed_msgs if m.Wrote]
+        self.progress("GEOX disabled motor-output samples=%u allowed=%u output_enabled=%u wrote=%u" %
+                      (len(geox_msgs),
+                       len(allowed_msgs),
+                       len(output_enabled_msgs),
+                       len(written_msgs)))
+        if len(written_msgs) != 0:
+            raise NotAchievedException("GEOX showed AP_Motors writes while GEO_OUT_EN was disabled")
+
+        self.do_RTL()
+
     def GeometricGuidedMotorOutput(self):
         '''test Guided geometric motor-output hook logging'''
         self.set_parameters({
@@ -16040,6 +16102,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 4.0,
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
         })
         self.takeoff(alt_min=10, mode='GUIDED')
         self.send_position_target_local_ned(0, 0, 10)
@@ -16072,6 +16135,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         allowed_msgs = [m for m in geox_msgs if m.Allow]
         if len(allowed_msgs) == 0:
             raise NotAchievedException("GEOX did not show GUID_OPTIONS allowing geometric motor output")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric motor output")
         rate_thread_msgs = [m for m in allowed_msgs if m.RT]
         if len(rate_thread_msgs) != 0:
             raise NotAchievedException("GEOX shows rate-thread active; geometric motor-output hook is not supported there yet")
@@ -16125,6 +16191,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 4.0,
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -16195,6 +16262,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         allowed_msgs = [m for m in geox_msgs if m.Allow]
         if len(allowed_msgs) == 0:
             raise NotAchievedException("GEOX did not allow geometric motor output during hover")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric motor output during hover")
         rate_thread_msgs = [m for m in allowed_msgs if m.RT]
         if len(rate_thread_msgs) != 0:
             raise NotAchievedException("GEOX shows rate-thread active during geometric hover")
@@ -16247,6 +16317,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 4.0,
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -16396,6 +16467,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         allowed_msgs = [m for m in geox_msgs if m.Allow]
         if len(allowed_msgs) == 0:
             raise NotAchievedException("GEOX did not allow geometric motor output during active position step")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric motor output during active position step")
         rate_thread_msgs = [m for m in allowed_msgs if m.RT]
         if len(rate_thread_msgs) != 0:
             raise NotAchievedException("GEOX shows rate-thread active during active position step")
@@ -16452,6 +16526,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 4.0,
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
         self.context_set_message_rate_hz('ATTITUDE', 10)
@@ -16601,6 +16676,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         allowed_msgs = [m for m in geox_msgs if m.Allow]
         if len(allowed_msgs) == 0:
             raise NotAchievedException("GEOX did not allow geometric motor output during active yaw step")
+        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        if len(output_enabled_msgs) == 0:
+            raise NotAchievedException("GEOX did not show GEO_OUT_EN allowing geometric motor output during active yaw step")
         rate_thread_msgs = [m for m in allowed_msgs if m.RT]
         if len(rate_thread_msgs) != 0:
             raise NotAchievedException("GEOX shows rate-thread active during active yaw step")
@@ -18665,6 +18743,7 @@ return update, 1000
             self.GuidedModeThrust,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
+            self.GeometricGuidedMotorOutputDisabled,
             self.GeometricGuidedMotorOutput,
             self.GeometricGuidedMotorOutputHover,
             self.GeometricGuidedMotorOutputPositionStep,
