@@ -2,6 +2,10 @@
 
 namespace {
 
+constexpr float SETTLE_POS_XY_M = 0.05f;
+constexpr float SETTLE_POS_Z_M = 0.02f;
+constexpr float SETTLE_VEL_MS = 0.05f;
+
 Vector2f limit_vector_length(Vector2f value, float max_length)
 {
     // Preserve direction while bounding the vector magnitude.
@@ -42,6 +46,16 @@ float yaw_rate_from_velocity_accel_xy(const Vector3f& velocity_ned_ms,
         yaw_rate_rads = -yaw_rate_rads;
     }
     return yaw_rate_rads;
+}
+
+bool should_settle(float position_error, float velocity)
+{
+    return fabsf(position_error) <= SETTLE_POS_Z_M && fabsf(velocity) <= SETTLE_VEL_MS;
+}
+
+bool should_settle_xy(const Vector2f& position_error, const Vector2f& velocity)
+{
+    return position_error.length() <= SETTLE_POS_XY_M && velocity.length() <= SETTLE_VEL_MS;
 }
 
 }
@@ -93,6 +107,15 @@ void AC_Geometric_SetpointShaper::shape_xy(const Vector3f& goal_ned_m, float dt)
     const Vector2f goal_xy{goal_ned_m.x, goal_ned_m.y};
     const Vector2f error_xy = goal_xy - pos_ref_xy;
     const float distance_m = error_xy.length();
+    if (should_settle_xy(error_xy, vel_ref_xy)) {
+        _pos_ref_ned_m.x = goal_ned_m.x;
+        _pos_ref_ned_m.y = goal_ned_m.y;
+        _vel_ref_ned_ms.x = 0.0f;
+        _vel_ref_ned_ms.y = 0.0f;
+        _accel_ref_ned_mss.x = 0.0f;
+        _accel_ref_ned_mss.y = 0.0f;
+        return;
+    }
 
     Vector2f vel_desired_xy;
     vel_desired_xy.zero();
@@ -108,6 +131,16 @@ void AC_Geometric_SetpointShaper::shape_xy(const Vector3f& goal_ned_m, float dt)
     const Vector2f accel_xy = delta_vel_xy / dt;
     const Vector2f next_pos_xy = pos_ref_xy + vel_ref_xy * dt + accel_xy * (0.5f * sq(dt));
     const Vector2f next_vel_xy = vel_ref_xy + delta_vel_xy;
+    const Vector2f next_error_xy = goal_xy - next_pos_xy;
+    if (should_settle_xy(next_error_xy, next_vel_xy)) {
+        _pos_ref_ned_m.x = goal_ned_m.x;
+        _pos_ref_ned_m.y = goal_ned_m.y;
+        _vel_ref_ned_ms.x = 0.0f;
+        _vel_ref_ned_ms.y = 0.0f;
+        _accel_ref_ned_mss.x = 0.0f;
+        _accel_ref_ned_mss.y = 0.0f;
+        return;
+    }
 
     _pos_ref_ned_m.x = next_pos_xy.x;
     _pos_ref_ned_m.y = next_pos_xy.y;
@@ -129,6 +162,13 @@ void AC_Geometric_SetpointShaper::shape_z(float goal_z_ned_m, float dt)
     }
 
     const float error_z_m = goal_z_ned_m - _pos_ref_ned_m.z;
+    if (should_settle(error_z_m, _vel_ref_ned_ms.z)) {
+        _pos_ref_ned_m.z = goal_z_ned_m;
+        _vel_ref_ned_ms.z = 0.0f;
+        _accel_ref_ned_mss.z = 0.0f;
+        return;
+    }
+
     // NED positive Z is down, so negative Z error means upward travel.
     const float vel_max_ms = is_negative(error_z_m) ? MAX(_limits.vel_up_max_ms, 0.0f) : MAX(_limits.vel_down_max_ms, 0.0f);
     if (!is_positive(vel_max_ms)) {
@@ -143,8 +183,17 @@ void AC_Geometric_SetpointShaper::shape_z(float goal_z_ned_m, float dt)
     const float delta_vel_ms = constrain_float(vel_desired_ms - _vel_ref_ned_ms.z, -accel_max_mss * dt, accel_max_mss * dt);
     const float accel_mss = delta_vel_ms / dt;
 
-    _pos_ref_ned_m.z += _vel_ref_ned_ms.z * dt + 0.5f * accel_mss * sq(dt);
-    _vel_ref_ned_ms.z += delta_vel_ms;
+    const float next_pos_z_m = _pos_ref_ned_m.z + _vel_ref_ned_ms.z * dt + 0.5f * accel_mss * sq(dt);
+    const float next_vel_z_ms = _vel_ref_ned_ms.z + delta_vel_ms;
+    if (should_settle(goal_z_ned_m - next_pos_z_m, next_vel_z_ms)) {
+        _pos_ref_ned_m.z = goal_z_ned_m;
+        _vel_ref_ned_ms.z = 0.0f;
+        _accel_ref_ned_mss.z = 0.0f;
+        return;
+    }
+
+    _pos_ref_ned_m.z = next_pos_z_m;
+    _vel_ref_ned_ms.z = next_vel_z_ms;
     _accel_ref_ned_mss.z = accel_mss;
 }
 

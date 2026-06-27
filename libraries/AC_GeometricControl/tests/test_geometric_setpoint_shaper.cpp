@@ -81,6 +81,32 @@ TEST(AC_Geometric_SetpointShaper, HorizontalVelocityIsLimited)
     EXPECT_NEAR(shaped_target.velocity_ned_ms.x, limits.vel_xy_max_ms, 1.0e-6f);
 }
 
+TEST(AC_Geometric_SetpointShaper, HorizontalReferenceSettlesAtTarget)
+{
+    AC_Geometric_SetpointShaper shaper;
+    shaper.set_limits(default_limits());
+
+    const AC_Geometric_State state = state_at_origin();
+    const AC_Geometric_Target raw_target = target_from_position(Vector3f{1.0f, 0.0f, 0.0f});
+    AC_Geometric_Target shaped_target {};
+
+    for (uint16_t i = 0; i < 500; i++) {
+        shaper.update(state, raw_target, 0.01f, shaped_target);
+    }
+
+    EXPECT_NEAR(shaped_target.position_ned_m.x, raw_target.position_ned_m.x, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.position_ned_m.y, raw_target.position_ned_m.y, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.velocity_ned_ms.xy().length(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.accel_ned_mss.xy().length(), 0.0f, 1.0e-6f);
+
+    for (uint8_t i = 0; i < 50; i++) {
+        shaper.update(state, raw_target, 0.01f, shaped_target);
+        EXPECT_NEAR(shaped_target.position_ned_m.x, raw_target.position_ned_m.x, 1.0e-6f);
+        EXPECT_NEAR(shaped_target.velocity_ned_ms.xy().length(), 0.0f, 1.0e-6f);
+        EXPECT_NEAR(shaped_target.accel_ned_mss.xy().length(), 0.0f, 1.0e-6f);
+    }
+}
+
 TEST(AC_Geometric_SetpointShaper, VerticalVelocityUsesNedUpAndDownLimits)
 {
     AC_Geometric_Setpoint_Shaper_Limits limits = default_limits();
@@ -113,6 +139,31 @@ TEST(AC_Geometric_SetpointShaper, VerticalVelocityUsesNedUpAndDownLimits)
         EXPECT_NEAR(shaped_target.position_ned_m.z, 0.25f, 1.0e-6f);
         EXPECT_NEAR(shaped_target.velocity_ned_ms.z, 0.5f, 1.0e-6f);
         EXPECT_NEAR(shaped_target.accel_ned_mss.z, 0.5f, 1.0e-6f);
+    }
+}
+
+TEST(AC_Geometric_SetpointShaper, VerticalReferenceSettlesAtTarget)
+{
+    AC_Geometric_SetpointShaper shaper;
+    shaper.set_limits(default_limits());
+
+    const AC_Geometric_State state = state_at_origin();
+    const AC_Geometric_Target raw_target = target_from_position(Vector3f{0.0f, 0.0f, -1.0f});
+    AC_Geometric_Target shaped_target {};
+
+    for (uint16_t i = 0; i < 500; i++) {
+        shaper.update(state, raw_target, 0.01f, shaped_target);
+    }
+
+    EXPECT_NEAR(shaped_target.position_ned_m.z, raw_target.position_ned_m.z, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.velocity_ned_ms.z, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(shaped_target.accel_ned_mss.z, 0.0f, 1.0e-6f);
+
+    for (uint8_t i = 0; i < 50; i++) {
+        shaper.update(state, raw_target, 0.01f, shaped_target);
+        EXPECT_NEAR(shaped_target.position_ned_m.z, raw_target.position_ned_m.z, 1.0e-6f);
+        EXPECT_NEAR(shaped_target.velocity_ned_ms.z, 0.0f, 1.0e-6f);
+        EXPECT_NEAR(shaped_target.accel_ned_mss.z, 0.0f, 1.0e-6f);
     }
 }
 
