@@ -1,5 +1,7 @@
 #include "Copter.h"
 
+#include <AC_GeometricControl/AC_Geometric_GuidedTargetManager.h>
+
 #if MODE_GUIDED_ENABLED
 
 /*
@@ -12,6 +14,7 @@ static Vector3f guided_vel_target_ned_ms;       // velocity target (used by pos_
 static Vector3f guided_accel_target_ned_mss;    // acceleration target (used by pos_vel_accel controller vel_accel controller and accel controller)
 static uint32_t update_time_ms;                 // system time of last target update to pos_vel_accel, vel_accel or accel controller
 static bool guided_geometric_position_was_active;
+static AC_Geometric_GuidedTargetManager guided_geometric_target_manager;
 
 struct {
     uint32_t update_time_ms;
@@ -48,6 +51,7 @@ bool ModeGuided::init(bool ignore_checks)
     // clear pause state when entering guided mode
     _paused = false;
     guided_geometric_position_was_active = false;
+    guided_geometric_target_manager.reset();
 
     return true;
 }
@@ -161,6 +165,7 @@ void ModeGuided::restore_native_position_control_after_geometric()
     pos_control->NE_init_controller();
     pos_control->D_init_controller();
     guided_geometric_position_was_active = false;
+    guided_geometric_target_manager.reset();
 }
 
 #if WEATHERVANE_ENABLED
@@ -417,6 +422,7 @@ void ModeGuided::angle_control_start()
     guided_angle_state.attitude_quat.from_euler(Vector3f{0.0, 0.0, attitude_control->get_att_target_euler_rad().z});
     guided_angle_state.ang_vel_body.zero();
     guided_angle_state.climb_rate_ms = 0.0f;
+    guided_geometric_target_manager.reset();
 }
 
 // set_pos_ned_m - sets guided mode's target pos_ned_m
@@ -444,18 +450,19 @@ bool ModeGuided::set_pos_NED_m(const Vector3p& pos_ned_m, bool use_yaw, float ya
         // set yaw state
         set_yaw_state_rad(use_yaw, yaw_rad, use_yaw_rate, yaw_rate_rads, relative_yaw);
 
-        guided_pos_target_ned_m = pos_ned_m;
+        const Vector3p& adjusted_pos_ned_m = guided_geometric_target_manager.set_position_target(pos_ned_m, is_terrain_alt);
+        guided_pos_target_ned_m = adjusted_pos_ned_m;
         guided_is_terrain_alt = is_terrain_alt;
         guided_vel_target_ned_ms.zero();
         guided_accel_target_ned_mss.zero();
         update_time_ms = millis();
 
         // no need to check return status because terrain data is not used
-        wp_nav->set_wp_destination_NED_m(pos_ned_m, is_terrain_alt);
+        wp_nav->set_wp_destination_NED_m(adjusted_pos_ned_m, is_terrain_alt);
 
 #if HAL_LOGGING_ENABLED
         // log target
-        copter.Log_Write_Guided_Position_Target(guided_mode, pos_ned_m, is_terrain_alt, Vector3f(), Vector3f());
+        copter.Log_Write_Guided_Position_Target(guided_mode, adjusted_pos_ned_m, is_terrain_alt, Vector3f(), Vector3f());
 #endif
         send_notification = true;
         return true;
@@ -489,7 +496,8 @@ bool ModeGuided::set_pos_NED_m(const Vector3p& pos_ned_m, bool use_yaw, float ya
     set_yaw_state_rad(use_yaw, yaw_rad, use_yaw_rate, yaw_rate_rads, relative_yaw);
 
     // set position target and zero velocity and acceleration
-    guided_pos_target_ned_m = pos_ned_m;
+    const Vector3p& adjusted_pos_ned_m = guided_geometric_target_manager.set_position_target(pos_ned_m, is_terrain_alt);
+    guided_pos_target_ned_m = adjusted_pos_ned_m;
     guided_is_terrain_alt = is_terrain_alt;
     guided_vel_target_ned_ms.zero();
     guided_accel_target_ned_mss.zero();
@@ -559,17 +567,33 @@ bool ModeGuided::set_destination(const Location& dest_loc, bool use_yaw, float y
         // set yaw state
         set_yaw_state_rad(use_yaw, yaw_rad, use_yaw_rate, yaw_rate_rads, relative_yaw);
 
+        Vector3p adjusted_pos_target_ned_m;
         if (have_pos_target) {
-            guided_pos_target_ned_m = pos_target_ned_m;
+            if (geometric_position_control_active()) {
+                adjusted_pos_target_ned_m = guided_geometric_target_manager.set_destination_target(pos_target_ned_m, is_terrain_alt);
+            } else {
+                adjusted_pos_target_ned_m = guided_geometric_target_manager.set_position_target(pos_target_ned_m, is_terrain_alt);
+            }
+            guided_pos_target_ned_m = adjusted_pos_target_ned_m;
             guided_is_terrain_alt = is_terrain_alt;
             guided_vel_target_ned_ms.zero();
             guided_accel_target_ned_mss.zero();
             update_time_ms = millis();
+
+            if (geometric_position_control_active() && !is_terrain_alt) {
+                // Keep the native WPNav fallback target aligned with the
+                // geometric target after altitude hold adjustment.
+                wp_nav->set_wp_destination_NED_m(adjusted_pos_target_ned_m, false);
+            }
         }
 
 #if HAL_LOGGING_ENABLED
         // log target
-        copter.Log_Write_Guided_Position_Target(guided_mode, Vector3p(dest_loc.lat, dest_loc.lng, dest_loc.alt), (dest_loc.get_alt_frame() == Location::AltFrame::ABOVE_TERRAIN), Vector3f(), Vector3f());
+        if (have_pos_target) {
+            copter.Log_Write_Guided_Position_Target(guided_mode, adjusted_pos_target_ned_m, is_terrain_alt, Vector3f(), Vector3f());
+        } else {
+            copter.Log_Write_Guided_Position_Target(guided_mode, Vector3p(dest_loc.lat, dest_loc.lng, dest_loc.alt), (dest_loc.get_alt_frame() == Location::AltFrame::ABOVE_TERRAIN), Vector3f(), Vector3f());
+        }
 #endif
 
         send_notification = true;
@@ -608,7 +632,13 @@ bool ModeGuided::set_destination(const Location& dest_loc, bool use_yaw, float y
         pos_control->init_pos_terrain_D_m(0.0);
     }
 
-    guided_pos_target_ned_m = pos_target_ned_m;
+    Vector3p adjusted_pos_target_ned_m;
+    if (geometric_position_control_active()) {
+        adjusted_pos_target_ned_m = guided_geometric_target_manager.set_destination_target(pos_target_ned_m, is_terrain_alt);
+    } else {
+        adjusted_pos_target_ned_m = guided_geometric_target_manager.set_position_target(pos_target_ned_m, is_terrain_alt);
+    }
+    guided_pos_target_ned_m = adjusted_pos_target_ned_m;
     guided_is_terrain_alt = is_terrain_alt;
     guided_vel_target_ned_ms.zero();
     guided_accel_target_ned_mss.zero();
@@ -616,7 +646,7 @@ bool ModeGuided::set_destination(const Location& dest_loc, bool use_yaw, float y
 
     // log target
 #if HAL_LOGGING_ENABLED
-    copter.Log_Write_Guided_Position_Target(guided_mode, Vector3p(dest_loc.lat, dest_loc.lng, dest_loc.alt), guided_is_terrain_alt, guided_vel_target_ned_ms, guided_accel_target_ned_mss);
+    copter.Log_Write_Guided_Position_Target(guided_mode, guided_pos_target_ned_m, guided_is_terrain_alt, guided_vel_target_ned_ms, guided_accel_target_ned_mss);
 #endif
 
     send_notification = true;
@@ -638,6 +668,7 @@ void ModeGuided::set_accel_NED_mss(const Vector3f& accel_ned_mss, bool use_yaw, 
     // set velocity and acceleration targets and zero position
     guided_pos_target_ned_m.zero();
     guided_is_terrain_alt = false;
+    guided_geometric_target_manager.reset();
     guided_vel_target_ned_ms.zero();
     guided_accel_target_ned_mss = accel_ned_mss;
     update_time_ms = millis();
@@ -670,6 +701,7 @@ void ModeGuided::set_vel_accel_NED_m(const Vector3f& vel_ned_ms, const Vector3f&
     // set velocity and acceleration targets and zero position
     guided_pos_target_ned_m.zero();
     guided_is_terrain_alt = false;
+    guided_geometric_target_manager.reset();
     guided_vel_target_ned_ms = vel_ned_ms;
     guided_accel_target_ned_mss = accel_ned_mss;
     update_time_ms = millis();
@@ -710,7 +742,7 @@ bool ModeGuided::set_pos_vel_accel_NED_m(const Vector3p& pos_ned_m, const Vector
     set_yaw_state_rad(use_yaw, yaw_rad, use_yaw_rate, yaw_rate_rads, relative_yaw);
 
     update_time_ms = millis();
-    guided_pos_target_ned_m = pos_ned_m;
+    guided_pos_target_ned_m = guided_geometric_target_manager.set_position_target(pos_ned_m, false);
     guided_is_terrain_alt = false;
     guided_vel_target_ned_ms = vel_ned_ms;
     guided_accel_target_ned_mss = accel_ned_mss;
@@ -1233,6 +1265,12 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: SX: Shaped position target, X-Axis
     // @Field: SY: Shaped position target, Y-Axis
     // @Field: SZ: Shaped position target, Z-Axis
+    // @Field: SAct: True if the geometric setpoint shaper was active
+    // @Field: YTrj: True if yaw was derived from shaped trajectory velocity
+
+    // @LoggerMessage: GESV
+    // @Description: Geometric guided shaped velocity and acceleration observer
+    // @Field: TimeUS: Time since system startup
     // @Field: VX: Shaped velocity target, X-Axis
     // @Field: VY: Shaped velocity target, Y-Axis
     // @Field: VZ: Shaped velocity target, Z-Axis
@@ -1241,8 +1279,6 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: AZ: Shaped acceleration target, Z-Axis
     // @Field: Yaw: Shaped yaw target
     // @Field: YR: Shaped yaw-rate target
-    // @Field: SAct: True if the geometric setpoint shaper was active
-    // @Field: YTrj: True if yaw was derived from shaped trajectory velocity
 
     // @LoggerMessage: GEOZ
     // @Description: Geometric guided vertical-channel observer
@@ -1255,6 +1291,10 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: TAZ: Shaped acceleration target, Z-Axis
     // @Field: PEz: Position error, Z-Axis
     // @Field: VEz: Velocity error, Z-Axis
+
+    // @LoggerMessage: GEZI
+    // @Description: Geometric guided vertical integral and throttle observer
+    // @Field: TimeUS: Time since system startup
     // @Field: IEz: Position integral error, Z-Axis
     // @Field: SFz: Specific force command, Z-Axis
     // @Field: Thr: Projected total thrust per mass
@@ -1372,7 +1412,7 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)target.yaw_rad,
                                     (double)target.yaw_rate_rads);
 
-        AP::logger().WriteStreaming("GEOS", "TimeUS,RX,RY,RZ,SX,SY,SZ,VX,VY,VZ,AX,AY,AZ,Yaw,YR,SAct,YTrj", "QffffffffffffffBB",
+        AP::logger().WriteStreaming("GEOS", "TimeUS,RX,RY,RZ,SX,SY,SZ,SAct,YTrj", "QffffffBB",
                                     AP_HAL::micros64(),
                                     (double)raw_target.position_ned_m.x,
                                     (double)raw_target.position_ned_m.y,
@@ -1380,6 +1420,11 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)shaped_target.position_ned_m.x,
                                     (double)shaped_target.position_ned_m.y,
                                     (double)shaped_target.position_ned_m.z,
+                                    (uint8_t)shaper_active,
+                                    (uint8_t)shaped_target.yaw_from_trajectory);
+
+        AP::logger().WriteStreaming("GESV", "TimeUS,VX,VY,VZ,AX,AY,AZ,Yaw,YR", "Qffffffff",
+                                    AP_HAL::micros64(),
                                     (double)shaped_target.velocity_ned_ms.x,
                                     (double)shaped_target.velocity_ned_ms.y,
                                     (double)shaped_target.velocity_ned_ms.z,
@@ -1387,11 +1432,9 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)shaped_target.accel_ned_mss.y,
                                     (double)shaped_target.accel_ned_mss.z,
                                     (double)shaped_target.yaw_rad,
-                                    (double)shaped_target.yaw_rate_rads,
-                                    (uint8_t)shaper_active,
-                                    (uint8_t)shaped_target.yaw_from_trajectory);
+                                    (double)shaped_target.yaw_rate_rads);
 
-        AP::logger().WriteStreaming("GEOZ", "TimeUS,Z,VZ,RZ,SZ,TVZ,TAZ,PEz,VEz,IEz,SFz,Thr,TRw,TN,SAct,TLim", "QfffffffffffffBB",
+        AP::logger().WriteStreaming("GEOZ", "TimeUS,Z,VZ,RZ,SZ,TVZ,TAZ,PEz,VEz", "Qffffffff",
                                     AP_HAL::micros64(),
                                     (double)geometric_state.position_ned_m.z,
                                     (double)geometric_state.velocity_ned_ms.z,
@@ -1400,7 +1443,10 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)shaped_target.velocity_ned_ms.z,
                                     (double)shaped_target.accel_ned_mss.z,
                                     (double)output.position.position_error_m.z,
-                                    (double)output.position.velocity_error_ms.z,
+                                    (double)output.position.velocity_error_ms.z);
+
+        AP::logger().WriteStreaming("GEZI", "TimeUS,IEz,SFz,Thr,TRw,TN,SAct,TLim", "QfffffBB",
+                                    AP_HAL::micros64(),
                                     (double)output.position.integral_error_m.z,
                                     (double)output.position.specific_force_ned_mss.z,
                                     (double)output.position.thrust,
