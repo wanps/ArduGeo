@@ -7,6 +7,7 @@ Vector3f apply_optional_lowpass(const Vector3f& input,
                                 float dt,
                                 Vector3f& filtered)
 {
+    // A zero cutoff is the documented bypass path for all optional filters.
     if (!is_positive(cutoff_hz) || !is_positive(dt)) {
         filtered = input;
         return input;
@@ -102,6 +103,8 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
                                        float dt,
                                        AC_Geometric_Position_Output& output)
 {
+    // Lee/Gao use e_x = x - x_d and e_v = v - v_d in inertial coordinates.
+    // ArduPilot's inertial frame here is NED, with positive Z pointing down.
     const Vector3f position_error_raw_m = state.position_ned_m - target.position_ned_m;
     const Vector3f velocity_error_raw_ms = state.velocity_ned_ms - target.velocity_ned_ms;
 
@@ -123,6 +126,8 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     output.position_error_m = _position_error_filtered_m;
     output.velocity_error_ms = _velocity_error_filtered_ms;
 
+    // Geometric PID integral. The c_x weighting lets the integral term reject
+    // constant disturbances without requiring raw position error integration.
     const Vector3f integral_input {
         output.velocity_error_ms.x + _gains.integral_error_p.x * output.position_error_m.x,
         output.velocity_error_ms.y + _gains.integral_error_p.y * output.position_error_m.y,
@@ -148,16 +153,23 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     output.thrust_vector_ned = output.specific_force_ned_mss;
 
     if (target.build_attitude_from_position) {
+        // Full SE(3) coupling path: convert the desired force direction plus
+        // yaw reference into R_c, then estimate Omega_c and dot(Omega_c).
         output.attitude_body_to_ned = attitude_from_thrust_vector(output.thrust_vector_ned, target.yaw_rad);
         Vector3f fallback_omega_body_rads = target.omega_body_rads;
         fallback_omega_body_rads.z = target.yaw_rate_rads;
         if (_attitude_target_reset) {
+            // On the first sample, avoid differentiating from an uninitialised
+            // attitude. Use the caller-provided angular target as a seed.
             _omega_c_filtered_rads = fallback_omega_body_rads;
             _omega_dot_c_filtered_radss.zero();
             output.omega_body_rads = _omega_c_filtered_rads;
             output.omega_dot_body_radss = _omega_dot_c_filtered_radss;
             _attitude_target_reset = false;
         } else {
+            // The paper defines Omega_c analytically. This implementation
+            // approximates it from the discrete R_c sequence and filters the
+            // result before feeding the SO(3) attitude channel.
             const Vector3f omega_c_raw_rads = attitude_delta_to_body_rate(_last_attitude_target_body_to_ned,
                                                                           output.attitude_body_to_ned,
                                                                           dt);

@@ -2,6 +2,9 @@
 
 #include "AC_Geometric_Types.h"
 
+// Converts physical-looking geometric outputs into the normalized command
+// space expected by the current ArduPilot integration. This layer is the only
+// place that knows about hover-throttle scaling and moment proxy normalisation.
 class AC_Geometric_OutputMapper {
 public:
     AC_Geometric_OutputMapper() = default;

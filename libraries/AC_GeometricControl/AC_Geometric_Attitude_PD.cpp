@@ -7,6 +7,7 @@ Vector3f apply_optional_lowpass(const Vector3f& input,
                                 float dt,
                                 Vector3f& filtered)
 {
+    // A zero cutoff is the documented bypass path for all optional filters.
     if (!is_positive(cutoff_hz) || !is_positive(dt)) {
         filtered = input;
         return input;
@@ -73,6 +74,7 @@ float update_integral_axis(float integrator,
 {
     const float abs_limit = MAX(fabsf(limit), 0.0f);
     if (!is_positive(gain) || !is_positive(abs_limit)) {
+        // Disable and clear the axis if either Ki or IMAX is zero.
         return 0.0f;
     }
     if (is_positive(dt)) {
@@ -96,6 +98,9 @@ void AC_Geometric_Attitude_PD::update(const AC_Geometric_State& state,
                                       AC_Geometric_Attitude_Output& output)
 {
     output.attitude_error = attitude_error_lee(state.attitude_body_to_ned, target.attitude_body_to_ned);
+
+    // Desired angular velocity and acceleration are defined in the target
+    // body frame; Lee's error equation compares them in the current body frame.
     const Vector3f omega_target_current_body_rads =
         rotate_target_body_to_current_body(state.attitude_body_to_ned,
                                            target.attitude_body_to_ned,
@@ -116,6 +121,8 @@ void AC_Geometric_Attitude_PD::update(const AC_Geometric_State& state,
     }
     output.omega_error_rads = _omega_error_filtered_rads;
 
+    // Geometric PID attitude integral e_I = integral(e_Omega + c e_R).
+    // Each axis can be independently disabled with zero Ki or zero IMAX.
     const Vector3f integral_input {
         output.omega_error_rads.x + _gains.integral_error_p.x * output.attitude_error.x,
         output.omega_error_rads.y + _gains.integral_error_p.y * output.attitude_error.y,

@@ -2,6 +2,9 @@
 
 #include "AC_Geometric_Types.h"
 
+// Lightweight reference shaper for geometric Guided position targets. It keeps
+// an internal x_d, v_d and a_d state, then advances that state toward the raw
+// target using velocity and acceleration limits before the position PID runs.
 class AC_Geometric_SetpointShaper {
 public:
     AC_Geometric_SetpointShaper() = default;
@@ -18,8 +21,14 @@ public:
 
 private:
     void init_from_state(const AC_Geometric_State& state);
+
+    // Translational shaping is split into horizontal NED XY and vertical NED Z
+    // so climb/descent limits can differ while preserving a single target API.
     void shape_xy(const Vector3f& goal_ned_m, float dt);
     void shape_z(float goal_z_ned_m, float dt);
+
+    // Explicit yaw commands and trajectory-derived yaw share the same rate and
+    // acceleration limiter.
     void shape_yaw(float yaw_goal_rad, float yaw_rate_goal_rads, float dt);
     void shape_yaw_from_trajectory(float dt);
 

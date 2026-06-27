@@ -2,48 +2,48 @@
 
 #include <AP_HAL/AP_HAL.h>
 
-#define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f
-#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 1.0f
-#define AC_GEOMETRIC_POS_KI_XY_DEFAULT 0.0f
-#define AC_GEOMETRIC_POS_KI_Z_DEFAULT 0.0f
-#define AC_GEOMETRIC_POS_KV_XY_DEFAULT 2.0f
-#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 2.0f
-#define AC_GEOMETRIC_POS_IMAX_XY_DEFAULT 1.0f
-#define AC_GEOMETRIC_POS_IMAX_Z_DEFAULT 1.0f
-#define AC_GEOMETRIC_POS_INT_C_DEFAULT 1.0f
-#define AC_GEOMETRIC_ATT_KR_X_DEFAULT 4.0f
-#define AC_GEOMETRIC_ATT_KR_Y_DEFAULT 4.0f
-#define AC_GEOMETRIC_ATT_KR_Z_DEFAULT 2.0f
-#define AC_GEOMETRIC_ATT_KO_X_DEFAULT 0.2f
-#define AC_GEOMETRIC_ATT_KO_Y_DEFAULT 0.2f
-#define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.4f
-#define AC_GEOMETRIC_ATT_KI_X_DEFAULT 0.0f
-#define AC_GEOMETRIC_ATT_KI_Y_DEFAULT 0.0f
-#define AC_GEOMETRIC_ATT_KI_Z_DEFAULT 0.0f
-#define AC_GEOMETRIC_ATT_IMAX_X_DEFAULT 0.0f
-#define AC_GEOMETRIC_ATT_IMAX_Y_DEFAULT 0.0f
-#define AC_GEOMETRIC_ATT_IMAX_Z_DEFAULT 0.0f
-#define AC_GEOMETRIC_ATT_INT_C_DEFAULT 1.0f
-#define AC_GEOMETRIC_ATT_J_X_DEFAULT 0.011f
-#define AC_GEOMETRIC_ATT_J_Y_DEFAULT 0.020f
-#define AC_GEOMETRIC_ATT_J_Z_DEFAULT 0.023f
-#define AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT 0.0f
-#define AC_GEOMETRIC_MOMENT_NORM_X_DEFAULT 4.0f
-#define AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT 4.0f
-#define AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT 2.0f
-#define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 1
-#define AC_GEOMETRIC_FILTER_DISABLED 0.0f
-#define AC_GEOMETRIC_OMEGA_C_FILTER_DEFAULT 5.0f
-#define AC_GEOMETRIC_OMEGA_DOT_C_FILTER_DEFAULT 2.0f
-#define AC_GEOMETRIC_SHAPE_ENABLED_DEFAULT 1
-#define AC_GEOMETRIC_SHAPE_VEL_XY_DEFAULT 1.0f
-#define AC_GEOMETRIC_SHAPE_ACCEL_XY_DEFAULT 0.5f
-#define AC_GEOMETRIC_SHAPE_VEL_UP_DEFAULT 2.5f
-#define AC_GEOMETRIC_SHAPE_VEL_DOWN_DEFAULT 1.5f
-#define AC_GEOMETRIC_SHAPE_ACCEL_Z_DEFAULT 1.0f
-#define AC_GEOMETRIC_SHAPE_YAW_ENABLED_DEFAULT 0
-#define AC_GEOMETRIC_SHAPE_YAW_RATE_DEFAULT 1.0f
-#define AC_GEOMETRIC_SHAPE_YAW_ACCEL_DEFAULT 1.0f
+#define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f // Horizontal position gain k_x.
+#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 1.0f // Vertical position gain k_x.
+#define AC_GEOMETRIC_POS_KI_XY_DEFAULT 0.0f // Horizontal position integral gain.
+#define AC_GEOMETRIC_POS_KI_Z_DEFAULT 0.0f // Vertical position integral gain.
+#define AC_GEOMETRIC_POS_KV_XY_DEFAULT 2.0f // Horizontal velocity gain k_v.
+#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 2.0f // Vertical velocity gain k_v.
+#define AC_GEOMETRIC_POS_IMAX_XY_DEFAULT 1.0f // Horizontal position integral limit.
+#define AC_GEOMETRIC_POS_IMAX_Z_DEFAULT 1.0f // Vertical position integral limit.
+#define AC_GEOMETRIC_POS_INT_C_DEFAULT 1.0f // Position integral error weight c_x.
+#define AC_GEOMETRIC_ATT_KR_X_DEFAULT 4.0f // Roll attitude gain k_R.
+#define AC_GEOMETRIC_ATT_KR_Y_DEFAULT 4.0f // Pitch attitude gain k_R.
+#define AC_GEOMETRIC_ATT_KR_Z_DEFAULT 2.0f // Yaw attitude gain k_R.
+#define AC_GEOMETRIC_ATT_KO_X_DEFAULT 0.2f // Roll angular-rate gain k_Omega.
+#define AC_GEOMETRIC_ATT_KO_Y_DEFAULT 0.2f // Pitch angular-rate gain k_Omega.
+#define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.4f // Yaw angular-rate gain k_Omega.
+#define AC_GEOMETRIC_ATT_KI_X_DEFAULT 0.0f // Roll attitude integral gain.
+#define AC_GEOMETRIC_ATT_KI_Y_DEFAULT 0.0f // Pitch attitude integral gain.
+#define AC_GEOMETRIC_ATT_KI_Z_DEFAULT 0.0f // Yaw attitude integral gain.
+#define AC_GEOMETRIC_ATT_IMAX_X_DEFAULT 0.0f // Roll attitude integral limit.
+#define AC_GEOMETRIC_ATT_IMAX_Y_DEFAULT 0.0f // Pitch attitude integral limit.
+#define AC_GEOMETRIC_ATT_IMAX_Z_DEFAULT 0.0f // Yaw attitude integral limit.
+#define AC_GEOMETRIC_ATT_INT_C_DEFAULT 1.0f // Attitude integral error weight c_R.
+#define AC_GEOMETRIC_ATT_J_X_DEFAULT 0.011f // Roll-axis inertia model Jx.
+#define AC_GEOMETRIC_ATT_J_Y_DEFAULT 0.020f // Pitch-axis inertia model Jy.
+#define AC_GEOMETRIC_ATT_J_Z_DEFAULT 0.023f // Yaw-axis inertia model Jz.
+#define AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT 0.0f // Zero uses vehicle hover estimate.
+#define AC_GEOMETRIC_MOMENT_NORM_X_DEFAULT 4.0f // Roll moment proxy normalizer.
+#define AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT 4.0f // Pitch moment proxy normalizer.
+#define AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT 2.0f // Yaw moment proxy normalizer.
+#define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 1 // Enable geometric motor output path.
+#define AC_GEOMETRIC_FILTER_DISABLED 0.0f // Zero disables optional filters.
+#define AC_GEOMETRIC_OMEGA_C_FILTER_DEFAULT 5.0f // Omega_c low-pass cutoff.
+#define AC_GEOMETRIC_OMEGA_DOT_C_FILTER_DEFAULT 2.0f // dot(Omega_c) low-pass cutoff.
+#define AC_GEOMETRIC_SHAPE_ENABLED_DEFAULT 1 // Enable position setpoint shaping.
+#define AC_GEOMETRIC_SHAPE_VEL_XY_DEFAULT 1.0f // Horizontal shaped velocity limit.
+#define AC_GEOMETRIC_SHAPE_ACCEL_XY_DEFAULT 0.5f // Horizontal shaped acceleration limit.
+#define AC_GEOMETRIC_SHAPE_VEL_UP_DEFAULT 2.5f // Upward shaped velocity limit.
+#define AC_GEOMETRIC_SHAPE_VEL_DOWN_DEFAULT 1.5f // Downward shaped velocity limit.
+#define AC_GEOMETRIC_SHAPE_ACCEL_Z_DEFAULT 1.0f // Vertical shaped acceleration limit.
+#define AC_GEOMETRIC_SHAPE_YAW_ENABLED_DEFAULT 0 // Disable explicit yaw shaping by default.
+#define AC_GEOMETRIC_SHAPE_YAW_RATE_DEFAULT 1.0f // Shaped yaw-rate limit.
+#define AC_GEOMETRIC_SHAPE_YAW_ACCEL_DEFAULT 1.0f // Shaped yaw-acceleration limit.
 
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Param: POS_KX_XY
@@ -454,6 +454,8 @@ bool AC_GeometricControl::output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) 
 
 void AC_GeometricControl::update_gains_from_params()
 {
+    // Refreshing AP_Param-backed gains here keeps QGC/MAVProxy parameter
+    // changes live during SITL tuning without requiring a controller restart.
     AC_Geometric_Position_Gains position_gains {};
     position_gains.p = Vector3f{_pos_kx_xy.get(), _pos_kx_xy.get(), _pos_kx_z.get()};
     position_gains.i = Vector3f{_pos_ki_xy.get(), _pos_ki_xy.get(), _pos_ki_z.get()};
@@ -508,6 +510,9 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
 
     AC_Geometric_Target position_target = target;
     if (_shape_enabled && target.build_attitude_from_position && target.shape_position_target) {
+        // Guided position targets are often step-like. The geometric shaper
+        // converts them into bounded x_d, v_d and a_d references before the
+        // Lee/Gao position channel sees them.
         AC_Geometric_Setpoint_Shaper_Limits limits {};
         limits.vel_xy_max_ms = _shape_vel_xy_max_ms.get();
         limits.accel_xy_max_mss = _shape_accel_xy_max_mss.get();
@@ -520,6 +525,8 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         _setpoint_shaper.set_limits(limits);
         _setpoint_shaper.update(state, target, dt, position_target);
     } else {
+        // Reset when bypassed so a later shaped segment starts from the
+        // current vehicle state instead of an old cached reference.
         _setpoint_shaper.reset();
     }
 
@@ -535,6 +542,9 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
 
     _attitude_pd.update(state, attitude_target, dt, _output.attitude);
 
+    // The mapper is deliberately last: it translates the geometric force and
+    // moment proxies into normalized ArduPilot-facing commands while keeping
+    // the physical controller math independent from AP_Motors scaling.
     const Vector3f moment_norm {
         _mom_norm_x.get(),
         _mom_norm_y.get(),

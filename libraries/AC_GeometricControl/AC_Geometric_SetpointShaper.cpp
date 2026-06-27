@@ -4,6 +4,7 @@ namespace {
 
 Vector2f limit_vector_length(Vector2f value, float max_length)
 {
+    // Preserve direction while bounding the vector magnitude.
     const float length = value.length();
     if (is_positive(max_length) && length > max_length) {
         value *= max_length / length;
@@ -24,6 +25,9 @@ float yaw_from_velocity_xy(const Vector3f& velocity_ned_ms)
 float yaw_rate_from_velocity_accel_xy(const Vector3f& velocity_ned_ms,
                                       const Vector3f& accel_ned_mss)
 {
+    // Same idea as AC_PosControl::calculate_yaw_and_rate_yaw(): remove the
+    // forward acceleration component and convert the lateral acceleration into
+    // a planar turn rate.
     const Vector2f velocity_xy = velocity_ned_ms.xy();
     const Vector2f accel_xy = accel_ned_mss.xy();
     const float speed_ms = velocity_xy.length();
@@ -55,6 +59,8 @@ void AC_Geometric_SetpointShaper::reset()
 
 void AC_Geometric_SetpointShaper::init_from_state(const AC_Geometric_State& state)
 {
+    // Start every shaped segment from the measured vehicle state to avoid a
+    // jump when geometric control is enabled during flight.
     _pos_ref_ned_m = state.position_ned_m;
     _vel_ref_ned_ms = state.velocity_ned_ms;
     _accel_ref_ned_mss.zero();
@@ -72,6 +78,7 @@ void AC_Geometric_SetpointShaper::shape_xy(const Vector3f& goal_ned_m, float dt)
     const float vel_max_ms = MAX(_limits.vel_xy_max_ms, 0.0f);
     const float accel_max_mss = MAX(_limits.accel_xy_max_mss, 0.0f);
     if (!is_positive(vel_max_ms) || !is_positive(accel_max_mss) || !is_positive(dt)) {
+        // Disabled or invalid limits mean "snap to target" for the reference.
         _pos_ref_ned_m.x = goal_ned_m.x;
         _pos_ref_ned_m.y = goal_ned_m.y;
         _vel_ref_ned_ms.x = 0.0f;
@@ -90,10 +97,13 @@ void AC_Geometric_SetpointShaper::shape_xy(const Vector3f& goal_ned_m, float dt)
     Vector2f vel_desired_xy;
     vel_desired_xy.zero();
     if (is_positive(distance_m)) {
+        // Braking-distance shaper: the reference speed is never higher than
+        // the speed from which it can stop within the remaining distance.
         const float vel_stop_ms = safe_sqrt(2.0f * accel_max_mss * distance_m);
         vel_desired_xy = error_xy * (MIN(vel_max_ms, vel_stop_ms) / distance_m);
     }
 
+    // Acceleration limiting is applied by limiting the velocity increment.
     const Vector2f delta_vel_xy = limit_vector_length(vel_desired_xy - vel_ref_xy, accel_max_mss * dt);
     const Vector2f accel_xy = delta_vel_xy / dt;
     const Vector2f next_pos_xy = pos_ref_xy + vel_ref_xy * dt + accel_xy * (0.5f * sq(dt));
@@ -111,6 +121,7 @@ void AC_Geometric_SetpointShaper::shape_z(float goal_z_ned_m, float dt)
 {
     const float accel_max_mss = MAX(_limits.accel_z_max_mss, 0.0f);
     if (!is_positive(accel_max_mss) || !is_positive(dt)) {
+        // Disabled or invalid limits mean "snap to target" for the reference.
         _pos_ref_ned_m.z = goal_z_ned_m;
         _vel_ref_ned_ms.z = 0.0f;
         _accel_ref_ned_mss.z = 0.0f;
@@ -118,6 +129,7 @@ void AC_Geometric_SetpointShaper::shape_z(float goal_z_ned_m, float dt)
     }
 
     const float error_z_m = goal_z_ned_m - _pos_ref_ned_m.z;
+    // NED positive Z is down, so negative Z error means upward travel.
     const float vel_max_ms = is_negative(error_z_m) ? MAX(_limits.vel_up_max_ms, 0.0f) : MAX(_limits.vel_down_max_ms, 0.0f);
     if (!is_positive(vel_max_ms)) {
         _pos_ref_ned_m.z = goal_z_ned_m;
@@ -141,6 +153,7 @@ void AC_Geometric_SetpointShaper::shape_yaw(float yaw_goal_rad, float yaw_rate_g
     const float yaw_rate_max_rads = MAX(_limits.yaw_rate_max_rads, 0.0f);
     const float yaw_accel_max_radss = MAX(_limits.yaw_accel_max_radss, 0.0f);
     if (!is_positive(yaw_rate_max_rads) || !is_positive(yaw_accel_max_radss) || !is_positive(dt)) {
+        // With shaping disabled, pass explicit yaw references through exactly.
         _yaw_ref_rad = yaw_goal_rad;
         _yaw_rate_ref_rads = yaw_rate_goal_rads;
         _yaw_accel_ref_radss = 0.0f;
@@ -148,6 +161,7 @@ void AC_Geometric_SetpointShaper::shape_yaw(float yaw_goal_rad, float yaw_rate_g
     }
 
     const float yaw_error_rad = wrap_PI(yaw_goal_rad - _yaw_ref_rad);
+    // Angular counterpart of the position braking-distance shaper.
     const float yaw_rate_stop_rads = safe_sqrt(2.0f * yaw_accel_max_radss * fabsf(yaw_error_rad));
     const float yaw_rate_correction_rads = sign_not_zero(yaw_error_rad) * MIN(yaw_rate_max_rads, yaw_rate_stop_rads);
     const float yaw_rate_desired_rads = constrain_float(yaw_rate_goal_rads + yaw_rate_correction_rads,
@@ -166,6 +180,8 @@ void AC_Geometric_SetpointShaper::shape_yaw_from_trajectory(float dt)
     const float vel_xy_max_ms = MAX(_limits.vel_xy_max_ms, 0.0f);
     const float min_yaw_speed_ms = MAX(vel_xy_max_ms * 0.05f, 0.05f);
     if (_vel_ref_ned_ms.xy().length() <= min_yaw_speed_ms) {
+        // At low speed the horizontal velocity direction is ill-defined; hold
+        // the previous yaw reference and command no yaw-rate.
         _yaw_rate_ref_rads = 0.0f;
         _yaw_accel_ref_radss = 0.0f;
         return;
@@ -193,16 +209,22 @@ void AC_Geometric_SetpointShaper::update(const AC_Geometric_State& state,
     shaped_target.velocity_ned_ms = _vel_ref_ned_ms;
     shaped_target.accel_ned_mss = _accel_ref_ned_mss;
     if (raw_target.yaw_from_trajectory) {
+        // GoToLocation yaw-follow: derive heading from the same shaped
+        // reference that feeds the geometric position channel.
         shape_yaw_from_trajectory(dt);
         shaped_target.yaw_rad = _yaw_ref_rad;
         shaped_target.yaw_rate_rads = _yaw_rate_ref_rads;
         shaped_target.omega_body_rads.z = _yaw_rate_ref_rads;
     } else if (_limits.yaw_enabled) {
+        // Explicit yaw commands can optionally be shaped through the same
+        // angular velocity and acceleration limits.
         shape_yaw(raw_target.yaw_rad, raw_target.yaw_rate_rads, dt);
         shaped_target.yaw_rad = _yaw_ref_rad;
         shaped_target.yaw_rate_rads = _yaw_rate_ref_rads;
         shaped_target.omega_body_rads.z = _yaw_rate_ref_rads;
     } else {
+        // When yaw shaping is disabled, keep the caller's yaw/yaw-rate command
+        // and update the internal yaw cache for the next shaped segment.
         _yaw_ref_rad = raw_target.yaw_rad;
         _yaw_rate_ref_rads = raw_target.yaw_rate_rads;
         _yaw_accel_ref_radss = 0.0f;

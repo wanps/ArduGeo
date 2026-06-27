@@ -9,6 +9,10 @@
 #include "AC_Geometric_SetpointShaper.h"
 #include "AC_Geometric_Types.h"
 
+// Top-level coordinator for the experimental SE(3) geometric control path.
+// Vehicle code owns mode gating, safety checks and motor writes; this class
+// only shapes references, runs the geometric control cascade and exposes the
+// latest mapped command for the caller to consume.
 class AC_GeometricControl {
 public:
     AC_GeometricControl();
@@ -41,6 +45,10 @@ private:
     float hover_throttle_norm() const;
 
     bool _enabled = false;
+
+    // The cascade is kept as separate components so future controllers can
+    // replace one layer, for example an alternative attitude block, without
+    // changing the data contract between layers.
     AC_Geometric_Position_PID _position_pid;
     AC_Geometric_Attitude_PD _attitude_pd;
     AC_Geometric_OutputMapper _output_mapper;

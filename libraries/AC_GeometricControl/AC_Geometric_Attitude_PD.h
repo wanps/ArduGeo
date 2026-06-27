@@ -2,6 +2,9 @@
 
 #include "AC_Geometric_Types.h"
 
+// Lee SO(3) attitude channel. It tracks either a direct attitude target R_d or
+// the position-generated commanded attitude R_c, producing a geometric moment
+// proxy M_d for the output mapper.
 class AC_Geometric_Attitude_PD {
 public:
     AC_Geometric_Attitude_PD() = default;
@@ -30,6 +33,9 @@ private:
     AC_Geometric_Attitude_Model _model;
     AC_Geometric_Attitude_Filter_Hz _filter_hz;
     AC_Geometric_Attitude_Integral_Limits _integral_limits;
+
+    // Optional filtered angular-rate error and geometric integral state e_I.
+    // Both are reset when the controller is disabled or reinitialised.
     Vector3f _omega_error_filtered_rads;
     Vector3f _integral_error;
     bool _filter_reset = true;

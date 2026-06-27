@@ -4,6 +4,7 @@ namespace {
 
 float safe_moment_norm(float norm)
 {
+    // Avoid division by zero while preserving the user's selected scale.
     return MAX(fabsf(norm), 1.0e-3f);
 }
 

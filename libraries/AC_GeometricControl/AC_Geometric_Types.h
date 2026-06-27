@@ -111,10 +111,12 @@ struct AC_Geometric_Position_Integral_Limits {
 };
 
 struct AC_Geometric_Attitude_Filter_Hz {
+    // Optional cutoff for the angular-rate error used by the SO(3) channel.
     float omega_error = 0.0f;
 };
 
 struct AC_Geometric_Attitude_Integral_Limits {
+    // Per-axis bounds for e_I. A zero axis disables that integrator.
     Vector3f integral_error;
 };
 
