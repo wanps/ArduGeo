@@ -8,6 +8,7 @@
 #include "AC_Geometric_Position_PID.h"
 #include "AC_Geometric_SetpointShaper.h"
 #include "AC_Geometric_Types.h"
+#include "AC_Geometric_YawShaper.h"
 
 // Top-level coordinator for the experimental SE(3) geometric control path.
 // Vehicle code owns mode gating, safety checks and motor writes; this class
@@ -56,6 +57,7 @@ private:
     AC_Geometric_Attitude_PD _attitude_pd;
     AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_SetpointShaper _setpoint_shaper;
+    AC_Geometric_YawShaper _yaw_shaper;
     AC_Geometric_Output _output;
     AC_Geometric_Target _raw_target;
     AC_Geometric_Target _shaped_target;

@@ -51,7 +51,8 @@ struct AC_Geometric_Target {
 };
 
 // Limits for the optional geometric reference shaper. The shaper converts raw
-// Guided targets into smooth position, velocity and acceleration references.
+// Guided targets into smooth position, velocity and acceleration references
+// using ArduPilot's jerk-limited square-root shaping helpers.
 // Explicit yaw commands are separately gated because Copter Guided may already
 // provide a shaped yaw target through AutoYaw. Geometric trajectory yaw-follow
 // still uses the yaw rate/acceleration limits when yaw_from_trajectory is true.
@@ -61,9 +62,16 @@ struct AC_Geometric_Setpoint_Shaper_Limits {
     float vel_up_max_ms = 0.0f;
     float vel_down_max_ms = 0.0f;
     float accel_z_max_mss = 0.0f;
-    bool yaw_enabled = false;
+};
+
+// Limits for the geometric yaw reference shaper. It follows ArduPilot's
+// angle/velocity/acceleration shaping helper but owns its own yaw state so the
+// geometric path does not depend on AC_AttitudeControl's yaw target cache.
+struct AC_Geometric_Yaw_Shaper_Limits {
+    bool explicit_yaw_enabled = false;
     float yaw_rate_max_rads = 0.0f;
     float yaw_accel_max_radss = 0.0f;
+    float trajectory_min_speed_ms = 0.0f;
 };
 
 // Per-axis PID gains for the geometric position channel.

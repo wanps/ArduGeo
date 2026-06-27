@@ -41,7 +41,7 @@
 #define AC_GEOMETRIC_SHAPE_VEL_UP_DEFAULT 2.5f // Upward shaped velocity limit.
 #define AC_GEOMETRIC_SHAPE_VEL_DOWN_DEFAULT 1.5f // Downward shaped velocity limit.
 #define AC_GEOMETRIC_SHAPE_ACCEL_Z_DEFAULT 1.0f // Vertical shaped acceleration limit.
-#define AC_GEOMETRIC_SHAPE_YAW_ENABLED_DEFAULT 0 // Disable explicit yaw shaping by default.
+#define AC_GEOMETRIC_SHAPE_YAW_ENABLED_DEFAULT 1 // Enable explicit yaw shaping by default.
 #define AC_GEOMETRIC_SHAPE_YAW_RATE_DEFAULT 1.0f // Shaped yaw-rate limit.
 #define AC_GEOMETRIC_SHAPE_YAW_ACCEL_DEFAULT 1.0f // Shaped yaw-acceleration limit.
 
@@ -284,7 +284,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: SHAPE_EN
     // @DisplayName: Geometric setpoint shaper enable
-    // @Description: Enables the geometric setpoint shaper for position-derived Guided targets before they enter the Lee SE(3) position channel. The shaper limits target position changes using velocity and acceleration bounds.
+    // @Description: Enables the geometric setpoint shaper for position-derived Guided targets before they enter the Lee SE(3) position channel. The shaper uses ArduPilot's jerk-limited square-root helpers with velocity and acceleration bounds.
     // @Values: 0:Disable,1:Enable
     // @User: Advanced
     AP_GROUPINFO("SHAPE_EN", 30, AC_GeometricControl, _shape_enabled, AC_GEOMETRIC_SHAPE_ENABLED_DEFAULT),
@@ -354,7 +354,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: SHAPE_YAW
     // @DisplayName: Geometric yaw shaper enable
-    // @Description: Enables yaw reference shaping for explicit yaw commands inside the geometric setpoint shaper. Geometric yaw-follow for Guided position targets is generated from shaped trajectory velocity and acceleration separately.
+    // @Description: Enables yaw reference shaping for explicit yaw commands inside the geometric yaw shaper. Geometric yaw-follow for Guided position targets is generated from shaped trajectory velocity and acceleration separately.
     // @Values: 0:Disable,1:Enable
     // @User: Advanced
     AP_GROUPINFO("SHAPE_YAW", 38, AC_GeometricControl, _shape_yaw_enabled, AC_GEOMETRIC_SHAPE_YAW_ENABLED_DEFAULT),
@@ -422,6 +422,7 @@ void AC_GeometricControl::reset()
     _position_pid.reset();
     _attitude_pd.reset();
     _setpoint_shaper.reset();
+    _yaw_shaper.reset();
     _output = {};
     _raw_target = {};
     _shaped_target = {};
@@ -516,17 +517,14 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     _shaper_active = false;
     if (_shape_enabled && target.build_attitude_from_position && target.shape_position_target) {
         // Guided position targets are often step-like. The geometric shaper
-        // converts them into bounded x_d, v_d and a_d references before the
-        // Lee/Gao position channel sees them.
+        // converts them into jerk-limited x_d, v_d and a_d references before
+        // the Lee/Gao position channel sees them.
         AC_Geometric_Setpoint_Shaper_Limits limits {};
         limits.vel_xy_max_ms = _shape_vel_xy_max_ms.get();
         limits.accel_xy_max_mss = _shape_accel_xy_max_mss.get();
         limits.vel_up_max_ms = _shape_vel_up_max_ms.get();
         limits.vel_down_max_ms = _shape_vel_down_max_ms.get();
         limits.accel_z_max_mss = _shape_accel_z_max_mss.get();
-        limits.yaw_enabled = _shape_yaw_enabled.get() != 0;
-        limits.yaw_rate_max_rads = _shape_yaw_rate_max_rads.get();
-        limits.yaw_accel_max_radss = _shape_yaw_accel_max_radss.get();
         _setpoint_shaper.set_limits(limits);
         _setpoint_shaper.update(state, target, dt, position_target);
         _shaper_active = true;
@@ -534,6 +532,23 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         // Reset when bypassed so a later shaped segment starts from the
         // current vehicle state instead of an old cached reference.
         _setpoint_shaper.reset();
+    }
+
+    if (_shape_enabled && target.build_attitude_from_position) {
+        AC_Geometric_Yaw_Shaper_Limits yaw_limits {};
+        yaw_limits.explicit_yaw_enabled = _shape_yaw_enabled.get() != 0;
+        yaw_limits.yaw_rate_max_rads = _shape_yaw_rate_max_rads.get();
+        yaw_limits.yaw_accel_max_radss = _shape_yaw_accel_max_radss.get();
+        yaw_limits.trajectory_min_speed_ms = MAX(_shape_vel_xy_max_ms.get() * 0.05f, 0.05f);
+        _yaw_shaper.set_limits(yaw_limits);
+        _shaper_active = _yaw_shaper.update(state,
+                                            target,
+                                            position_target.velocity_ned_ms,
+                                            position_target.accel_ned_mss,
+                                            dt,
+                                            position_target) || _shaper_active;
+    } else {
+        _yaw_shaper.reset();
     }
     _shaped_target = position_target;
 

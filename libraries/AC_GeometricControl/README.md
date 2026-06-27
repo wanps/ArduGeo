@@ -23,7 +23,7 @@ Branch default:
 GUID_OPTIONS = 258
 GEO_OUT_EN = 1
 GEO_SHAPE_EN = 1
-GEO_SHAPE_YAW = 0
+GEO_SHAPE_YAW = 1
 
 GUID_OPTIONS = 258 means:
 bit 1 = Geometric observer
@@ -53,10 +53,12 @@ If any gate is false, the normal Guided controller path remains responsible for 
 When active geometric output is allowed, Guided position-style targets are no
 longer advanced through the native `AC_PosControl` PID loops before they enter
 the geometric controller. Guided Pos and Guided WP targets are passed as final
-goals to the geometric setpoint shaper, which generates the `x_d`, `v_d`,
-`a_d`, yaw, and yaw-rate references consumed by the Lee position channel. For
-Guided yaw-follow modes, yaw is derived from the geometric shaper's own shaped
-horizontal velocity and acceleration rather than from `AC_PosControl` yaw state.
+goals to the geometric setpoint shaper, which uses ArduPilot's jerk-limited
+square-root shaping helpers to generate the `x_d`, `v_d`, and `a_d`
+references consumed by the Lee position channel. A separate geometric yaw
+shaper generates yaw and yaw-rate references. For Guided yaw-follow modes, yaw
+is derived from the geometric shaper's own shaped horizontal velocity and
+acceleration rather than from `AC_PosControl` yaw state.
 Clearing `GUID_OPTIONS bit 8` switches these paths back to the normal
 WPNav/AC_PosControl/AC_AttitudeControl loop. Terrain-frame position targets
 currently fall back to the native path until geometric terrain handling is
@@ -105,7 +107,7 @@ All parameters use the `GEO_` prefix in Copter.
 | `GEO_SHAPE_VUP` | Upward reference velocity limit for the setpoint shaper. |
 | `GEO_SHAPE_VDN` | Downward reference velocity limit for the setpoint shaper. |
 | `GEO_SHAPE_AZ` | Vertical reference acceleration limit for the setpoint shaper. |
-| `GEO_SHAPE_YAW` | Optional shaper for explicit yaw commands. Geometric yaw-follow is generated from shaped trajectory velocity/acceleration separately. |
+| `GEO_SHAPE_YAW` | Optional shaper for explicit yaw commands. Default is enabled on this branch. Geometric yaw-follow is generated from shaped trajectory velocity/acceleration separately. |
 | `GEO_SHAPE_YRAT` | Yaw reference rate limit for explicit yaw shaping and geometric yaw-follow. |
 | `GEO_SHAPE_YACC` | Yaw reference acceleration limit for explicit yaw shaping and geometric yaw-follow. |
 | `GEO_HOV_THR` | Hover throttle reference used to normalize geometric thrust. `0` uses the vehicle `MOT_THST_HOVER` estimate; non-zero values override it. |
@@ -157,15 +159,17 @@ GEO_DOMG_C_FLT = 2
 ```
 
 The setpoint shaper is enabled by default on this branch. In active geometric
-Guided Pos/WP, the final target point is converted into velocity- and
-acceleration-limited references before the Lee position channel computes `R_c`;
-the native `AC_PosControl` PID output is not used to create those references.
+Guided Pos/WP, the final target point is converted into jerk-limited
+square-root position, velocity and acceleration references before the Lee
+position channel computes `R_c`; the native `AC_PosControl` PID output is not
+used to create those references.
 For Guided yaw-follow (`LOOK_AT_NEXT_WP` or `LOOK_AHEAD`), yaw is generated from
-the geometric shaper's own shaped horizontal velocity and acceleration. At low
-speed it holds the last yaw reference to avoid target-direction ambiguity near
-the destination. Explicit yaw commands still come from AutoYaw; `GEO_SHAPE_YAW`
-only enables additional smoothing for those explicit commands. The current
-default branch starting point is:
+the geometric yaw shaper using the shaped horizontal velocity and acceleration.
+At low speed it holds the last yaw reference to avoid target-direction
+ambiguity near the destination. Explicit yaw commands still enter through the
+Guided yaw command path, but `GEO_SHAPE_YAW` now lets the geometric yaw shaper
+smooth those commands without reading back `AC_AttitudeControl` yaw target
+state. The current default branch starting point is:
 
 ```text
 GEO_SHAPE_EN = 1
@@ -174,7 +178,7 @@ GEO_SHAPE_AXY = 0.5
 GEO_SHAPE_VUP = 2.5
 GEO_SHAPE_VDN = 1.5
 GEO_SHAPE_AZ = 1
-GEO_SHAPE_YAW = 0
+GEO_SHAPE_YAW = 1
 GEO_SHAPE_YRAT = 1
 GEO_SHAPE_YACC = 1
 ```
@@ -188,6 +192,11 @@ Guided geometric logging is emitted while the observer level is enabled.
 | `GEOP` | Position-channel errors, specific force command, projected thrust, commanded attitude, and ArduPilot reference attitude/thrust-vector comparison. |
 | `GEOA` | SO(3) attitude error, angular-rate error, integral error, moment proxy, and rate-target proxy. |
 | `GEOC` | Commanded attitude coupling diagnostics: `R_c`, native attitude target, position-generated `Omega_c`, `dot(Omega_c)`, and yaw inputs. |
+| `GEOS` | Raw and shaped position targets plus shaper and trajectory-yaw state. |
+| `GEOT` | Guided target semantics: target type, AutoYaw mode, pause state, shaping request, and trajectory-yaw permission. |
+| `GESV` | Shaped velocity, acceleration, yaw, and yaw-rate targets. |
+| `GEOZ` | Vertical-channel target, state, error, and shaped vertical feed-forward terms. |
+| `GEZI` | Vertical integral, specific force, and normalized throttle diagnostics. |
 | `GEOO` | Output-mapper attitude and normalized throttle values before motor write status checks. |
 | `GEOM` | Output-mapper roll, pitch, and yaw normalized actuator values. |
 | `GEOX` | Active motor-output hook state: mode allow, controller enable, rate-thread state, write recency, output age, normalized outputs, and limit flags. |

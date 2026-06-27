@@ -2,9 +2,9 @@
 
 #include "AC_Geometric_Types.h"
 
-// Lightweight reference shaper for geometric Guided position targets. It keeps
-// an internal x_d, v_d and a_d state, then advances that state toward the raw
-// target using velocity and acceleration limits before the position PID runs.
+// Reference shaper for geometric Guided position targets. It keeps an internal
+// x_d, v_d and a_d state, then advances that state toward the raw target using
+// ArduPilot's jerk-limited square-root shaping helpers before the position PID runs.
 class AC_Geometric_SetpointShaper {
 public:
     AC_Geometric_SetpointShaper() = default;
@@ -24,20 +24,12 @@ private:
 
     // Translational shaping is split into horizontal NED XY and vertical NED Z
     // so climb/descent limits can differ while preserving a single target API.
-    void shape_xy(const Vector3f& goal_ned_m, float dt);
-    void shape_z(float goal_z_ned_m, float dt);
-
-    // Explicit yaw commands and trajectory-derived yaw share the same rate and
-    // acceleration limiter.
-    void shape_yaw(float yaw_goal_rad, float yaw_rate_goal_rads, float dt);
-    void shape_yaw_from_trajectory(float dt);
+    void shape_xy(const AC_Geometric_Target& raw_target, float dt);
+    void shape_z(const AC_Geometric_Target& raw_target, float dt);
 
     AC_Geometric_Setpoint_Shaper_Limits _limits;
     Vector3f _pos_ref_ned_m;
     Vector3f _vel_ref_ned_ms;
     Vector3f _accel_ref_ned_mss;
-    float _yaw_ref_rad = 0.0f;
-    float _yaw_rate_ref_rads = 0.0f;
-    float _yaw_accel_ref_radss = 0.0f;
     bool _initialized = false;
 };

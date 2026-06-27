@@ -1183,7 +1183,8 @@ public:
                                             const Vector3f& velocity_target_ned_ms,
                                             const Vector3f& accel_target_ned_mss,
                                             const AC_AttitudeControl::HeadingCommand& heading,
-                                            bool shape_position_target = true);
+                                            bool shape_position_target = true,
+                                            bool allow_trajectory_yaw = true);
 
     // return guided mode timeout in milliseconds. Only used for velocity, acceleration, angle control, and angular rate control
     uint32_t get_timeout_ms() const;
