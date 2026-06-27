@@ -39,6 +39,9 @@ public:
                 float dt);
 
     const AC_Geometric_Output& get_output() const { return _output; }
+    const AC_Geometric_Target& get_raw_target() const { return _raw_target; }
+    const AC_Geometric_Target& get_shaped_target() const { return _shaped_target; }
+    bool shaper_active() const { return _shaper_active; }
 
 private:
     void update_gains_from_params();
@@ -54,7 +57,10 @@ private:
     AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_Output _output;
+    AC_Geometric_Target _raw_target;
+    AC_Geometric_Target _shaped_target;
     uint32_t _last_update_ms = 0;
+    bool _shaper_active = false;
 
     AP_Float _pos_kx_xy;
     AP_Float _pos_kx_z;

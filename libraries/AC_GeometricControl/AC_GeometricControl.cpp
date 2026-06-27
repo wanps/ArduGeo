@@ -423,7 +423,10 @@ void AC_GeometricControl::reset()
     _attitude_pd.reset();
     _setpoint_shaper.reset();
     _output = {};
+    _raw_target = {};
+    _shaped_target = {};
     _last_update_ms = 0;
+    _shaper_active = false;
 }
 
 void AC_GeometricControl::set_enabled(bool enabled)
@@ -509,6 +512,8 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     update_gains_from_params();
 
     AC_Geometric_Target position_target = target;
+    _raw_target = target;
+    _shaper_active = false;
     if (_shape_enabled && target.build_attitude_from_position && target.shape_position_target) {
         // Guided position targets are often step-like. The geometric shaper
         // converts them into bounded x_d, v_d and a_d references before the
@@ -524,11 +529,13 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         limits.yaw_accel_max_radss = _shape_yaw_accel_max_radss.get();
         _setpoint_shaper.set_limits(limits);
         _setpoint_shaper.update(state, target, dt, position_target);
+        _shaper_active = true;
     } else {
         // Reset when bypassed so a later shaped segment starts from the
         // current vehicle state instead of an old cached reference.
         _setpoint_shaper.reset();
     }
+    _shaped_target = position_target;
 
     // The position channel owns the SE(3) coupling: it will eventually build
     // thrust and desired attitude from position/velocity/heading targets.

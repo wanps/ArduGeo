@@ -1224,6 +1224,45 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: YT: Input yaw target
     // @Field: YR: Input yaw-rate target
 
+    // @LoggerMessage: GEOS
+    // @Description: Geometric guided setpoint shaper observer
+    // @Field: TimeUS: Time since system startup
+    // @Field: RX: Raw position target, X-Axis
+    // @Field: RY: Raw position target, Y-Axis
+    // @Field: RZ: Raw position target, Z-Axis
+    // @Field: SX: Shaped position target, X-Axis
+    // @Field: SY: Shaped position target, Y-Axis
+    // @Field: SZ: Shaped position target, Z-Axis
+    // @Field: VX: Shaped velocity target, X-Axis
+    // @Field: VY: Shaped velocity target, Y-Axis
+    // @Field: VZ: Shaped velocity target, Z-Axis
+    // @Field: AX: Shaped acceleration target, X-Axis
+    // @Field: AY: Shaped acceleration target, Y-Axis
+    // @Field: AZ: Shaped acceleration target, Z-Axis
+    // @Field: Yaw: Shaped yaw target
+    // @Field: YR: Shaped yaw-rate target
+    // @Field: SAct: True if the geometric setpoint shaper was active
+    // @Field: YTrj: True if yaw was derived from shaped trajectory velocity
+
+    // @LoggerMessage: GEOZ
+    // @Description: Geometric guided vertical-channel observer
+    // @Field: TimeUS: Time since system startup
+    // @Field: Z: Current NED position, Z-Axis
+    // @Field: VZ: Current NED velocity, Z-Axis
+    // @Field: RZ: Raw position target, Z-Axis
+    // @Field: SZ: Shaped position target, Z-Axis
+    // @Field: TVZ: Shaped velocity target, Z-Axis
+    // @Field: TAZ: Shaped acceleration target, Z-Axis
+    // @Field: PEz: Position error, Z-Axis
+    // @Field: VEz: Velocity error, Z-Axis
+    // @Field: IEz: Position integral error, Z-Axis
+    // @Field: SFz: Specific force command, Z-Axis
+    // @Field: Thr: Projected total thrust per mass
+    // @Field: TRw: Raw normalized throttle output
+    // @Field: TN: Limited normalized throttle output
+    // @Field: SAct: True if the geometric setpoint shaper was active
+    // @Field: TLim: True if normalized throttle output was limited
+
     // @LoggerMessage: GEOO
     // @Description: Geometric guided output mapper observer
     // @Field: TimeUS: Time since system startup
@@ -1272,6 +1311,9 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
         const bool geometric_output_enabled = copter.geometric_control.output_enabled();
         const bool rate_thread_active = copter.geometric_motor_output_blocked_by_rate_thread();
         const bool motor_output_written_recently = motor_output_age_ms <= guided_geometric_output_recent_ms;
+        const AC_Geometric_Target& raw_target = copter.geometric_control.get_raw_target();
+        const AC_Geometric_Target& shaped_target = copter.geometric_control.get_shaped_target();
+        const bool shaper_active = copter.geometric_control.shaper_active();
         AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,EIx,EIy,EIz,RTx,RTy,RTz", "Qfffffffffffffff",
                                     AP_HAL::micros64(),
                                     (double)output.attitude.attitude_error.x,
@@ -1329,6 +1371,43 @@ void ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)output.position.omega_dot_body_radss.z,
                                     (double)target.yaw_rad,
                                     (double)target.yaw_rate_rads);
+
+        AP::logger().WriteStreaming("GEOS", "TimeUS,RX,RY,RZ,SX,SY,SZ,VX,VY,VZ,AX,AY,AZ,Yaw,YR,SAct,YTrj", "QffffffffffffffBB",
+                                    AP_HAL::micros64(),
+                                    (double)raw_target.position_ned_m.x,
+                                    (double)raw_target.position_ned_m.y,
+                                    (double)raw_target.position_ned_m.z,
+                                    (double)shaped_target.position_ned_m.x,
+                                    (double)shaped_target.position_ned_m.y,
+                                    (double)shaped_target.position_ned_m.z,
+                                    (double)shaped_target.velocity_ned_ms.x,
+                                    (double)shaped_target.velocity_ned_ms.y,
+                                    (double)shaped_target.velocity_ned_ms.z,
+                                    (double)shaped_target.accel_ned_mss.x,
+                                    (double)shaped_target.accel_ned_mss.y,
+                                    (double)shaped_target.accel_ned_mss.z,
+                                    (double)shaped_target.yaw_rad,
+                                    (double)shaped_target.yaw_rate_rads,
+                                    (uint8_t)shaper_active,
+                                    (uint8_t)shaped_target.yaw_from_trajectory);
+
+        AP::logger().WriteStreaming("GEOZ", "TimeUS,Z,VZ,RZ,SZ,TVZ,TAZ,PEz,VEz,IEz,SFz,Thr,TRw,TN,SAct,TLim", "QfffffffffffffBB",
+                                    AP_HAL::micros64(),
+                                    (double)geometric_state.position_ned_m.z,
+                                    (double)geometric_state.velocity_ned_ms.z,
+                                    (double)raw_target.position_ned_m.z,
+                                    (double)shaped_target.position_ned_m.z,
+                                    (double)shaped_target.velocity_ned_ms.z,
+                                    (double)shaped_target.accel_ned_mss.z,
+                                    (double)output.position.position_error_m.z,
+                                    (double)output.position.velocity_error_ms.z,
+                                    (double)output.position.integral_error_m.z,
+                                    (double)output.position.specific_force_ned_mss.z,
+                                    (double)output.position.thrust,
+                                    (double)output.mapped.throttle_norm_raw,
+                                    (double)output.mapped.throttle_norm,
+                                    (uint8_t)shaper_active,
+                                    (uint8_t)output.mapped.throttle_limited);
 
         float mapped_roll_rad;
         float mapped_pitch_rad;
