@@ -5,9 +5,9 @@
 // Lee SO(3) attitude channel. It tracks either a direct attitude target R_d or
 // the position-generated commanded attitude R_c, producing a geometric moment
 // proxy M_d for the output mapper.
-class AC_Geometric_Attitude_PD {
+class AC_Geometric_Attitude_PID {
 public:
-    AC_Geometric_Attitude_PD() = default;
+    AC_Geometric_Attitude_PID() = default;
 
     void set_gains(const AC_Geometric_Attitude_Gains& gains) { _gains = gains; }
     const AC_Geometric_Attitude_Gains& get_gains() const { return _gains; }

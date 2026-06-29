@@ -3,7 +3,7 @@
 #include <AP_Common/AP_Common.h>
 #include <AP_Param/AP_Param.h>
 
-#include "AC_Geometric_Attitude_PD.h"
+#include "AC_Geometric_Attitude_PID.h"
 #include "AC_Geometric_OutputMapper.h"
 #include "AC_Geometric_Position_PID.h"
 #include "AC_Geometric_SetpointShaper.h"
@@ -33,7 +33,7 @@ public:
     bool output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) const;
     void set_hover_throttle_reference(float hover_throttle_norm);
 
-    // Run the geometric position-to-attitude and attitude PD cascade.
+    // Run the geometric position-to-attitude and attitude PID cascade.
     // This library only computes outputs; vehicle code decides whether to write motors.
     void update(const AC_Geometric_State& state,
                 const AC_Geometric_Target& target,
@@ -54,7 +54,7 @@ private:
     // replace one layer, for example an alternative attitude block, without
     // changing the data contract between layers.
     AC_Geometric_Position_PID _position_pid;
-    AC_Geometric_Attitude_PD _attitude_pd;
+    AC_Geometric_Attitude_PID _attitude_pid;
     AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_YawShaper _yaw_shaper;

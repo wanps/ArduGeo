@@ -1,6 +1,6 @@
 # Geometric Control
 
-`AC_GeometricControl` implements an experimental Lee-style SE(3) cascade for Copter Guided mode. The library computes a position PID channel, a SO(3) attitude PD channel, and a mapper from geometric thrust and moment proxies to normalized ArduPilot motor inputs.
+`AC_GeometricControl` implements an experimental Lee-style SE(3) cascade for Copter Guided mode. The library computes a position PID channel, a SO(3) attitude PID channel, and a mapper from geometric thrust and moment proxies to normalized ArduPilot motor inputs.
 
 The library itself does not write motors. Copter decides whether the latest mapped output is allowed to replace the normal Guided rate-controller output.
 

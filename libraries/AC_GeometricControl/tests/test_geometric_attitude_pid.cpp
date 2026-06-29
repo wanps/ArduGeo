@@ -1,6 +1,6 @@
 #include <AP_gtest.h>
 
-#include <AC_GeometricControl/AC_Geometric_Attitude_PD.h>
+#include <AC_GeometricControl/AC_Geometric_Attitude_PID.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -13,18 +13,18 @@ Quaternion attitude_from_euler(float roll_rad, float pitch_rad, float yaw_rad)
     return attitude;
 }
 
-void set_unit_inertia(AC_Geometric_Attitude_PD& controller)
+void set_unit_inertia(AC_Geometric_Attitude_PID& controller)
 {
     AC_Geometric_Attitude_Model model {};
     model.inertia = Vector3f{1.0f, 1.0f, 1.0f};
     controller.set_model(model);
 }
 
-AC_Geometric_Attitude_Output run_attitude_pd(const AC_Geometric_Attitude_Gains& gains,
-                                             const AC_Geometric_State& state,
-                                             const AC_Geometric_Target& target)
+AC_Geometric_Attitude_Output run_attitude_pid(const AC_Geometric_Attitude_Gains& gains,
+                                              const AC_Geometric_State& state,
+                                              const AC_Geometric_Target& target)
 {
-    AC_Geometric_Attitude_PD controller;
+    AC_Geometric_Attitude_PID controller;
     AC_Geometric_Attitude_Output output {};
 
     set_unit_inertia(controller);
@@ -49,9 +49,9 @@ Vector3f rotate_target_body_to_current_body(const Quaternion& attitude_body_to_n
 
 }
 
-TEST(AC_Geometric_Attitude_PD, DefaultModelUsesGaoReferenceInertia)
+TEST(AC_Geometric_Attitude_PID, DefaultModelUsesGaoReferenceInertia)
 {
-    AC_Geometric_Attitude_PD controller;
+    AC_Geometric_Attitude_PID controller;
 
     const AC_Geometric_Attitude_Model& model = controller.get_model();
 
@@ -60,7 +60,7 @@ TEST(AC_Geometric_Attitude_PD, DefaultModelUsesGaoReferenceInertia)
     EXPECT_NEAR(model.inertia.z, 0.023f, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, PositiveTargetAnglesProduceNegativeLeeError)
+TEST(AC_Geometric_Attitude_PID, PositiveTargetAnglesProduceNegativeLeeError)
 {
     const float angle_rad = 0.1f;
 
@@ -74,7 +74,7 @@ TEST(AC_Geometric_Attitude_PD, PositiveTargetAnglesProduceNegativeLeeError)
         AC_Geometric_Target target {};
         target.attitude_body_to_ned = attitude_from_euler(angle_rad, 0.0f, 0.0f);
 
-        const AC_Geometric_Attitude_Output output = run_attitude_pd(gains, state, target);
+        const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
 
         EXPECT_NEAR(output.attitude_error.x, -sinf(angle_rad), 1.0e-5f);
         EXPECT_NEAR(output.attitude_error.y, 0.0f, 1.0e-6f);
@@ -86,7 +86,7 @@ TEST(AC_Geometric_Attitude_PD, PositiveTargetAnglesProduceNegativeLeeError)
         AC_Geometric_Target target {};
         target.attitude_body_to_ned = attitude_from_euler(0.0f, angle_rad, 0.0f);
 
-        const AC_Geometric_Attitude_Output output = run_attitude_pd(gains, state, target);
+        const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
 
         EXPECT_NEAR(output.attitude_error.x, 0.0f, 1.0e-6f);
         EXPECT_NEAR(output.attitude_error.y, -sinf(angle_rad), 1.0e-5f);
@@ -98,7 +98,7 @@ TEST(AC_Geometric_Attitude_PD, PositiveTargetAnglesProduceNegativeLeeError)
         AC_Geometric_Target target {};
         target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, angle_rad);
 
-        const AC_Geometric_Attitude_Output output = run_attitude_pd(gains, state, target);
+        const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
 
         EXPECT_NEAR(output.attitude_error.x, 0.0f, 1.0e-6f);
         EXPECT_NEAR(output.attitude_error.y, 0.0f, 1.0e-6f);
@@ -107,7 +107,7 @@ TEST(AC_Geometric_Attitude_PD, PositiveTargetAnglesProduceNegativeLeeError)
     }
 }
 
-TEST(AC_Geometric_Attitude_PD, AngularVelocityErrorProducesDampingMoment)
+TEST(AC_Geometric_Attitude_PID, AngularVelocityErrorProducesDampingMoment)
 {
     AC_Geometric_State state {};
     state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
@@ -119,7 +119,7 @@ TEST(AC_Geometric_Attitude_PD, AngularVelocityErrorProducesDampingMoment)
     AC_Geometric_Attitude_Gains gains {};
     gains.omega_p = Vector3f{2.0f, 3.0f, 4.0f};
 
-    const AC_Geometric_Attitude_Output output = run_attitude_pd(gains, state, target);
+    const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
 
     EXPECT_NEAR(output.omega_error_rads.x, 0.4f, 1.0e-6f);
     EXPECT_NEAR(output.omega_error_rads.y, -0.3f, 1.0e-6f);
@@ -130,7 +130,7 @@ TEST(AC_Geometric_Attitude_PD, AngularVelocityErrorProducesDampingMoment)
     EXPECT_NEAR(output.moment.z, -0.8f, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, AngularVelocityErrorUsesLeeRelativeAttitude)
+TEST(AC_Geometric_Attitude_PID, AngularVelocityErrorUsesLeeRelativeAttitude)
 {
     AC_Geometric_State state {};
     state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.2f);
@@ -143,7 +143,7 @@ TEST(AC_Geometric_Attitude_PD, AngularVelocityErrorUsesLeeRelativeAttitude)
     AC_Geometric_Attitude_Gains gains {};
     gains.omega_p = Vector3f{1.0f, 1.0f, 1.0f};
 
-    const AC_Geometric_Attitude_Output output = run_attitude_pd(gains, state, target);
+    const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
     const Vector3f omega_target_current_body =
         rotate_target_body_to_current_body(state.attitude_body_to_ned,
                                            target.attitude_body_to_ned,
@@ -155,7 +155,7 @@ TEST(AC_Geometric_Attitude_PD, AngularVelocityErrorUsesLeeRelativeAttitude)
     EXPECT_NEAR(output.omega_error_rads.z, expected_error.z, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, LeeFeedForwardUsesTransportAndOmegaDot)
+TEST(AC_Geometric_Attitude_PID, LeeFeedForwardUsesTransportAndOmegaDot)
 {
     AC_Geometric_State state {};
     state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
@@ -168,16 +168,16 @@ TEST(AC_Geometric_Attitude_PD, LeeFeedForwardUsesTransportAndOmegaDot)
 
     AC_Geometric_Attitude_Gains gains {};
 
-    const AC_Geometric_Attitude_Output output = run_attitude_pd(gains, state, target);
+    const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
 
     EXPECT_NEAR(output.moment.x, 0.2f, 1.0e-6f);
     EXPECT_NEAR(output.moment.y, -0.7f, 1.0e-6f);
     EXPECT_NEAR(output.moment.z, 0.4f, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, LeeFeedForwardUsesDiagonalInertia)
+TEST(AC_Geometric_Attitude_PID, LeeFeedForwardUsesDiagonalInertia)
 {
-    AC_Geometric_Attitude_PD controller;
+    AC_Geometric_Attitude_PID controller;
 
     AC_Geometric_Attitude_Model model {};
     model.inertia = Vector3f{2.0f, 3.0f, 4.0f};
@@ -200,7 +200,7 @@ TEST(AC_Geometric_Attitude_PD, LeeFeedForwardUsesDiagonalInertia)
     EXPECT_NEAR(output.moment.z, 1.6f, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, AttitudeGainScalesMoment)
+TEST(AC_Geometric_Attitude_PID, AttitudeGainScalesMoment)
 {
     const float angle_rad = 0.2f;
 
@@ -212,20 +212,20 @@ TEST(AC_Geometric_Attitude_PD, AttitudeGainScalesMoment)
 
     AC_Geometric_Attitude_Gains low_gains {};
     low_gains.attitude_p.z = 2.0f;
-    const AC_Geometric_Attitude_Output low_output = run_attitude_pd(low_gains, state, target);
+    const AC_Geometric_Attitude_Output low_output = run_attitude_pid(low_gains, state, target);
 
     AC_Geometric_Attitude_Gains high_gains {};
     high_gains.attitude_p.z = 4.0f;
-    const AC_Geometric_Attitude_Output high_output = run_attitude_pd(high_gains, state, target);
+    const AC_Geometric_Attitude_Output high_output = run_attitude_pid(high_gains, state, target);
 
     EXPECT_NEAR(low_output.moment.z, low_gains.attitude_p.z * sinf(angle_rad), 1.0e-5f);
     EXPECT_NEAR(high_output.moment.z, high_gains.attitude_p.z * sinf(angle_rad), 1.0e-5f);
     EXPECT_NEAR(high_output.moment.z, 2.0f * low_output.moment.z, 1.0e-5f);
 }
 
-TEST(AC_Geometric_Attitude_PD, OptionalOmegaFilterSmoothsRateErrorStep)
+TEST(AC_Geometric_Attitude_PID, OptionalOmegaFilterSmoothsRateErrorStep)
 {
-    AC_Geometric_Attitude_PD controller;
+    AC_Geometric_Attitude_PID controller;
     set_unit_inertia(controller);
 
     AC_Geometric_Attitude_Gains gains {};
@@ -259,9 +259,9 @@ TEST(AC_Geometric_Attitude_PD, OptionalOmegaFilterSmoothsRateErrorStep)
     EXPECT_NEAR(output.moment.z, -output.omega_error_rads.z, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, YawIntegralIsConstrainedAndYawOnlyByDefault)
+TEST(AC_Geometric_Attitude_PID, YawIntegralIsConstrainedAndYawOnlyByDefault)
 {
-    AC_Geometric_Attitude_PD controller;
+    AC_Geometric_Attitude_PID controller;
     set_unit_inertia(controller);
 
     AC_Geometric_Attitude_Gains gains {};
@@ -293,9 +293,9 @@ TEST(AC_Geometric_Attitude_PD, YawIntegralIsConstrainedAndYawOnlyByDefault)
     EXPECT_NEAR(output.moment.z, -0.6f, 1.0e-6f);
 }
 
-TEST(AC_Geometric_Attitude_PD, RollPitchIntegralCanBeEnabledExplicitly)
+TEST(AC_Geometric_Attitude_PID, RollPitchIntegralCanBeEnabledExplicitly)
 {
-    AC_Geometric_Attitude_PD controller;
+    AC_Geometric_Attitude_PID controller;
     set_unit_inertia(controller);
 
     AC_Geometric_Attitude_Gains gains {};

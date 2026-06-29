@@ -1,4 +1,4 @@
-#include "AC_Geometric_Attitude_PD.h"
+#include "AC_Geometric_Attitude_PID.h"
 
 namespace {
 
@@ -85,17 +85,17 @@ float update_integral_axis(float integrator,
 
 }
 
-void AC_Geometric_Attitude_PD::reset()
+void AC_Geometric_Attitude_PID::reset()
 {
     _omega_error_filtered_rads.zero();
     _integral_error.zero();
     _filter_reset = true;
 }
 
-void AC_Geometric_Attitude_PD::update(const AC_Geometric_State& state,
-                                      const AC_Geometric_Target& target,
-                                      float dt,
-                                      AC_Geometric_Attitude_Output& output)
+void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
+                                       const AC_Geometric_Target& target,
+                                       float dt,
+                                       AC_Geometric_Attitude_Output& output)
 {
     output.attitude_error = attitude_error_lee(state.attitude_body_to_ned, target.attitude_body_to_ned);
 

@@ -202,7 +202,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: OMG_FLTE
     // @DisplayName: Geometric angular velocity error filter
-    // @Description: Optional first-order low-pass cutoff applied to Lee angular velocity error before the SO(3) attitude PD channel. A value of zero disables this filter and preserves the raw angular-rate error path.
+    // @Description: Optional first-order low-pass cutoff applied to Lee angular velocity error before the SO(3) attitude PID channel. A value of zero disables this filter and preserves the raw angular-rate error path.
     // @Range: 0 100
     // @Units: Hz
     // @Increment: 0.1
@@ -421,7 +421,7 @@ AC_GeometricControl::AC_GeometricControl()
 void AC_GeometricControl::reset()
 {
     _position_pid.reset();
-    _attitude_pd.reset();
+    _attitude_pid.reset();
     _setpoint_shaper.reset();
     _yaw_shaper.reset();
     _output = {};
@@ -482,16 +482,16 @@ void AC_GeometricControl::update_gains_from_params()
     attitude_gains.omega_p = Vector3f{_att_ko_x.get(), _att_ko_y.get(), _att_ko_z.get()};
     attitude_gains.attitude_i = Vector3f{_att_ki_x.get(), _att_ki_y.get(), _att_ki_z.get()};
     attitude_gains.integral_error_p = Vector3f{_att_int_c.get(), _att_int_c.get(), _att_int_c.get()};
-    _attitude_pd.set_gains(attitude_gains);
+    _attitude_pid.set_gains(attitude_gains);
     AC_Geometric_Attitude_Model attitude_model {};
     attitude_model.inertia = Vector3f{_att_j_x.get(), _att_j_y.get(), _att_j_z.get()};
-    _attitude_pd.set_model(attitude_model);
+    _attitude_pid.set_model(attitude_model);
     AC_Geometric_Attitude_Integral_Limits attitude_integral_limits {};
     attitude_integral_limits.integral_error = Vector3f{_att_imax_x.get(), _att_imax_y.get(), _att_imax_z.get()};
-    _attitude_pd.set_integral_limits(attitude_integral_limits);
+    _attitude_pid.set_integral_limits(attitude_integral_limits);
     AC_Geometric_Attitude_Filter_Hz attitude_filter_hz {};
     attitude_filter_hz.omega_error = _omega_error_filt_hz.get();
-    _attitude_pd.set_filter_hz(attitude_filter_hz);
+    _attitude_pid.set_filter_hz(attitude_filter_hz);
 }
 
 float AC_GeometricControl::hover_throttle_norm() const
@@ -563,7 +563,7 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     attitude_target.omega_body_rads = _output.position.omega_body_rads;
     attitude_target.omega_dot_body_radss = _output.position.omega_dot_body_radss;
 
-    _attitude_pd.update(state, attitude_target, dt, _output.attitude);
+    _attitude_pid.update(state, attitude_target, dt, _output.attitude);
 
     // The mapper is deliberately last: it translates the geometric force and
     // moment proxies into normalized ArduPilot-facing commands while keeping
