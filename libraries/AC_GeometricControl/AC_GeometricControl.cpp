@@ -3,13 +3,13 @@
 #include <AP_HAL/AP_HAL.h>
 
 #define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f // Horizontal position gain k_x.
-#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 1.0f // Vertical position gain k_x.
-#define AC_GEOMETRIC_POS_KI_XY_DEFAULT 0.0f // Horizontal position integral gain.
-#define AC_GEOMETRIC_POS_KI_Z_DEFAULT 0.0f // Vertical position integral gain.
+#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 3.0f // Vertical position gain k_x.
+#define AC_GEOMETRIC_POS_KI_XY_DEFAULT 1.0f // Horizontal position integral gain.
+#define AC_GEOMETRIC_POS_KI_Z_DEFAULT 5.0f // Vertical position integral gain.
 #define AC_GEOMETRIC_POS_KV_XY_DEFAULT 2.0f // Horizontal velocity gain k_v.
-#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 2.0f // Vertical velocity gain k_v.
-#define AC_GEOMETRIC_POS_IMAX_XY_DEFAULT 1.0f // Horizontal position integral limit.
-#define AC_GEOMETRIC_POS_IMAX_Z_DEFAULT 1.0f // Vertical position integral limit.
+#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 3.0f // Vertical velocity gain k_v.
+#define AC_GEOMETRIC_POS_IMAX_XY_DEFAULT 10.0f // Horizontal position integral limit.
+#define AC_GEOMETRIC_POS_IMAX_Z_DEFAULT 10.0f // Vertical position integral limit.
 #define AC_GEOMETRIC_POS_INT_C_DEFAULT 1.0f // Position integral error weight c_x.
 #define AC_GEOMETRIC_ATT_KR_X_DEFAULT 4.0f // Roll attitude gain k_R.
 #define AC_GEOMETRIC_ATT_KR_Y_DEFAULT 4.0f // Pitch attitude gain k_R.
@@ -19,19 +19,20 @@
 #define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.4f // Yaw angular-rate gain k_Omega.
 #define AC_GEOMETRIC_ATT_KI_X_DEFAULT 0.0f // Roll attitude integral gain.
 #define AC_GEOMETRIC_ATT_KI_Y_DEFAULT 0.0f // Pitch attitude integral gain.
-#define AC_GEOMETRIC_ATT_KI_Z_DEFAULT 0.0f // Yaw attitude integral gain.
+#define AC_GEOMETRIC_ATT_KI_Z_DEFAULT 0.1f // Yaw attitude integral gain.
 #define AC_GEOMETRIC_ATT_IMAX_X_DEFAULT 0.0f // Roll attitude integral limit.
 #define AC_GEOMETRIC_ATT_IMAX_Y_DEFAULT 0.0f // Pitch attitude integral limit.
-#define AC_GEOMETRIC_ATT_IMAX_Z_DEFAULT 0.0f // Yaw attitude integral limit.
-#define AC_GEOMETRIC_ATT_INT_C_DEFAULT 1.0f // Attitude integral error weight c_R.
-#define AC_GEOMETRIC_ATT_J_X_DEFAULT 0.011f // Roll-axis inertia model Jx.
+#define AC_GEOMETRIC_ATT_IMAX_Z_DEFAULT 1.0f // Yaw attitude integral limit.
+#define AC_GEOMETRIC_ATT_INT_C_DEFAULT 0.5f // Attitude integral error weight c_R.
+#define AC_GEOMETRIC_ATT_J_X_DEFAULT 0.010f // Roll-axis inertia model Jx.
 #define AC_GEOMETRIC_ATT_J_Y_DEFAULT 0.020f // Pitch-axis inertia model Jy.
-#define AC_GEOMETRIC_ATT_J_Z_DEFAULT 0.023f // Yaw-axis inertia model Jz.
+#define AC_GEOMETRIC_ATT_J_Z_DEFAULT 0.020f // Yaw-axis inertia model Jz.
 #define AC_GEOMETRIC_HOVER_THROTTLE_DEFAULT 0.0f // Zero uses vehicle hover estimate.
 #define AC_GEOMETRIC_MOMENT_NORM_X_DEFAULT 4.0f // Roll moment proxy normalizer.
 #define AC_GEOMETRIC_MOMENT_NORM_Y_DEFAULT 4.0f // Pitch moment proxy normalizer.
 #define AC_GEOMETRIC_MOMENT_NORM_Z_DEFAULT 2.0f // Yaw moment proxy normalizer.
 #define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 1 // Enable geometric motor output path.
+#define AC_GEOMETRIC_POS_FILTER_DEFAULT 5.0f // Position error low-pass cutoff.
 #define AC_GEOMETRIC_FILTER_DISABLED 0.0f // Zero disables optional filters.
 #define AC_GEOMETRIC_OMEGA_C_FILTER_DEFAULT 5.0f // Omega_c low-pass cutoff.
 #define AC_GEOMETRIC_OMEGA_DOT_C_FILTER_DEFAULT 2.0f // dot(Omega_c) low-pass cutoff.
@@ -188,7 +189,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Units: Hz
     // @Increment: 0.1
     // @User: Advanced
-    AP_GROUPINFO("POS_FLTE", 18, AC_GeometricControl, _pos_error_filt_hz, AC_GEOMETRIC_FILTER_DISABLED),
+    AP_GROUPINFO("POS_FLTE", 18, AC_GeometricControl, _pos_error_filt_hz, AC_GEOMETRIC_POS_FILTER_DEFAULT),
 
     // @Param: VEL_FLTE
     // @DisplayName: Geometric velocity error filter
