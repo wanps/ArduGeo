@@ -60,6 +60,7 @@ bool ModeGuided::init(bool ignore_checks)
     guided_pause_yaw_valid = false;
     guided_geometric_position_was_active = false;
     guided_geometric_target_manager.reset();
+    copter.geometric_control.reset();
     guided_geometric_heading_mode = 0;
     guided_geometric_trajectory_yaw_allowed = false;
 
@@ -176,6 +177,7 @@ void ModeGuided::restore_native_position_control_after_geometric()
     pos_control->D_init_controller();
     guided_geometric_position_was_active = false;
     guided_geometric_target_manager.reset();
+    copter.geometric_control.reset();
 }
 
 #if WEATHERVANE_ENABLED
