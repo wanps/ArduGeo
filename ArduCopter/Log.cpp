@@ -356,6 +356,34 @@ struct PACKED log_Rate_Thread_Dt {
     float dtMin;
 };
 
+// Critical, one-shot snapshots used to prove that a complete Guided flight
+// lifecycle remained on the geometric motor-output path.  A single static
+// packet keeps one DataFlash message ID across mode_guided.cpp and
+// land_detector.cpp; separate dynamic registrations with the same name can be
+// decoded as only one of two IDs.  It also lets lifecycle edges use the
+// logger's reserved critical buffer.
+struct PACKED log_Geometric_Full_Lifecycle {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    uint8_t phase;
+    uint32_t main_frames;
+    uint32_t geometric_frames;
+    uint32_t native_frames;
+};
+
+// Critical, one-shot snapshots for the exact Loiter lifecycle.  Keeping GELF
+// in the static vehicle log schema gives every phase one message ID and lets
+// the edge use the logger's reserved critical buffer.
+struct PACKED log_Geometric_Loiter_Lifecycle {
+    LOG_PACKET_HEADER;
+    uint64_t time_us;
+    uint8_t phase;
+    uint32_t main_frames;
+    uint32_t geometric_frames;
+    uint32_t native_frames;
+    float throttle;
+};
+
 // Write a Guided mode position target
 // pos_target_ned_m is lat, lon, alt OR offset from ekf origin in m
 // terrain should be 0 if pos_target_ned_m.z is alt-above-ekf-origin, 1 if alt-above-terrain
@@ -416,6 +444,76 @@ void Copter::Log_Write_Rate_Thread_Dt(float dt, float dtAvg, float dtMax, float 
     };
     logger.WriteBlock(&pkt, sizeof(pkt));
 #endif
+}
+
+void Copter::Log_Write_Geometric_Full_Lifecycle(uint8_t phase,
+                                                uint32_t main_frames,
+                                                uint32_t geometric_frames,
+                                                uint32_t native_frames)
+{
+    const log_Geometric_Full_Lifecycle pkt {
+        LOG_PACKET_HEADER_INIT(LOG_GEO_FULL_LIFECYCLE_MSG),
+        time_us          : AP_HAL::micros64(),
+        phase            : phase,
+        main_frames      : main_frames,
+        geometric_frames : geometric_frames,
+        native_frames    : native_frames,
+    };
+    logger.WriteCriticalBlock(&pkt, sizeof(pkt));
+}
+
+void Copter::Log_Write_Geometric_Loiter_Lifecycle(uint8_t phase,
+                                                  uint32_t main_frames,
+                                                  uint32_t geometric_frames,
+                                                  uint32_t native_frames,
+                                                  float throttle)
+{
+    const log_Geometric_Loiter_Lifecycle pkt {
+        LOG_PACKET_HEADER_INIT(LOG_GEO_LOITER_LIFECYCLE_MSG),
+        time_us          : AP_HAL::micros64(),
+        phase            : phase,
+        main_frames      : main_frames,
+        geometric_frames : geometric_frames,
+        native_frames    : native_frames,
+        throttle         : throttle,
+    };
+    logger.WriteCriticalBlock(&pkt, sizeof(pkt));
+}
+
+// GEOX and GEFR are emitted by both Guided and Loiter.  Keep each dynamic
+// message registration in this single translation unit so the logger cannot
+// allocate separate FMT IDs for identical names from different mode files.
+void Copter::Log_Write_Geometric_Output_State(bool motor_output_allowed,
+                                              bool geometric_output_enabled,
+                                              bool rate_thread_active,
+                                              bool motor_output_written_recently,
+                                              uint32_t geometric_age_ms,
+                                              uint32_t motor_output_age_ms,
+                                              const AC_Geometric_Mapped_Output &mapped)
+{
+    logger.WriteStreaming("GEOX", "TimeUS,Allow,OEn,RT,Wrote,GAge,WAge,Roll,Pitch,Yaw,Thr,RLim,TLim", "QBBBBIIffffBB",
+                          AP_HAL::micros64(),
+                          (uint8_t)motor_output_allowed,
+                          (uint8_t)geometric_output_enabled,
+                          (uint8_t)rate_thread_active,
+                          (uint8_t)motor_output_written_recently,
+                          geometric_age_ms,
+                          motor_output_age_ms,
+                          (double)mapped.rpy_norm.x,
+                          (double)mapped.rpy_norm.y,
+                          (double)mapped.rpy_norm.z,
+                          (double)mapped.throttle_norm,
+                          (uint8_t)mapped.rpy_limited,
+                          (uint8_t)mapped.throttle_limited);
+}
+
+void Copter::Log_Write_Geometric_Frame_Counters()
+{
+    logger.WriteStreaming("GEFR", "TimeUS,MFrm,GFrm,NFrm", "QIII",
+                          AP_HAL::micros64(),
+                          main_rate_controller_frames(),
+                          geometric_motor_output_frames(),
+                          native_rate_controller_frames());
 }
 
 // type and unit information can be found in
@@ -571,6 +669,29 @@ const struct LogStructure Copter::log_structure[] = {
 
     { LOG_RATE_THREAD_DT_MSG, sizeof(log_Rate_Thread_Dt),
       "RTDT", "Qffff", "TimeUS,dt,dtAvg,dtMax,dtMin", "sssss", "F----" , true },
+
+// @LoggerMessage: GEFC
+// @Description: Exact geometric full-lifecycle frame-counter snapshot
+// @Field: TimeUS: Time since system startup
+// @Field: Phase: Lifecycle phase (0 exact pre-arm counter snapshot, 1 takeoff accepted, 2 land accepted, 3 land complete, 4 ground idle before disarm)
+// @Field: MFrm: Cumulative main-loop rate-controller frames
+// @Field: GFrm: Cumulative geometric motor-output frames
+// @Field: NFrm: Cumulative native rate-controller frames
+
+    { LOG_GEO_FULL_LIFECYCLE_MSG, sizeof(log_Geometric_Full_Lifecycle),
+      "GEFC", "QBIII", "TimeUS,Phase,MFrm,GFrm,NFrm", "s----", "F----" },
+
+// @LoggerMessage: GELF
+// @Description: Exact full-geometric Loiter lifecycle frame-counter snapshot
+// @Field: TimeUS: Time since system startup
+// @Field: Phase: Lifecycle phase (0 final pre-arm ground-safe target, 1 takeoff start, 2 airborne entry/recovery, 3 land complete, 4 ground idle before disarm, 5 armed takeoff cancel ground-safe target)
+// @Field: MFrm: Cumulative main-loop rate-controller frames
+// @Field: GFrm: Cumulative geometric motor-output frames
+// @Field: NFrm: Cumulative native rate-controller frames
+// @Field: Thr: Prepared normalized geometric throttle
+
+    { LOG_GEO_LOITER_LIFECYCLE_MSG, sizeof(log_Geometric_Loiter_Lifecycle),
+      "GELF", "QBIIIf", "TimeUS,Phase,MFrm,GFrm,NFrm,Thr", "s-----", "F-----" },
 
 };
 

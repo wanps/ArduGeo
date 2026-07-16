@@ -128,6 +128,9 @@ public:
     virtual bool requires_position() const = 0;
     virtual bool has_manual_throttle() const = 0;
     virtual bool allows_arming(AP_Arming::Method method) const = 0;
+    // Final arming-commit hook.  Modes with time-sensitive prepared output may
+    // refresh it here after logger/home/notify work and before motors arm.
+    virtual bool prepare_for_arming(AP_Arming::Method method) { return true; }
     virtual bool is_autopilot() const = 0;
     virtual bool has_user_takeoff(bool must_navigate) const { return false; }
     virtual bool in_guided_mode() const { return false; }
@@ -138,6 +141,9 @@ public:
     virtual bool allows_flip() const { return false; }
     virtual bool crash_check_enabled() const { return true; }
     virtual bool move_vehicle_on_ekf_reset() const { return false; }
+    virtual bool allows_geometric_motor_output() const { return false; }
+    virtual bool geometric_motor_output_is_safe() const { return true; }
+    virtual void handle_geometric_motor_output_fallback();
 
     // "no pilot input" here means eg. in RC failsafe
     virtual bool allows_entry_in_rc_failsafe() const { return true; }
@@ -219,6 +225,10 @@ protected:
     void zero_throttle_and_relax_ac(bool spool_up = false);
     void zero_throttle_and_hold_attitude();
 
+    bool run_geometric_observer(const AC_Geometric_Target& target,
+                                bool enabled,
+                                AC_Geometric_State& state);
+
     // Return stopping point as a location with above origin alt frame
     Location get_stopping_point() const;
 
@@ -291,10 +301,14 @@ protected:
     public:
         void start_m(float alt_m);
         void stop();
+        void reset();
         void do_pilot_takeoff_ms(float pilot_climb_rate_ms);
+        void update_pva_target_ms(float pilot_climb_rate_ms);
         bool triggered_ms(float target_climb_rate_ms) const;
 
         bool running() const { return _running; }
+        float get_start_alt_U_m() const { return take_off_start_alt_m; }
+        float get_complete_alt_U_m() const { return take_off_complete_alt_m; }
     private:
         bool _running;
         float take_off_start_alt_m;
@@ -1108,10 +1122,13 @@ public:
     bool requires_position() const override { return true; }
     bool has_manual_throttle() const override { return false; }
     bool allows_arming(AP_Arming::Method method) const override;
+    bool prepare_for_arming(AP_Arming::Method method) override;
     bool is_autopilot() const override { return true; }
     bool has_user_takeoff(bool must_navigate) const override { return true; }
     bool in_guided_mode() const override { return true; }
     bool move_vehicle_on_ekf_reset() const override;
+    bool allows_geometric_motor_output() const override;
+    void handle_geometric_motor_output_fallback() override;
 
     bool requires_terrain_failsafe() const override { return true; }
 
@@ -1151,6 +1168,8 @@ public:
     bool limit_check();
 
     bool is_taking_off() const override;
+    bool is_landing() const override;
+    bool start_geometric_landing();
     
     bool set_speed_NE_ms(float speed_ne_ms) override;
     bool set_speed_up_ms(float speed_up_ms) override;
@@ -1168,6 +1187,7 @@ public:
         VelAccel,
         Accel,
         Angle,
+        Land,
     };
 
     SubMode submode() const { return guided_mode; }
@@ -1177,7 +1197,8 @@ public:
     bool geometric_position_control_active() const;
     bool wp_destination_reached() const;
     void restore_native_position_control_after_geometric();
-    void update_geometric_observer(const AC_Geometric_Target& target);
+    bool publish_geometric_position_reference();
+    bool update_geometric_observer(const AC_Geometric_Target& target);
     void update_geometric_angle_observer();
     void update_geometric_position_observer(const Vector3p* position_target_ned_m,
                                             const Vector3f& velocity_target_ned_ms,
@@ -1226,6 +1247,16 @@ private:
 
     // returns true if the Guided-mode-option is set (see GUID_OPTIONS)
     bool option_is_enabled(Option option) const;
+    bool geometric_motor_output_options_requested() const;
+    bool geometric_motor_output_configured() const;
+    bool geometric_motor_output_requested() const;
+    bool geometric_submode_supported() const;
+    void update_geometric_ground_safe_observer();
+    void prepare_geometric_position_observer(bool shape_position_target,
+                                             bool allow_trajectory_yaw);
+    void begin_geometric_supported_boundary(bool boundary_was_unsupported);
+    void write_geometric_boundary_frame(uint8_t phase) const;
+    void write_geometric_prearm_frame_if_needed();
 
     // wp controller
     void wp_control_start();
@@ -1237,6 +1268,7 @@ private:
     void velaccel_control_start();
     void posvelaccel_control_start();
     void takeoff_run();
+    void geometric_land_run();
     void pos_control_run();
     void accel_control_run();
     void velaccel_control_run();
@@ -1252,6 +1284,15 @@ private:
 
     // guided mode is paused or not
     bool _paused;
+    bool _geometric_motor_output_rejected = false;
+    bool _geometric_motor_output_prepared = false;
+    bool _geometric_boundary_pending = false;
+    uint8_t _geometric_boundary_id = 0;
+    uint32_t _geometric_prearm_main_frames = 0;
+    uint32_t _geometric_prearm_output_frames = 0;
+    uint32_t _geometric_prearm_native_frames = 0;
+    bool _geometric_prearm_snapshot_valid = false;
+    bool _geometric_arm_frame_logged = false;
 };
 
 #if AP_SCRIPTING_ENABLED
@@ -1373,14 +1414,19 @@ public:
 
     bool init(bool ignore_checks) override;
     void run() override;
+    void exit() override;
 
     bool requires_position() const override { return true; }
     bool has_manual_throttle() const override { return false; }
-    bool allows_arming(AP_Arming::Method method) const override { return true; };
+    bool allows_arming(AP_Arming::Method method) const override;
+    bool prepare_for_arming(AP_Arming::Method method) override;
     bool is_autopilot() const override { return false; }
     bool has_user_takeoff(bool must_navigate) const override { return true; }
     bool allows_autotune() const override { return true; }
     bool allows_auto_trim() const override { return true; }
+    bool allows_geometric_motor_output() const override { return _geometric_motor_output_active && geometric_motor_output_requested(); }
+    bool geometric_motor_output_is_safe() const override { return geometric_output_safe_for_active(true); }
+    void handle_geometric_motor_output_fallback() override;
 
 #if FRAME_CONFIG == HELI_FRAME
     bool allows_inverted() const override { return true; };
@@ -1410,6 +1456,48 @@ private:
     bool _precision_loiter_enabled;
     bool _precision_loiter_active; // true if user has switched on prec loiter
 #endif
+
+    bool geometric_motor_output_requested() const;
+    bool geometric_reference_supported() const;
+    bool geometric_output_safe_for_active(bool allow_safety_bypass) const;
+    void deactivate_geometric_motor_output(bool reset_loiter_targets);
+    void reset_geometric_lifecycle();
+    bool reset_geometric_reference(bool ground_safe);
+    void init_geometric_ekf_reset_tracking();
+    bool handle_geometric_ekf_resets();
+    AC_Geometric_LoiterReference_Limits geometric_reference_limits() const;
+    void build_geometric_ground_safe_target(AC_Geometric_Target& target) const;
+    bool run_geometric_loiter_reference(AltHoldModeState loiter_state,
+                                        float target_roll_rad,
+                                        float target_pitch_rad,
+                                        float target_yaw_rate_rads,
+                                        float target_climb_rate_ms,
+                                        bool& takeoff_stopped_this_cycle,
+                                        bool& ground_safe_prepared);
+    bool update_geometric_observer(AltHoldModeState loiter_state,
+                                   const AC_Geometric_Target* reference_target = nullptr);
+    void finish_geometric_lifecycle(AltHoldModeState loiter_state,
+                                    bool takeoff_stopped_this_cycle,
+                                    bool ground_safe_prepared);
+    void write_geometric_lifecycle_frame(uint8_t phase) const;
+
+    AC_Geometric_LoiterReference _geometric_reference;
+    AC_Geometric_LoiterReference_Status _geometric_reference_status;
+    bool _geometric_motor_output_active = false;
+    bool _geometric_motor_output_rejected = false;
+    bool _geometric_lifecycle_in_progress = false;
+    bool _geometric_liftoff_confirmed = false;
+    bool _geometric_touchdown_logged = false;
+    bool _geometric_ground_idle_logged = false;
+    float _geometric_takeoff_start_alt_m = 0.0f;
+    float _geometric_takeoff_target_z_ned_m = 0.0f;
+    bool _geometric_takeoff_target_valid = false;
+    uint32_t _geometric_ekf_ne_reset_ms = 0;
+    uint32_t _geometric_ekf_d_reset_ms = 0;
+    uint32_t _geometric_ekf_yaw_reset_ms = 0;
+    uint8_t _geometric_log_counter = 0;
+    uint32_t _geometric_reference_frames = 0;
+    uint32_t _native_reference_frames = 0;
 
 };
 

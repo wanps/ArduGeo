@@ -245,8 +245,11 @@ const Vector3f AC_AttitudeControl::get_latest_gyro() const
 // Ensure attitude controller have zero errors to relax rate controller output
 void AC_AttitudeControl::relax_attitude_controllers()
 {
-    // take a copy of the last gyro used by the rate controller before using it
-    Vector3f gyro = get_latest_gyro();
+    relax_attitude_controllers(get_latest_gyro());
+}
+
+void AC_AttitudeControl::relax_attitude_controllers(const Vector3f& gyro)
+{
     // Initialize the attitude variables to the current attitude
     _ahrs.get_quat_body_to_ned(_attitude_target);
     _attitude_target.to_euler(_euler_angle_target_rad);
@@ -268,6 +271,101 @@ void AC_AttitudeControl::relax_attitude_controllers()
     reset_rate_controller_I_terms();
     // finally update the attitude target
     _ang_vel_body_rads = gyro;
+}
+
+// Store an externally generated attitude target for compatibility consumers.
+// This deliberately stops at target/error bookkeeping: it must not generate a
+// native body-rate correction, update a PID, or write to AP_Motors.
+bool AC_AttitudeControl::set_external_attitude_target(const Quaternion& body_to_ned,
+                                                      const Vector3f& ang_vel_target_rads)
+{
+    const bool target_finite = isfinite(body_to_ned.q1) &&
+                               isfinite(body_to_ned.q2) &&
+                               isfinite(body_to_ned.q3) &&
+                               isfinite(body_to_ned.q4);
+    const float target_length_squared = body_to_ned.length_squared();
+    if (!target_finite ||
+        !isfinite(target_length_squared) ||
+        is_zero(target_length_squared) ||
+        ang_vel_target_rads.is_nan() ||
+        ang_vel_target_rads.is_inf()) {
+        return false;
+    }
+
+    // Work on local values so any validation failure leaves all published
+    // compatibility caches on the last complete target.
+    Quaternion attitude_target = body_to_ned;
+    attitude_target.normalize();
+
+    Vector3f euler_angle_target_rad;
+    attitude_target.to_euler(euler_angle_target_rad);
+    if (euler_angle_target_rad.is_nan() || euler_angle_target_rad.is_inf()) {
+        return false;
+    }
+
+    Vector3f euler_rate_target_rads;
+    if (!body_to_euler_derivative(attitude_target, ang_vel_target_rads, euler_rate_target_rads)) {
+        // Euler rates are singular at exactly +/-90 degrees pitch.  The
+        // quaternion and body-rate target remain valid, so publish a bounded
+        // diagnostic rate rather than rejecting the external control frame.
+        euler_rate_target_rads.zero();
+    }
+    if (euler_rate_target_rads.is_nan() || euler_rate_target_rads.is_inf()) {
+        return false;
+    }
+
+    Quaternion attitude_body;
+    _ahrs.get_quat_body_to_ned(attitude_body);
+    const bool attitude_body_finite = isfinite(attitude_body.q1) &&
+                                      isfinite(attitude_body.q2) &&
+                                      isfinite(attitude_body.q3) &&
+                                      isfinite(attitude_body.q4);
+    const float attitude_body_length_squared = attitude_body.length_squared();
+    if (!attitude_body_finite ||
+        !isfinite(attitude_body_length_squared) ||
+        is_zero(attitude_body_length_squared)) {
+        return false;
+    }
+    attitude_body.normalize();
+
+    Quaternion attitude_ang_error = attitude_body.inverse() * attitude_target;
+    const float attitude_error_length_squared = attitude_ang_error.length_squared();
+    if (!isfinite(attitude_ang_error.q1) ||
+        !isfinite(attitude_ang_error.q2) ||
+        !isfinite(attitude_ang_error.q3) ||
+        !isfinite(attitude_ang_error.q4) ||
+        !isfinite(attitude_error_length_squared) ||
+        is_zero(attitude_error_length_squared)) {
+        return false;
+    }
+    attitude_ang_error.normalize();
+
+    Quaternion thrust_vector_correction;
+    Vector3f attitude_error_rad;
+    float thrust_angle_rad = 0.0f;
+    float thrust_error_angle_rad = 0.0f;
+    thrust_vector_rotation_angles(attitude_target,
+                                  attitude_body,
+                                  thrust_vector_correction,
+                                  attitude_error_rad,
+                                  thrust_angle_rad,
+                                  thrust_error_angle_rad);
+    if (!isfinite(thrust_angle_rad) ||
+        !isfinite(thrust_error_angle_rad) ||
+        attitude_error_rad.is_nan() ||
+        attitude_error_rad.is_inf()) {
+        return false;
+    }
+
+    _attitude_target = attitude_target;
+    _euler_angle_target_rad = euler_angle_target_rad;
+    _ang_vel_target_rads = ang_vel_target_rads;
+    _ang_accel_target_rads.zero();
+    _euler_rate_target_rads = euler_rate_target_rads;
+    _attitude_ang_error = attitude_ang_error;
+    _thrust_angle_rad = thrust_angle_rad;
+    _thrust_error_angle_rad = thrust_error_angle_rad;
+    return true;
 }
 
 void AC_AttitudeControl::reset_rate_controller_I_terms()

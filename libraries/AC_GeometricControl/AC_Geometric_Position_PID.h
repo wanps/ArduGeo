@@ -44,4 +44,8 @@ private:
     Vector3f _omega_dot_c_filtered_radss;
     bool _filter_reset = true;
     bool _attitude_target_reset = true;
+    bool _regularization_derivative_reset = false;
+    // Near-zero collective has no useful force direction. Hysteresis keeps the
+    // level-yaw attitude regularisation from chattering around its threshold.
+    bool _upright_thrust_regularized = false;
 };

@@ -2,8 +2,16 @@
 
 namespace {
 
-constexpr uint32_t GUID_OPTIONS_GEOMETRIC_MOTOR_OUTPUT = (1U << 8);
 constexpr uint32_t GEOMETRIC_OUTPUT_MAX_AGE_MS = 100;
+
+constexpr uint8_t GEO_FAIL_MODE = 1U << 0;
+constexpr uint8_t GEO_FAIL_OUTPUT_DISABLED = 1U << 1;
+constexpr uint8_t GEO_FAIL_RATE_THREAD = 1U << 2;
+constexpr uint8_t GEO_FAIL_DISARMED = 1U << 3;
+constexpr uint8_t GEO_FAIL_CONTROLLER_DISABLED = 1U << 4;
+constexpr uint8_t GEO_FAIL_STALE = 1U << 5;
+constexpr uint8_t GEO_FAIL_INVALID = 1U << 6;
+constexpr uint8_t GEO_FAIL_MODE_UNSAFE = 1U << 7;
 
 }
 
@@ -16,20 +24,63 @@ constexpr uint32_t GEOMETRIC_OUTPUT_MAX_AGE_MS = 100;
 */
 void Copter::run_rate_controller_main()
 {
+    main_rate_controller_frame_count++;
+
     // set attitude and position controller loop time
     const float last_loop_time_s = AP::scheduler().get_last_loop_time_s();
     pos_control->set_dt_s(last_loop_time_s);
     attitude_control->set_dt_s(last_loop_time_s);
 
+    const uint8_t geometric_failure_flags = geometric_motor_output_failure_flags();
+    const bool geometric_output_active = geometric_failure_flags == 0;
+    if (geometric_motor_output_was_active && !geometric_output_active) {
+        // This task runs before update_flight_mode().  Complete the native
+        // controller handoff here so a frozen rate PID is never allowed to
+        // produce the first fallback motor output.
+        const uint8_t mode_number = flightmode == nullptr ?
+                                    UINT8_MAX :
+                                    uint8_t(flightmode->mode_number());
+        if (flightmode != nullptr) {
+            flightmode->handle_geometric_motor_output_fallback();
+        }
+        geometric_motor_output_was_active = false;
+
+#if HAL_LOGGING_ENABLED
+        // @LoggerMessage: GEOH
+        // @Description: Geometric motor-output handoff event, logged after mode handoff and before the native rate controller runs
+        // @Field: TimeUS: Time since system startup
+        // @Field: Mode: Flight mode at the output-path falling edge
+        // @Field: Fail: Geometric gate failure bitmask
+        // @Field: Prev: True because the previous control frame wrote geometric output
+        // @Field: Act: False because geometric output is no longer authorized
+        // @Field: Hand: True after the native-controller handoff completed
+        // @Field: RT: True if the rate thread blocked geometric output
+        AP::logger().Write("GEOH", "TimeUS,Mode,Fail,Prev,Act,Hand,RT", "QBBBBBB",
+                           AP_HAL::micros64(),
+                           mode_number,
+                           geometric_failure_flags,
+                           uint8_t(1),
+                           uint8_t(0),
+                           uint8_t(1),
+                           uint8_t(using_rate_thread));
+#endif
+    }
+
     if (!using_rate_thread) {
         motors->set_dt_s(last_loop_time_s);
         // Only one path should write roll/pitch/yaw/throttle to AP_Motors
         // before motors_output_main() pushes the values to the HAL.
-        if (geometric_motor_output_active()) {
+        if (geometric_output_active) {
+            // Keep throttle-mix state moving for the landing detector without
+            // running the native rate PIDs or writing native motor commands.
+            attitude_control->rate_controller_update_throttle_mix();
             geometric_motor_output_to_motors();
+            geometric_motor_output_frame_count++;
+            geometric_motor_output_was_active = true;
         } else {
             // only run the rate controller if we are not using the rate thread
             attitude_control->rate_controller_run();
+            native_rate_controller_frame_count++;
         }
     }
     // reset sysid and other temporary inputs
@@ -38,29 +89,58 @@ void Copter::run_rate_controller_main()
 
 bool Copter::geometric_motor_output_active() const
 {
-    if (flightmode == nullptr || flightmode->mode_number() != Mode::Number::GUIDED) {
-        return false;
-    }
-    if ((uint32_t(g2.guided_options.get()) & GUID_OPTIONS_GEOMETRIC_MOTOR_OUTPUT) == 0) {
-        return false;
+    return geometric_motor_output_failure_flags() == 0;
+}
+
+bool Copter::geometric_motor_output_is_valid() const
+{
+    const AC_Geometric_Output& output = geometric_control.get_output();
+    const AC_Geometric_Mapped_Output& mapped = output.mapped;
+    return !mapped.rpy_norm.is_nan() &&
+           !mapped.rpy_norm.is_inf() &&
+           !mapped.rpy_norm_raw.is_nan() &&
+           !mapped.rpy_norm_raw.is_inf() &&
+           isfinite(mapped.throttle_norm) &&
+           isfinite(mapped.throttle_norm_raw) &&
+           !output.position.position_error_m.is_nan() &&
+           !output.position.position_error_m.is_inf() &&
+           !output.position.specific_force_ned_mss.is_nan() &&
+           !output.position.specific_force_ned_mss.is_inf() &&
+           !output.attitude.attitude_error.is_nan() &&
+           !output.attitude.attitude_error.is_inf() &&
+           !output.attitude.moment.is_nan() &&
+           !output.attitude.moment.is_inf();
+}
+
+uint8_t Copter::geometric_motor_output_failure_flags() const
+{
+    uint8_t failure_flags = 0;
+    if (flightmode == nullptr || !flightmode->allows_geometric_motor_output()) {
+        failure_flags |= GEO_FAIL_MODE;
     }
     if (!geometric_control.output_enabled()) {
-        return false;
+        failure_flags |= GEO_FAIL_OUTPUT_DISABLED;
     }
     if (geometric_motor_output_blocked_by_rate_thread()) {
-        return false;
+        failure_flags |= GEO_FAIL_RATE_THREAD;
     }
     if (!motors->armed()) {
-        return false;
+        failure_flags |= GEO_FAIL_DISARMED;
     }
     if (!geometric_control.enabled()) {
-        return false;
+        failure_flags |= GEO_FAIL_CONTROLLER_DISABLED;
     }
     if (!geometric_control.output_is_fresh(millis(), GEOMETRIC_OUTPUT_MAX_AGE_MS)) {
-        return false;
+        failure_flags |= GEO_FAIL_STALE;
+    }
+    if (!geometric_motor_output_is_valid()) {
+        failure_flags |= GEO_FAIL_INVALID;
+    }
+    if (flightmode != nullptr && !flightmode->geometric_motor_output_is_safe()) {
+        failure_flags |= GEO_FAIL_MODE_UNSAFE;
     }
 
-    return true;
+    return failure_flags;
 }
 
 bool Copter::geometric_motor_output_blocked_by_rate_thread() const
@@ -88,8 +168,11 @@ void Copter::geometric_motor_output_to_motors()
     motors->set_pitch_ff(0.0f);
     motors->set_yaw(mapped.rpy_norm.z);
     motors->set_yaw_ff(0.0f);
-    motors->set_throttle(mapped.throttle_norm);
-    motors->set_throttle_avg_max(mapped.throttle_norm);
+    // Geometry remains the sole collective command source, but use the
+    // attitude-control throttle sink for AP_Motors bookkeeping (throttle-in,
+    // throttle-mix headroom and landing/takeoff consumers).  This does not run
+    // either the native attitude or rate feedback controller.
+    attitude_control->set_throttle_out(mapped.throttle_norm, false, 0.0f);
 }
 
 /*************************************************************

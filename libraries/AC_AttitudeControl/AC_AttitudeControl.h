@@ -145,6 +145,10 @@ public:
     // Ensure attitude controller have zero errors to relax rate controller output
     void relax_attitude_controllers();
 
+    // As above, but initialise the rate-controller state from an explicitly
+    // supplied current gyro sample instead of the cached rate-loop sample.
+    void relax_attitude_controllers(const Vector3f& gyro_rads);
+
     // Used by child class AC_AttitudeControl_TS to change behaviour for tailsitter quadplanes
     virtual void relax_attitude_controllers(bool exclude_pitch) { relax_attitude_controllers(); }
 
@@ -306,6 +310,10 @@ public:
     // Run the angular velocity controller with a specified timestep. Must be implemented by derived class.
     virtual void rate_controller_run_dt(const Vector3f& gyro_rads, float dt) { AP_BoardConfig::config_error("rate_controller_run_dt() must be defined"); };
 
+    // Advance throttle-mix state without running rate PIDs or writing motor outputs.
+    // Direct geometric output paths use this to preserve landing-detector housekeeping.
+    virtual void rate_controller_update_throttle_mix() {}
+
     // euler_derivative_to_body - transform euler angle derivative to body-frame
     // Converts euler derivatives (rate, acceleration, etc.) to body-frame equivalents.
     // The same transformation applies regardless of derivative order.
@@ -339,6 +347,14 @@ public:
 
     // Return the angle between the target thrust vector and the current thrust vector.
     float get_att_error_angle_deg() const { return degrees(_thrust_error_angle_rad); }
+
+    // Store an attitude target produced by an external controller for consumers
+    // such as landing detection, crash checks and telemetry.  This only updates
+    // target/error bookkeeping; it does not run attitude or rate feedback and
+    // does not write motor outputs.  Returns false without changing state if the
+    // supplied target or the measured attitude is invalid.
+    bool set_external_attitude_target(const Quaternion& body_to_ned,
+                                      const Vector3f& ang_vel_target_rads);
 
     // Returns the current attitude target as 321 Euler angles in centidegrees.
     // Note: Centidegrees are used for legacy compatibility with older messaging formats.

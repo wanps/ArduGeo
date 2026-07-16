@@ -177,7 +177,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: OUT_EN
     // @DisplayName: Geometric motor output enable
-    // @Description: Enables the geometric controller to write normalized roll, pitch, yaw and throttle outputs to AP_Motors when the vehicle-specific mode also allows it. For Copter Guided mode, GUID_OPTIONS bit 8 must also be set. Leave disabled until the geometric controller has been validated in simulation for the vehicle and parameter set.
+    // @Description: Enables the geometric controller to write normalized roll, pitch, yaw and throttle outputs to AP_Motors when the vehicle-specific mode also allows it. For Copter, Guided requires GUID_OPTIONS bit 8 and Loiter requires LOIT_OPTIONS bits 1 and 2. Leave disabled until the geometric controller has been validated in simulation for the vehicle and parameter set.
     // @Values: 0:Disable,1:Enable
     // @User: Advanced
     AP_GROUPINFO("OUT_EN", 17, AC_GeometricControl, _output_enabled, AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT),
@@ -362,7 +362,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_J_X
     // @DisplayName: Geometric roll inertia
-    // @Description: Diagonal body-X inertia term Jx used by the Lee SO(3) attitude moment formula. Default follows the Gao quadrotor model J = 10^-2 diag(1.1,2.0,2.3) kg*m*m. This is a model parameter for the geometric moment proxy, not an ArduPilot motor normalization scale.
+    // @Description: Diagonal body-X inertia term Jx used by the Lee SO(3) attitude moment formula. The default reference model is J = diag(0.010,0.020,0.020) kg*m*m. This is a model parameter for the geometric moment proxy, not an ArduPilot motor normalization scale.
     // @Range: 0.001 1
     // @Increment: 0.001
     // @User: Advanced
@@ -370,7 +370,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_J_Y
     // @DisplayName: Geometric pitch inertia
-    // @Description: Diagonal body-Y inertia term Jy used by the Lee SO(3) attitude moment formula. Default follows the Gao quadrotor model J = 10^-2 diag(1.1,2.0,2.3) kg*m*m. This is a model parameter for the geometric moment proxy, not an ArduPilot motor normalization scale.
+    // @Description: Diagonal body-Y inertia term Jy used by the Lee SO(3) attitude moment formula. The default reference model is J = diag(0.010,0.020,0.020) kg*m*m. This is a model parameter for the geometric moment proxy, not an ArduPilot motor normalization scale.
     // @Range: 0.001 1
     // @Increment: 0.001
     // @User: Advanced
@@ -378,7 +378,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_J_Z
     // @DisplayName: Geometric yaw inertia
-    // @Description: Diagonal body-Z inertia term Jz used by the Lee SO(3) attitude moment formula. Default follows the Gao quadrotor model J = 10^-2 diag(1.1,2.0,2.3) kg*m*m. This is a model parameter for the geometric moment proxy, not an ArduPilot motor normalization scale.
+    // @Description: Diagonal body-Z inertia term Jz used by the Lee SO(3) attitude moment formula. The default reference model is J = diag(0.010,0.020,0.020) kg*m*m. This is a model parameter for the geometric moment proxy, not an ArduPilot motor normalization scale.
     // @Range: 0.001 1
     // @Increment: 0.001
     // @User: Advanced
@@ -409,6 +409,12 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Increment: 0.1
     // @User: Advanced
     AP_GROUPINFO("DOMG_C_FLT", 44, AC_GeometricControl, _omega_dot_c_filt_hz, AC_GEOMETRIC_OMEGA_DOT_C_FILTER_DEFAULT),
+
+    // Keep 45 through 61 unused so LREF_ retains the same persistent storage
+    // identity across compatible geometric-controller branch variants.
+    // @Group: LREF_
+    // @Path: AC_Geometric_LoiterReference.cpp
+    AP_SUBGROUPINFO(_loiter_reference_params, "LREF_", 62, AC_GeometricControl, AC_Geometric_LoiterReference_Params),
 
     AP_GROUPEND
 };
@@ -535,7 +541,7 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         _setpoint_shaper.reset();
     }
 
-    if (_shape_enabled && target.build_attitude_from_position) {
+    if (_shape_enabled && target.build_attitude_from_position && target.shape_yaw_target) {
         AC_Geometric_Yaw_Shaper_Limits yaw_limits {};
         yaw_limits.explicit_yaw_enabled = _shape_yaw_enabled.get() != 0;
         yaw_limits.yaw_rate_max_rads = _shape_yaw_rate_max_rads.get();

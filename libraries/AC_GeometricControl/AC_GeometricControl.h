@@ -4,6 +4,7 @@
 #include <AP_Param/AP_Param.h>
 
 #include "AC_Geometric_Attitude_PID.h"
+#include "AC_Geometric_LoiterReference.h"
 #include "AC_Geometric_OutputMapper.h"
 #include "AC_Geometric_Position_PID.h"
 #include "AC_Geometric_SetpointShaper.h"
@@ -43,6 +44,7 @@ public:
     const AC_Geometric_Target& get_raw_target() const { return _raw_target; }
     const AC_Geometric_Target& get_shaped_target() const { return _shaped_target; }
     bool shaper_active() const { return _shaper_active; }
+    AC_Geometric_LoiterReference_Profile get_loiter_reference_profile() const { return _loiter_reference_params.get(); }
 
 private:
     void update_gains_from_params();
@@ -56,6 +58,7 @@ private:
     AC_Geometric_Position_PID _position_pid;
     AC_Geometric_Attitude_PID _attitude_pid;
     AC_Geometric_OutputMapper _output_mapper;
+    AC_Geometric_LoiterReference_Params _loiter_reference_params;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_YawShaper _yaw_shaper;
     AC_Geometric_Output _output;

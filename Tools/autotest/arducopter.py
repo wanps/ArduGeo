@@ -15961,11 +15961,13 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         for m in geop_msgs:
             sf_norm = math.hypot(m.SFx, m.SFy)
             tv_norm = math.hypot(m.TVx, m.TVy)
+            thrust_alignment = None
             if m.SFx > 0.5 and m.TVx > 0.1 and sf_norm > 0.5 and tv_norm > 0.1:
-                thrust_vector_alignments.append((m.SFx * m.TVx + m.SFy * m.TVy) / (sf_norm * tv_norm))
+                thrust_alignment = (m.SFx * m.TVx + m.SFy * m.TVy) / (sf_norm * tv_norm)
+                thrust_vector_alignments.append(thrust_alignment)
             rc_norm = math.hypot(m.RCr, m.RCp)
             ap_norm = math.hypot(m.ATr, m.ATp)
-            if m.SFx > 0.5 and rc_norm > 0.02 and ap_norm > 0.002:
+            if thrust_alignment is not None and thrust_alignment > 0.5 and rc_norm > 0.02 and ap_norm > 0.002:
                 alignments.append((m.RCr * m.ATr + m.RCp * m.ATp) / (rc_norm * ap_norm))
         self.progress("GEOP SFz min=%f Thr max=%f max tilt=%f AP tilt=%f AP TVxy=%f" %
                       (min_specific_force_z, max_thrust, max_horizontal_rc, max_ap_target, max_ap_thrust_vector))
@@ -16026,6 +16028,1924 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("GEOM raw roll/pitch actuator shadow output did not respond")
 
         self.do_RTL()
+
+    def GeometricLoiterObserver(self):
+        '''test Loiter geometric observer mapping and motor-output isolation'''
+        original_loit_options = int(self.get_parameter("LOIT_OPTIONS"))
+        disabled_options = original_loit_options & ~6
+        observer_options = disabled_options | 2
+        self.set_parameters({
+            "LOIT_OPTIONS": disabled_options,
+            "GUID_OPTIONS": 258,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 1,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_HOV_THR": 0.5,
+        })
+
+        pitch_channel = int(self.get_parameter("RCMAP_PITCH"))
+        yaw_channel = int(self.get_parameter("RCMAP_YAW"))
+        pitch_trim = int(self.get_parameter("RC%u_TRIM" % pitch_channel))
+        yaw_trim = int(self.get_parameter("RC%u_TRIM" % yaw_channel))
+
+        self.takeoff(alt_min=10, mode="LOITER")
+        disabled_start_us = int(self.get_sim_time() * 1000000)
+        self.delay_sim_time(1, reason="Loiter geometric observer disabled window")
+        disabled_end_us = int(self.get_sim_time() * 1000000)
+
+        self.set_parameter("LOIT_OPTIONS", observer_options)
+        self.delay_sim_time(0.5, reason="Loiter geometric observer enable settling")
+        enabled_start_us = int(self.get_sim_time() * 1000000)
+
+        move_start_us = int(self.get_sim_time() * 1000000)
+        self.set_rc(pitch_channel, max(1000, pitch_trim - 200))
+        self.delay_sim_time(2, reason="Loiter geometric observer translation input")
+        move_end_us = int(self.get_sim_time() * 1000000)
+        self.set_rc(pitch_channel, pitch_trim)
+        self.wait_groundspeed(0, 1.5, timeout=20)
+
+        yaw_start_us = int(self.get_sim_time() * 1000000)
+        self.set_rc(yaw_channel, min(2000, yaw_trim + 100))
+        self.delay_sim_time(1.5, reason="Loiter geometric observer yaw input")
+        yaw_end_us = int(self.get_sim_time() * 1000000)
+        self.set_rc(yaw_channel, yaw_trim)
+        self.delay_sim_time(1, reason="Loiter geometric observer final logging")
+        enabled_end_us = int(self.get_sim_time() * 1000000)
+
+        self.assert_mode("LOITER")
+        if not self.armed():
+            raise NotAchievedException("Vehicle disarmed during Loiter geometric observer test")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geol_msgs = []
+        gelc_msgs = []
+        while True:
+            m = dfreader.recv_match(type=["GEOL", "GELC"])
+            if m is None:
+                break
+            if m.get_type() == "GEOL":
+                geol_msgs.append(m)
+                for field in ("PX", "PY", "PZ", "VX", "VY", "VZ",
+                              "AX", "AY", "AZ", "Yaw", "YRN"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException("GEOL.%s is not finite" % field)
+            if m.get_type() == "GELC":
+                gelc_msgs.append(m)
+                for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr",
+                              "RCr", "RCp", "ATr", "ATp", "TVx", "TVy", "TVz"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException("GELC.%s is not finite" % field)
+
+        disabled_geol = [m for m in geol_msgs if disabled_start_us <= m.TimeUS <= disabled_end_us]
+        disabled_gelc = [m for m in gelc_msgs if disabled_start_us <= m.TimeUS <= disabled_end_us]
+        if disabled_geol or disabled_gelc:
+            raise NotAchievedException("Loiter geometric observer logged while LOIT_OPTIONS bit 1 was disabled")
+
+        enabled_geol = [m for m in geol_msgs if enabled_start_us <= m.TimeUS <= enabled_end_us]
+        enabled_gelc = [m for m in gelc_msgs if enabled_start_us <= m.TimeUS <= enabled_end_us]
+        if not enabled_geol:
+            raise NotAchievedException("GEOL log message not found in enabled Loiter window")
+        if not enabled_gelc:
+            raise NotAchievedException("GELC log message not found in enabled Loiter window")
+
+        for m in enabled_geol:
+            if int(m.St) not in (1, 4):
+                raise NotAchievedException("GEOL logged outside Takeoff/Flying state")
+            if int(m.Act) != 0:
+                raise NotAchievedException("Geometric motor output became active in Loiter")
+            if int(m.Wrote) != 0:
+                raise NotAchievedException("Geometric path wrote AP_Motors in Loiter")
+            if int(m.Shp) != 0:
+                raise NotAchievedException("Loiter target was shaped a second time by geometric control")
+
+        flying_geol = [m for m in enabled_geol if int(m.St) == 4]
+        if not flying_geol:
+            raise NotAchievedException("GEOL did not report Loiter Flying state")
+
+        move_geol = [m for m in geol_msgs if move_start_us <= m.TimeUS <= move_end_us]
+        yaw_geol = [m for m in geol_msgs if yaw_start_us <= m.TimeUS <= yaw_end_us]
+        move_gelc = [m for m in gelc_msgs if move_start_us <= m.TimeUS <= move_end_us]
+        if not move_geol or not yaw_geol or not move_gelc:
+            raise NotAchievedException("Loiter geometric observer input window has no log samples")
+
+        max_velocity_xy = max(math.hypot(m.VX, m.VY) for m in move_geol)
+        max_accel_xy = max(math.hypot(m.AX, m.AY) for m in move_geol)
+        max_yaw_rate = max(abs(m.YRN) for m in yaw_geol)
+        min_specific_force_z = min(m.SFz for m in enabled_gelc)
+        max_thrust = max(m.Thr for m in enabled_gelc)
+        max_geometric_tilt = max(math.hypot(m.RCr, m.RCp) for m in move_gelc)
+        max_native_tilt = max(math.hypot(m.ATr, m.ATp) for m in move_gelc)
+        max_native_thrust_xy = max(math.hypot(m.TVx, m.TVy) for m in move_gelc)
+        self.progress("GEOL velocity=%f accel=%f yaw-rate=%f samples=%u" %
+                      (max_velocity_xy, max_accel_xy, max_yaw_rate, len(enabled_geol)))
+        self.progress("GELC SFz=%f thrust=%f geometric-tilt=%f native-tilt=%f native-TVxy=%f samples=%u" %
+                      (min_specific_force_z, max_thrust, max_geometric_tilt,
+                       max_native_tilt, max_native_thrust_xy, len(enabled_gelc)))
+
+        if max_velocity_xy < 0.3:
+            raise NotAchievedException("Loiter desired velocity did not respond to pitch input")
+        if max_accel_xy < 0.1:
+            raise NotAchievedException("Loiter desired acceleration did not respond to pitch input")
+        if max_yaw_rate < 0.05:
+            raise NotAchievedException("Loiter native yaw-rate target did not respond to yaw input")
+        if min_specific_force_z > -5.0:
+            raise NotAchievedException("GELC specific force did not point upward in NED")
+        if max_thrust < 1.0:
+            raise NotAchievedException("GELC projected thrust is unexpectedly small")
+        if max_geometric_tilt < 0.005:
+            raise NotAchievedException("Geometric Loiter attitude command did not tilt")
+        if max_native_tilt < 0.002:
+            raise NotAchievedException("Native Loiter attitude target did not tilt")
+        if max_native_thrust_xy < 0.05:
+            raise NotAchievedException("Native Loiter thrust vector did not respond")
+
+        thrust_vector_alignments = []
+        attitude_alignments = []
+        for m in move_gelc:
+            sf_norm = math.hypot(m.SFx, m.SFy)
+            tv_norm = math.hypot(m.TVx, m.TVy)
+            if sf_norm > 0.3 and tv_norm > 0.05:
+                thrust_vector_alignments.append(
+                    (m.SFx * m.TVx + m.SFy * m.TVy) / (sf_norm * tv_norm))
+            rc_norm = math.hypot(m.RCr, m.RCp)
+            native_attitude_norm = math.hypot(m.ATr, m.ATp)
+            if rc_norm > 0.005 and native_attitude_norm > 0.002:
+                attitude_alignments.append(
+                    (m.RCr * m.ATr + m.RCp * m.ATp) / (rc_norm * native_attitude_norm))
+
+        if len(thrust_vector_alignments) < 3:
+            raise NotAchievedException("Too few Loiter thrust-vector comparison samples")
+        if len(attitude_alignments) < 3:
+            raise NotAchievedException("Too few Loiter attitude comparison samples")
+        mean_thrust_alignment = sum(thrust_vector_alignments) / len(thrust_vector_alignments)
+        mean_attitude_alignment = sum(attitude_alignments) / len(attitude_alignments)
+        self.progress("GELC thrust alignment mean=%f samples=%u attitude alignment mean=%f samples=%u" %
+                      (mean_thrust_alignment, len(thrust_vector_alignments),
+                       mean_attitude_alignment, len(attitude_alignments)))
+        if mean_thrust_alignment < 0.3:
+            raise NotAchievedException("Geometric specific force disagrees with native Loiter thrust vector")
+        if mean_attitude_alignment < 0.2:
+            raise NotAchievedException("Geometric attitude command disagrees with native Loiter target")
+
+        self.do_RTL()
+
+    def GeometricLoiterTakeoffLandingMotorOutput(self):
+        '''prove default Loiter lifecycle uses dedicated geometric references and motor output'''
+        original_loit_options = int(self.get_parameter("LOIT_OPTIONS"))
+        if original_loit_options != 7:
+            raise NotAchievedException("Copter LOIT_OPTIONS default is not 7")
+
+        self.set_parameters({
+            "LOIT_OPTIONS": 7,
+            "PILOT_TKO_ALT_M": 8,
+            "PILOT_THR_BHV": 4,
+            "ATC_THR_MIX_MIN": 0.1,
+            "ATC_THR_MIX_MAX": 0.9,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_ATT_KR_X": 4.0,
+            "GEO_ATT_KR_Y": 4.0,
+            "GEO_ATT_KR_Z": 2.0,
+            "GEO_ATT_KO_X": 0.2,
+            "GEO_ATT_KO_Y": 0.2,
+            "GEO_ATT_KO_Z": 0.4,
+            "GEO_HOV_THR": 0.0,
+            "GEO_MOM_NORM_X": 4.0,
+            "GEO_MOM_NORM_Y": 4.0,
+            "GEO_MOM_NORM_Z": 2.0,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 0,
+            "FSTRATE_ENABLE": 0,
+        })
+
+        # Raw bit 2 without observer bit 1 is a malformed full-output request.
+        # It must fail closed instead of arming on the native rate controller.
+        self.change_mode("LOITER")
+        self.set_parameter("LOIT_OPTIONS", 5)
+        self.try_arm(result=False)
+        if self.armed(cached=True):
+            raise NotAchievedException(
+                "Malformed Loiter geometric request armed on native control")
+        # Re-enter Loiter after the malformed-request check so the dedicated
+        # reference counters start a clean epoch with no native frames.
+        self.change_mode("ALT_HOLD")
+        self.set_parameter("LOIT_OPTIONS", 7)
+
+        # Cancel a user takeoff while still armed and landed.  The cancellation
+        # update must synchronously replace the last Takeoff PVA command with a
+        # zero-collective target before the following rate frame.
+        self.change_mode("LOITER")
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.zero_throttle()
+        armed_cancel_start_us = int(self.get_sim_time() * 1000000)
+        self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, p7=2)
+        self.delay_sim_time(0.8, reason="cancel armed Loiter takeoff with throttle low")
+        armed_cancel_end_us = int(self.get_sim_time() * 1000000)
+        if not self.armed(cached=True):
+            raise NotAchievedException("Loiter disarmed during armed takeoff-cancel check")
+        if self.get_altitude(relative=True) > 0.3:
+            raise NotAchievedException("Loiter lifted off during armed takeoff-cancel check")
+        self.disarm_vehicle(force=True)
+        self.delay_sim_time(0.2, reason="settle armed Loiter takeoff cancellation")
+
+        # Start another user takeoff and disarm before liftoff.  _TakeOff is a
+        # shared static state machine; the following same-mode re-arm with
+        # throttle low must not inherit its running flag or emit a new phase 1.
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, p7=2)
+        self.disarm_vehicle(force=True)
+        self.zero_throttle()
+        self.delay_sim_time(0.3, reason="clear aborted Loiter takeoff epoch while disarmed")
+        abort_rearm_start_us = int(self.get_sim_time() * 1000000)
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.delay_sim_time(0.8, reason="prove low-throttle re-arm does not resume aborted Loiter takeoff")
+        abort_rearm_end_us = int(self.get_sim_time() * 1000000)
+        if self.get_altitude(relative=True) > 0.3:
+            raise NotAchievedException("Loiter resumed an aborted takeoff after same-mode re-arm")
+        self.disarm_vehicle(force=True)
+        self.delay_sim_time(0.2, reason="settle after aborted-takeoff reset check")
+
+        takeoff_start_us = int(self.get_sim_time() * 1000000)
+        self.takeoff(alt_min=8, mode="LOITER", timeout=60)
+        self.assert_mode("LOITER")
+        hover_start_us = int(self.get_sim_time() * 1000000)
+        self.delay_sim_time(1, reason="geometric Loiter flying hold")
+        landing_start_us = int(self.get_sim_time() * 1000000)
+
+        self.set_rc(3, 1300)
+        self.wait_altitude(0.2, 0.8, relative=True, timeout=60)
+        self.assert_mode("LOITER")
+        self.wait_disarmed(timeout=60)
+        self.assert_mode("LOITER")
+        self.zero_throttle()
+        self.delay_sim_time(0.5, reason="flush geometric Loiter landing log")
+        first_landing_end_us = int(self.get_sim_time() * 1000000)
+
+        # Re-arm and fly a second complete lifecycle without leaving Loiter.
+        # This catches stale phase/liftoff flags that could otherwise disarm a
+        # new flight immediately or omit its phase-1 edge.
+        self.set_parameter("PILOT_TKO_ALT_M", 3)
+        second_takeoff_start_us = first_landing_end_us
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.delay_sim_time(0.5, reason="second Loiter lifecycle ground-safe prewarm")
+        self.set_rc(3, 1700)
+        self.wait_altitude(2.5, 4.5, relative=True, timeout=45)
+        self.set_rc(3, 1500)
+        self.delay_sim_time(0.5, reason="second geometric Loiter hover")
+        self.set_rc(3, 1300)
+        self.wait_altitude(0.2, 0.8, relative=True, timeout=45)
+        self.wait_disarmed(timeout=60)
+        self.assert_mode("LOITER")
+        self.zero_throttle()
+        self.delay_sim_time(0.5, reason="flush second geometric Loiter lifecycle log")
+        landing_end_us = int(self.get_sim_time() * 1000000)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        gelf_format_ids = [
+            fmt.type for fmt in dfreader.formats.values()
+            if fmt.name == "GELF"
+        ]
+        if len(gelf_format_ids) != 1:
+            raise NotAchievedException(
+                "Expected exactly one GELF FMT ID, got %s" % gelf_format_ids)
+        gelf_msgs = []
+        geol_msgs = []
+        gelr_msgs = []
+        gelo_msgs = []
+        geox_msgs = []
+        geoh_msgs = []
+        ctun_msgs = []
+        ldet_msgs = []
+        event_msgs = []
+        spol_msgs = []
+        armed_cancel_phase5 = []
+        armed_cancel_geox = []
+        armed_cancel_geoh = []
+        abort_rearm_phase1 = []
+        while True:
+            m = dfreader.recv_match(type=["GELF", "GEOL", "GELR", "GELO", "GEOX", "GEOH",
+                                          "CTUN", "LDET", "EV", "SPOL"])
+            if m is None:
+                break
+            if armed_cancel_start_us <= m.TimeUS <= armed_cancel_end_us:
+                if m.get_type() == "GELF" and int(m.Phase) == 5:
+                    armed_cancel_phase5.append(m)
+                elif m.get_type() == "GEOX":
+                    armed_cancel_geox.append(m)
+                elif m.get_type() == "GEOH":
+                    armed_cancel_geoh.append(m)
+            if (m.get_type() == "GELF" and
+                    abort_rearm_start_us <= m.TimeUS <= abort_rearm_end_us and
+                    int(m.Phase) == 1):
+                abort_rearm_phase1.append(m)
+            if m.TimeUS < takeoff_start_us or m.TimeUS > landing_end_us:
+                continue
+            if m.get_type() == "GELF":
+                gelf_msgs.append(m)
+            elif m.get_type() == "GEOL":
+                geol_msgs.append(m)
+            elif m.get_type() == "GELR":
+                gelr_msgs.append(m)
+                for field in ("PX", "PY", "PZ", "VX", "VY", "VZ",
+                              "AX", "AY", "AZ"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            "GELR.%s is not finite in Loiter lifecycle" % field)
+            elif m.get_type() == "GELO":
+                gelo_msgs.append(m)
+                for field in ("Yaw", "YR"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            "GELO.%s is not finite in Loiter lifecycle" % field)
+            elif m.get_type() == "GEOX":
+                geox_msgs.append(m)
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException("GEOX.%s is not finite in Loiter takeoff test" % field)
+            elif m.get_type() == "GEOH":
+                geoh_msgs.append(m)
+            elif m.get_type() == "CTUN":
+                ctun_msgs.append(m)
+            elif m.get_type() == "LDET":
+                ldet_msgs.append(m)
+            elif m.get_type() == "EV":
+                event_msgs.append(m)
+            elif m.get_type() == "SPOL":
+                spol_msgs.append(m)
+
+        if (not gelf_msgs or not geol_msgs or not gelr_msgs or not gelo_msgs or
+                not geox_msgs or not ctun_msgs or
+                not ldet_msgs or not event_msgs or not spol_msgs):
+            raise NotAchievedException("Missing geometric Loiter takeoff/landing logs")
+        if abort_rearm_phase1:
+            raise NotAchievedException(
+                "Low-throttle Loiter re-arm resumed an aborted takeoff lifecycle")
+        if not armed_cancel_phase5:
+            raise NotAchievedException(
+                "Armed low-throttle Loiter takeoff did not emit a cancel edge")
+        cancel_edge = min(armed_cancel_phase5, key=lambda m: m.TimeUS)
+        if not math.isfinite(cancel_edge.Thr) or abs(cancel_edge.Thr) > 0.001:
+            raise NotAchievedException(
+                "Armed Loiter takeoff cancel did not prepare zero collective")
+        settled_cancel_geox = [m for m in armed_cancel_geox
+                               if m.TimeUS >= cancel_edge.TimeUS]
+        if not settled_cancel_geox:
+            raise NotAchievedException(
+                "No geometric output samples after armed Loiter takeoff cancel")
+        if any(not m.OEn or not m.Allow or not m.Wrote or m.RT or
+               not math.isfinite(m.Thr) or abs(m.Thr) > 0.05
+               for m in settled_cancel_geox):
+            raise NotAchievedException(
+                "Armed Loiter takeoff cancel did not remain ground-safe geometric")
+        if armed_cancel_geoh:
+            raise NotAchievedException(
+                "Armed Loiter takeoff cancel handed output to native control")
+        self.progress(
+            "Loiter armed takeoff cancel throttle=%f ground-safe-samples=%u" %
+            (cancel_edge.Thr, len(settled_cancel_geox)))
+
+        lifecycle_phase = {}
+        for required_phase in (0, 1, 3, 4):
+            phase_msgs = [m for m in gelf_msgs if int(m.Phase) == required_phase]
+            if not phase_msgs:
+                raise NotAchievedException("GELF phase %u not found" % required_phase)
+            lifecycle_phase[required_phase] = min(phase_msgs, key=lambda m: m.TimeUS)
+
+        prearm_edge = lifecycle_phase[0]
+        takeoff_edge = lifecycle_phase[1]
+        touchdown_edge = lifecycle_phase[3]
+        ground_idle_edge = lifecycle_phase[4]
+        if not (prearm_edge.TimeUS < takeoff_edge.TimeUS <
+                touchdown_edge.TimeUS < ground_idle_edge.TimeUS):
+            raise NotAchievedException("GELF lifecycle phases are out of order")
+        if not math.isfinite(prearm_edge.Thr) or abs(prearm_edge.Thr) > 0.001:
+            raise NotAchievedException("Loiter final pre-arm target was not zero collective")
+
+        def check_dedicated_reference_window(name, start_us, end_us):
+            ownership_msgs = sorted(
+                [m for m in gelo_msgs if start_us <= m.TimeUS <= end_us],
+                key=lambda m: m.TimeUS,
+            )
+            if len(ownership_msgs) < 3:
+                raise NotAchievedException(
+                    "Too few GELO samples during %s" % name)
+            for m in ownership_msgs:
+                if not int(m.NER) or not int(m.DR):
+                    raise NotAchievedException(
+                        "External PVA reference was not fresh during %s" % name)
+                if int(m.NEN) or int(m.DN):
+                    raise NotAchievedException(
+                        "Native position feedback remained active during %s" % name)
+                total_frames = int(m.TFrm)
+                geometric_frames = int(m.GFrm)
+                native_frames = int(m.NFrm)
+                if total_frames != geometric_frames + native_frames:
+                    raise NotAchievedException(
+                        "Invalid GELO frame accounting during %s" % name)
+                if native_frames != 0:
+                    raise NotAchievedException(
+                        "Native Loiter generated %u reference frame(s) during %s" %
+                        (native_frames, name))
+            for previous, current in zip(ownership_msgs, ownership_msgs[1:]):
+                delta_total = int(current.TFrm) - int(previous.TFrm)
+                delta_geometric = int(current.GFrm) - int(previous.GFrm)
+                delta_native = int(current.NFrm) - int(previous.NFrm)
+                if (delta_total <= 0 or
+                        delta_geometric != delta_total or
+                        delta_native != 0):
+                    raise NotAchievedException(
+                        "%s did not use the dedicated reference on every Loiter frame" % name)
+            return ownership_msgs
+
+        lifecycle_gelo = check_dedicated_reference_window(
+            "first Loiter lifecycle",
+            takeoff_edge.TimeUS,
+            ground_idle_edge.TimeUS,
+        )
+        lifecycle_gelr = [m for m in gelr_msgs
+                          if takeoff_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+        takeoff_gelr = [m for m in lifecycle_gelr
+                        if takeoff_edge.TimeUS <= m.TimeUS <= hover_start_us]
+        hover_gelr = [m for m in lifecycle_gelr
+                      if hover_start_us <= m.TimeUS <= landing_start_us]
+        descent_gelr = [m for m in lifecycle_gelr
+                        if landing_start_us <= m.TimeUS <= touchdown_edge.TimeUS]
+        if not takeoff_gelr or min(m.VZ for m in takeoff_gelr) > -0.1:
+            raise NotAchievedException(
+                "Dedicated Loiter reference did not command takeoff")
+        if not hover_gelr or min(abs(m.VZ) for m in hover_gelr) > 0.25:
+            raise NotAchievedException(
+                "Dedicated Loiter reference did not settle for hover")
+        if not descent_gelr or max(m.VZ for m in descent_gelr) < 0.1:
+            raise NotAchievedException(
+                "Dedicated Loiter reference did not command landing descent")
+
+        pre_takeoff_main = int(takeoff_edge.MFrm) - int(prearm_edge.MFrm)
+        pre_takeoff_geometric = int(takeoff_edge.GFrm) - int(prearm_edge.GFrm)
+        pre_takeoff_native = int(takeoff_edge.NFrm) - int(prearm_edge.NFrm)
+        if (pre_takeoff_main <= 0 or
+                pre_takeoff_geometric != pre_takeoff_main or
+                pre_takeoff_native != 0):
+            raise NotAchievedException(
+                "Loiter final-prearm-to-takeoff was not geometric on every main-loop frame")
+
+        delta_main = int(ground_idle_edge.MFrm) - int(takeoff_edge.MFrm)
+        delta_geometric = int(ground_idle_edge.GFrm) - int(takeoff_edge.GFrm)
+        delta_native = int(ground_idle_edge.NFrm) - int(takeoff_edge.NFrm)
+        if delta_main <= 0:
+            raise NotAchievedException("No main-loop controller frames in Loiter lifecycle window")
+        if delta_native != 0:
+            raise NotAchievedException(
+                "Native rate PID ran %u frame(s) during Loiter geometric lifecycle" % delta_native)
+        if delta_geometric != delta_main:
+            raise NotAchievedException("Not every Loiter lifecycle main-loop frame was geometric")
+
+        touchdown_main = int(ground_idle_edge.MFrm) - int(touchdown_edge.MFrm)
+        touchdown_geometric = int(ground_idle_edge.GFrm) - int(touchdown_edge.GFrm)
+        touchdown_native = int(ground_idle_edge.NFrm) - int(touchdown_edge.NFrm)
+        if touchdown_main <= 0 or touchdown_geometric != touchdown_main or touchdown_native != 0:
+            raise NotAchievedException(
+                "Loiter touchdown-to-ground-idle was not geometric on every main-loop frame")
+
+        second_takeoff_edges = sorted(
+            [m for m in gelf_msgs
+             if int(m.Phase) == 1 and m.TimeUS > ground_idle_edge.TimeUS],
+            key=lambda m: m.TimeUS,
+        )
+        if not second_takeoff_edges:
+            raise NotAchievedException("Second same-mode Loiter lifecycle has no phase 1")
+        second_takeoff_edge = second_takeoff_edges[0]
+        second_prearm_edges = sorted(
+            [m for m in gelf_msgs
+             if int(m.Phase) == 0 and
+             m.TimeUS > ground_idle_edge.TimeUS and
+             m.TimeUS < second_takeoff_edge.TimeUS],
+            key=lambda m: m.TimeUS,
+        )
+        if not second_prearm_edges:
+            raise NotAchievedException("Second same-mode Loiter lifecycle has no phase 0")
+        second_prearm_edge = second_prearm_edges[-1]
+        if (not math.isfinite(second_prearm_edge.Thr) or
+                abs(second_prearm_edge.Thr) > 0.001):
+            raise NotAchievedException(
+                "Second Loiter final pre-arm target was not zero collective")
+        second_touchdown_edges = sorted(
+            [m for m in gelf_msgs
+             if int(m.Phase) == 3 and m.TimeUS > second_takeoff_edge.TimeUS],
+            key=lambda m: m.TimeUS,
+        )
+        second_ground_idle_edges = sorted(
+            [m for m in gelf_msgs
+             if int(m.Phase) == 4 and m.TimeUS > second_takeoff_edge.TimeUS],
+            key=lambda m: m.TimeUS,
+        )
+        if not second_touchdown_edges or not second_ground_idle_edges:
+            raise NotAchievedException("Second same-mode Loiter lifecycle is incomplete")
+        second_touchdown_edge = second_touchdown_edges[0]
+        second_ground_idle_edge = second_ground_idle_edges[0]
+        if not (ground_idle_edge.TimeUS < second_prearm_edge.TimeUS <
+                second_takeoff_edge.TimeUS <
+                second_touchdown_edge.TimeUS < second_ground_idle_edge.TimeUS):
+            raise NotAchievedException("Second Loiter lifecycle phases are out of order")
+
+        second_pre_main = int(second_takeoff_edge.MFrm) - int(second_prearm_edge.MFrm)
+        second_pre_geometric = int(second_takeoff_edge.GFrm) - int(second_prearm_edge.GFrm)
+        second_pre_native = int(second_takeoff_edge.NFrm) - int(second_prearm_edge.NFrm)
+        if (second_pre_main <= 0 or
+                second_pre_geometric != second_pre_main or
+                second_pre_native != 0):
+            raise NotAchievedException(
+                "Second Loiter final-prearm-to-takeoff window was not fully geometric")
+
+        second_main = int(second_ground_idle_edge.MFrm) - int(second_takeoff_edge.MFrm)
+        second_geometric = int(second_ground_idle_edge.GFrm) - int(second_takeoff_edge.GFrm)
+        second_native = int(second_ground_idle_edge.NFrm) - int(second_takeoff_edge.NFrm)
+        if second_main <= 0 or second_geometric != second_main or second_native != 0:
+            raise NotAchievedException(
+                "Second same-mode Loiter lifecycle was not geometric on every main-loop frame")
+        second_touchdown_main = int(second_ground_idle_edge.MFrm) - int(second_touchdown_edge.MFrm)
+        second_touchdown_geometric = int(second_ground_idle_edge.GFrm) - int(second_touchdown_edge.GFrm)
+        second_touchdown_native = int(second_ground_idle_edge.NFrm) - int(second_touchdown_edge.NFrm)
+        if (second_touchdown_main <= 0 or
+                second_touchdown_geometric != second_touchdown_main or
+                second_touchdown_native != 0):
+            raise NotAchievedException(
+                "Second Loiter touchdown-to-ground-idle window was not fully geometric")
+
+        check_dedicated_reference_window(
+            "second Loiter lifecycle",
+            second_takeoff_edge.TimeUS,
+            second_ground_idle_edge.TimeUS,
+        )
+
+        second_ground_geox = [m for m in geox_msgs
+                              if second_takeoff_start_us <= m.TimeUS < second_takeoff_edge.TimeUS and
+                              m.Allow and m.OEn and m.Wrote and not m.RT]
+        if len(second_ground_geox) < 3:
+            raise NotAchievedException("Too few zero-thrust samples before second Loiter takeoff")
+        if any(abs(m.Thr) > 0.05 for m in second_ground_geox):
+            raise NotAchievedException("Second Loiter pre-takeoff target was not ground-safe")
+        second_handoffs = [m for m in geoh_msgs
+                           if second_takeoff_edge.TimeUS <= m.TimeUS <= second_ground_idle_edge.TimeUS]
+        if second_handoffs:
+            raise NotAchievedException("Second nominal Loiter lifecycle handed output to native control")
+
+        armed_events = [m for m in event_msgs
+                        if int(m.Id) == 10 and m.TimeUS < takeoff_edge.TimeUS]
+        if not armed_events:
+            raise NotAchievedException("Loiter did not arm before the geometric takeoff edge")
+
+        # takeoff_start_us precedes self.takeoff(), so this window includes
+        # mode-entry pre-warm, arming, and the armed ground-safe frames before
+        # the takeoff target is accepted.
+        ground_geol = [m for m in geol_msgs
+                       if takeoff_start_us <= m.TimeUS < takeoff_edge.TimeUS and
+                       m.Act and m.Wrote]
+        ground_geox = [m for m in geox_msgs
+                       if takeoff_start_us <= m.TimeUS < takeoff_edge.TimeUS and
+                       m.Allow and m.OEn and m.Wrote and not m.RT and
+                       abs(m.Thr) <= 0.05]
+        if len(ground_geol) < 3 or len(ground_geox) < 3:
+            raise NotAchievedException(
+                "Too few active zero-thrust geometric ground-safe samples before Loiter takeoff")
+
+        lifecycle_geox = [m for m in geox_msgs
+                          if takeoff_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+        if len(lifecycle_geox) < 20:
+            raise NotAchievedException("Not enough GEOX samples in Loiter lifecycle window")
+        if any(m.RT or not m.Allow or not m.OEn or not m.Wrote for m in lifecycle_geox):
+            raise NotAchievedException(
+                "GEOX did not remain Allow/OEn/Wrote with rate-thread off")
+        for m in lifecycle_geox:
+            for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                if not math.isfinite(getattr(m, field)):
+                    raise NotAchievedException(
+                        "GEOX.%s is not finite in Loiter lifecycle" % field)
+
+        lifecycle_handoffs = [m for m in geoh_msgs
+                              if takeoff_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+        if lifecycle_handoffs:
+            raise NotAchievedException("Geometric output handed off during nominal Loiter lifecycle")
+
+        takeoff_ctun = [m for m in ctun_msgs
+                        if takeoff_edge.TimeUS <= m.TimeUS <= landing_start_us]
+        if len(takeoff_ctun) < 5:
+            raise NotAchievedException("Not enough CTUN samples during geometric Loiter takeoff")
+        takeoff_altitude_gain = max(m.Alt for m in takeoff_ctun) - min(m.Alt for m in takeoff_ctun)
+        takeoff_climb_rate = max(m.CRt for m in takeoff_ctun)
+        if takeoff_altitude_gain < 6.0 or takeoff_climb_rate < 0.3:
+            raise NotAchievedException("Vehicle did not climb under geometric Loiter output")
+
+        descent_ctun = [m for m in ctun_msgs
+                        if landing_start_us <= m.TimeUS <= touchdown_edge.TimeUS]
+        if len(descent_ctun) < 5:
+            raise NotAchievedException("Not enough CTUN samples during geometric Loiter descent")
+        descent_altitude = max(m.Alt for m in descent_ctun) - min(m.Alt for m in descent_ctun)
+        min_descent_rate = min(m.CRt for m in descent_ctun)
+        if descent_altitude < 5.0 or min_descent_rate > -0.3:
+            raise NotAchievedException("Vehicle did not descend under geometric Loiter output")
+
+        landing_ldet = [m for m in ldet_msgs
+                        if landing_start_us <= m.TimeUS <= ground_idle_edge.TimeUS]
+        mix_min = [m for m in landing_ldet if int(m.Flags) & (1 << 10)]
+        maybe_landed = [m for m in landing_ldet if int(m.Flags) & (1 << 1)]
+        maybe_events = [m for m in event_msgs
+                        if int(m.Id) == 17 and landing_start_us <= m.TimeUS]
+        landed_events = [m for m in event_msgs
+                         if int(m.Id) == 18 and landing_start_us <= m.TimeUS]
+        disarmed_events = [m for m in event_msgs
+                           if int(m.Id) == 11 and landing_start_us <= m.TimeUS]
+        if not mix_min or not maybe_landed or not maybe_events or not landed_events or not disarmed_events:
+            raise NotAchievedException("Loiter landing detector did not reach mix-min/maybe/landed/disarmed states")
+        first_mix_us = min(m.TimeUS for m in mix_min)
+        first_maybe_us = min(m.TimeUS for m in maybe_events)
+        first_landed_us = min(m.TimeUS for m in landed_events)
+        first_disarmed_us = min(m.TimeUS for m in disarmed_events)
+        if not (first_mix_us <= first_maybe_us <= first_landed_us <= first_disarmed_us):
+            raise NotAchievedException("Loiter landing detector state order is invalid")
+        if not (first_landed_us <= touchdown_edge.TimeUS < ground_idle_edge.TimeUS <= first_disarmed_us):
+            raise NotAchievedException("GELF touchdown/spool-down edges disagree with landing events")
+        if not any((int(m.Flags) & (1 << 9)) and int(m.Count) > 0
+                   for m in landing_ldet if m.TimeUS <= first_maybe_us):
+            raise NotAchievedException("Landing detector never counted with motors at lower limit")
+
+        # THROTTLE_UNLIMITED reaches state 2 immediately before the takeoff
+        # target is accepted and GELF phase 1 is emitted.  Include the
+        # pre-arm/pre-warm window so that edge is not lost to log ordering.
+        lifecycle_spol = [m for m in spol_msgs
+                          if takeoff_start_us <= m.TimeUS <= landing_end_us]
+        spool_states = [int(m.Spl) for m in lifecycle_spol]
+        for required_state in (2, 3, 1):
+            if required_state not in spool_states:
+                raise NotAchievedException(
+                    "SPOL state %u missing from Loiter lifecycle" % required_state)
+        spool_indices = [spool_states.index(state) for state in (2, 3, 1)]
+        if spool_indices != sorted(spool_indices):
+            raise NotAchievedException("Loiter lifecycle spool states are out of order")
+        if not any(int(m.SplDes) == 1 and m.TimeUS >= touchdown_edge.TimeUS
+                   for m in lifecycle_spol):
+            raise NotAchievedException("Loiter landing never requested AP_Motors GROUND_IDLE")
+
+        self.progress(
+            "Loiter full-geometric frames main=%u geometric=%u native=%u "
+            "reference=%u/%u/%u "
+            "pre-takeoff=%u/%u/%u touchdown-main=%u "
+            "second=%u/%u/%u second-pre=%u/%u/%u "
+            "climb=%fm/%fm/s descent=%fm/%fm/s" %
+            (delta_main, delta_geometric, delta_native,
+             int(lifecycle_gelo[-1].TFrm) - int(lifecycle_gelo[0].TFrm),
+             int(lifecycle_gelo[-1].GFrm) - int(lifecycle_gelo[0].GFrm),
+             int(lifecycle_gelo[-1].NFrm) - int(lifecycle_gelo[0].NFrm),
+             pre_takeoff_main, pre_takeoff_geometric, pre_takeoff_native,
+             touchdown_main,
+             second_main, second_geometric, second_native,
+             second_pre_main, second_pre_geometric, second_pre_native,
+             takeoff_altitude_gain, takeoff_climb_rate,
+             descent_altitude, min_descent_rate))
+
+    def GeometricLoiterAirborneEntry(self):
+        '''prove airborne Loiter mode entry prepares non-zero geometric hover output before the first rate frame'''
+        self.set_parameters({
+            "LOIT_OPTIONS": 7,
+            "GEO_OUT_EN": 1,
+            "GEO_HOV_THR": 0.0,
+            "GEO_SHAPE_EN": 0,
+            "FSTRATE_ENABLE": 0,
+        })
+        self.context_set_message_rate_hz("LOCAL_POSITION_NED", 10)
+        self.context_set_message_rate_hz("ATTITUDE", 10)
+
+        self.takeoff(alt_min=10, mode="ALT_HOLD")
+        self.delay_sim_time(1, reason="settle native altitude hold before airborne Loiter entry")
+        self.drain_mav()
+
+        entry_start_us = int(self.get_sim_time() * 1000000)
+        self.change_mode("LOITER")
+        positions = []
+        attitudes = []
+        window_start = self.get_sim_time()
+        while self.get_sim_time_cached() - window_start < 1.0:
+            m = self.mav.recv_match(
+                type=["LOCAL_POSITION_NED", "ATTITUDE"],
+                blocking=True,
+                timeout=1,
+            )
+            if m is None:
+                raise NotAchievedException("No stability telemetry after airborne Loiter entry")
+            if m.get_type() == "LOCAL_POSITION_NED":
+                positions.append(m)
+            elif m.get_type() == "ATTITUDE":
+                attitudes.append(m)
+        entry_end_us = int(self.get_sim_time() * 1000000)
+        self.assert_mode("LOITER")
+        if not self.armed(cached=True):
+            raise NotAchievedException("Vehicle disarmed during airborne Loiter entry")
+        if len(positions) < 5 or len(attitudes) < 5:
+            raise NotAchievedException("Too few airborne Loiter entry stability samples")
+
+        # Leave the nominal test window before invoking native RTL cleanup.
+        self.set_parameter("LOIT_OPTIONS", 3)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        gelf_format_ids = [
+            fmt.type for fmt in dfreader.formats.values()
+            if fmt.name == "GELF"
+        ]
+        if len(gelf_format_ids) != 1:
+            raise NotAchievedException(
+                "Expected exactly one GELF FMT ID, got %s" % gelf_format_ids)
+        geli_msgs = []
+        gelf_msgs = []
+        geox_msgs = []
+        gefr_msgs = []
+        geoh_msgs = []
+        while True:
+            m = dfreader.recv_match(type=["GELI", "GELF", "GEOX", "GEFR", "GEOH"])
+            if m is None:
+                break
+            if not entry_start_us <= m.TimeUS <= entry_end_us:
+                continue
+            if m.get_type() == "GELI":
+                geli_msgs.append(m)
+            elif m.get_type() == "GELF":
+                gelf_msgs.append(m)
+            elif m.get_type() == "GEOX":
+                geox_msgs.append(m)
+            elif m.get_type() == "GEFR":
+                gefr_msgs.append(m)
+            elif m.get_type() == "GEOH":
+                geoh_msgs.append(m)
+
+        airborne_entries = [m for m in geli_msgs if m.Air]
+        if len(airborne_entries) != 1:
+            raise NotAchievedException(
+                "Expected one airborne GELI entry, got %u" % len(airborne_entries))
+        entry = airborne_entries[0]
+        if not entry.Act or not math.isfinite(entry.Thr) or entry.Thr <= 0.05:
+            raise NotAchievedException("Airborne Loiter entry did not prepare finite hover collective")
+        if not any(int(m.Phase) == 2 for m in gelf_msgs):
+            raise NotAchievedException("Airborne Loiter entry did not start lifecycle phase 2")
+
+        post_init_frames = sorted(
+            [m for m in gefr_msgs if m.TimeUS >= entry.TimeUS],
+            key=lambda m: m.TimeUS,
+        )
+        if len(post_init_frames) < 2:
+            raise NotAchievedException("Too few GEFR samples after airborne Loiter init")
+        last_frame = post_init_frames[-1]
+        delta_main = int(last_frame.MFrm) - int(entry.MFrm)
+        delta_geometric = int(last_frame.GFrm) - int(entry.GFrm)
+        delta_native = int(last_frame.NFrm) - int(entry.NFrm)
+        if delta_main <= 0 or delta_geometric != delta_main or delta_native != 0:
+            raise NotAchievedException(
+                "First airborne Loiter interval was not geometric on every main-loop frame")
+
+        active_geox = [m for m in geox_msgs
+                       if m.Allow and m.OEn and m.Wrote and not m.RT]
+        if len(active_geox) < 3:
+            raise NotAchievedException("Too few active GEOX samples after airborne Loiter entry")
+        if any(not math.isfinite(m.Thr) or m.Thr <= 0.05 for m in active_geox):
+            raise NotAchievedException("Airborne Loiter entry emitted a zero/invalid collective sample")
+        if geoh_msgs:
+            raise NotAchievedException("Airborne Loiter entry unexpectedly handed output to native control")
+
+        altitude_span = max(m.z for m in positions) - min(m.z for m in positions)
+        max_tilt = max(max(abs(m.roll), abs(m.pitch)) for m in attitudes)
+        if altitude_span > 1.5 or max_tilt > math.radians(30):
+            raise NotAchievedException("Airborne Loiter entry was dynamically discontinuous")
+        self.progress(
+            "Loiter airborne entry throttle=%f frames main=%u geometric=%u native=%u altitude-span=%fm" %
+            (entry.Thr, delta_main, delta_geometric, delta_native, altitude_span))
+
+        self.do_RTL()
+
+    def GeometricLoiterMotorOutput(self):
+        '''test immediate full-geometric Loiter entry, RC response and hard-fault latch'''
+        def collect_window(label, duration_s):
+            positions = []
+            attitudes = []
+            self.drain_mav()
+            start_time_boot_ms = None
+            last_time_boot_ms = None
+            while (start_time_boot_ms is None or
+                   last_time_boot_ms - start_time_boot_ms < duration_s * 1000):
+                m = self.mav.recv_match(
+                    type=["LOCAL_POSITION_NED", "ATTITUDE"],
+                    blocking=True,
+                    timeout=1,
+                )
+                if m is None:
+                    raise NotAchievedException(
+                        "Did not receive %s Loiter stability messages" % label)
+                last_time_boot_ms = m.time_boot_ms
+                if start_time_boot_ms is None:
+                    start_time_boot_ms = last_time_boot_ms
+                if m.get_type() == "LOCAL_POSITION_NED":
+                    positions.append(m)
+                elif m.get_type() == "ATTITUDE":
+                    attitudes.append(m)
+
+            if len(positions) < 3:
+                raise NotAchievedException(
+                    "Not enough LOCAL_POSITION_NED samples during %s" % label)
+            if len(attitudes) < 3:
+                raise NotAchievedException(
+                    "Not enough ATTITUDE samples during %s" % label)
+            self.assert_mode("LOITER")
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return (
+                int(start_time_boot_ms * 1000),
+                int(last_time_boot_ms * 1000),
+                positions,
+                attitudes,
+            )
+
+        def messages_in_window(messages, window):
+            return [m for m in messages if window[0] <= m.TimeUS <= window[1]]
+
+        def parameter_name(message):
+            name = message.Name
+            if isinstance(name, bytes):
+                name = name.decode("ascii", errors="ignore")
+            return name.rstrip("\x00")
+
+        def first_parameter_time(messages, name, value, start_us, end_us):
+            matches = [
+                m for m in messages
+                if start_us <= m.TimeUS <= end_us and
+                parameter_name(m) == name and
+                abs(float(m.Value) - float(value)) < 0.0001
+            ]
+            if not matches:
+                raise NotAchievedException(
+                    "PARM did not record %s=%s in transition window" % (name, value))
+            return min(m.TimeUS for m in matches)
+
+        original_loit_options = int(self.get_parameter("LOIT_OPTIONS"))
+        if original_loit_options != 7:
+            raise NotAchievedException("Copter LOIT_OPTIONS default is not 7")
+        dedicated_brake_defaults = {
+            "GEO_LREF_BDLY": 0.2,
+            "GEO_LREF_BACC": 2.5,
+            "GEO_LREF_BJRK": 5.0,
+            "GEO_LREF_JZ": 5.0,
+            "GEO_LREF_ZBACC": 2.5,
+            "GEO_LREF_ZBJRK": 5.0,
+            "GEO_LREF_YBACC": 2.0,
+            "GEO_LREF_YBJRK": 6.0,
+        }
+        for name, expected in dedicated_brake_defaults.items():
+            actual = float(self.get_parameter(name))
+            if abs(actual - expected) > 0.0001:
+                raise NotAchievedException(
+                    "%s default is %f, expected %f" % (name, actual, expected))
+        observer_options = 3
+        active_options = 7
+
+        self.set_parameters({
+            "LOIT_OPTIONS": observer_options,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_ATT_KR_X": 4.0,
+            "GEO_ATT_KR_Y": 4.0,
+            "GEO_ATT_KR_Z": 2.0,
+            "GEO_ATT_KO_X": 0.2,
+            "GEO_ATT_KO_Y": 0.2,
+            "GEO_ATT_KO_Z": 0.4,
+            "GEO_HOV_THR": 0.0,
+            "GEO_MOM_NORM_X": 4.0,
+            "GEO_MOM_NORM_Y": 4.0,
+            "GEO_MOM_NORM_Z": 2.0,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 0,
+            "FSTRATE_ENABLE": 0,
+        })
+
+        pitch_channel = int(self.get_parameter("RCMAP_PITCH"))
+        yaw_channel = int(self.get_parameter("RCMAP_YAW"))
+        throttle_channel = int(self.get_parameter("RCMAP_THROTTLE"))
+        pitch_trim = int(self.get_parameter("RC%u_TRIM" % pitch_channel))
+        yaw_trim = int(self.get_parameter("RC%u_TRIM" % yaw_channel))
+        throttle_trim = int(self.get_parameter("RC%u_TRIM" % throttle_channel))
+
+        self.context_set_message_rate_hz("LOCAL_POSITION_NED", 10)
+        self.context_set_message_rate_hz("ATTITUDE", 10)
+
+        self.takeoff(alt_min=10, mode="LOITER")
+        self.delay_sim_time(1, reason="observer-only Loiter settling")
+        observer_only = collect_window("observer-only", 0.8)
+
+        try:
+            entry_start_us = observer_only[1]
+            self.set_parameter("LOIT_OPTIONS", active_options)
+            entry_transition = collect_window("geometric-entry", 0.5)
+            entry_transition = (
+                entry_start_us,
+                entry_transition[1],
+                entry_transition[2],
+                entry_transition[3],
+            )
+            active_hover = collect_window("geometric-active", 0.6)
+
+            translation_start_us = active_hover[1]
+            self.set_rc(pitch_channel, max(1000, pitch_trim - 50))
+            active_translation = collect_window("geometric-translation", 0.8)
+            active_translation = (
+                translation_start_us,
+                active_translation[1],
+                active_translation[2],
+                active_translation[3],
+            )
+            self.set_rc(pitch_channel, pitch_trim)
+            active_braking = collect_window("geometric-braking", 1.8)
+
+            yaw_start_us = active_braking[1]
+            self.set_rc(yaw_channel, min(2000, yaw_trim + 100))
+            active_yaw = collect_window("geometric-yaw", 1.0)
+            active_yaw = (
+                yaw_start_us,
+                active_yaw[1],
+                active_yaw[2],
+                active_yaw[3],
+            )
+            self.set_rc(yaw_channel, yaw_trim)
+            # Keep enough post-release reference samples to prove the
+            # dedicated yaw brake settles instead of merely starting.
+            active_yaw_return = collect_window("geometric-yaw-return", 1.6)
+
+            climb_start_us = active_yaw_return[1]
+            self.set_rc(throttle_channel, min(2000, throttle_trim + 250))
+            active_climb = collect_window("geometric-climb", 1.2)
+            active_climb = (
+                climb_start_us,
+                active_climb[1],
+                active_climb[2],
+                active_climb[3],
+            )
+            self.set_rc(throttle_channel, throttle_trim)
+            # The return window is long enough to observe ZB, the finite stop
+            # and the latched ZS state at the decimated DataFlash rate.
+            active_z_return = collect_window("geometric-z-return", 2.4)
+
+            if int(self.get_parameter("LOIT_OPTIONS")) != active_options:
+                raise NotAchievedException(
+                    "LOIT_OPTIONS changed before the mapped-limit test")
+            limit_start_us = active_z_return[1]
+            self.set_parameter("GEO_MOM_NORM_Y", 0.02)
+            self.set_rc(pitch_channel, max(1000, pitch_trim - 200))
+            active_limited = collect_window("geometric-default7-limited", 0.8)
+            active_limited = (
+                limit_start_us,
+                active_limited[1],
+                active_limited[2],
+                active_limited[3],
+            )
+            self.set_rc(pitch_channel, pitch_trim)
+            self.set_parameter("GEO_MOM_NORM_Y", 4.0)
+            active_after_limit = collect_window("geometric-after-limit", 0.6)
+
+            fault_off_start_us = active_after_limit[1]
+            self.set_parameter("GEO_OUT_EN", 0)
+            fault_off = collect_window("geometric-fault-off", 0.5)
+            fault_off = (
+                fault_off_start_us,
+                fault_off[1],
+                fault_off[2],
+                fault_off[3],
+            )
+
+            fault_on_start_us = fault_off[1]
+            self.set_parameter("GEO_OUT_EN", 1)
+            fault_latched = collect_window("geometric-fault-latched", 0.7)
+            fault_latched = (
+                fault_on_start_us,
+                fault_latched[1],
+                fault_latched[2],
+                fault_latched[3],
+            )
+
+            clear_start_us = fault_latched[1]
+            self.set_parameter("LOIT_OPTIONS", observer_options)
+            fault_latch_clear = collect_window("geometric-fault-clear-bit2", 0.4)
+            fault_latch_clear = (
+                clear_start_us,
+                fault_latch_clear[1],
+                fault_latch_clear[2],
+                fault_latch_clear[3],
+            )
+
+            recovery_start_us = fault_latch_clear[1]
+            self.set_parameter("LOIT_OPTIONS", active_options)
+            recovery_transition = collect_window("geometric-recovery-entry", 0.5)
+            recovery_transition = (
+                recovery_start_us,
+                recovery_transition[1],
+                recovery_transition[2],
+                recovery_transition[3],
+            )
+            recovered_active = collect_window("geometric-recovered", 0.5)
+        finally:
+            self.set_rc(pitch_channel, pitch_trim)
+            self.set_rc(yaw_channel, yaw_trim)
+            self.set_rc(throttle_channel, throttle_trim)
+            self.set_parameter("GEO_OUT_EN", 1)
+            self.set_parameter("GEO_MOM_NORM_Y", 4.0)
+            # Leave Loiter on its native path before RTL or exception cleanup.
+            self.set_parameter("LOIT_OPTIONS", observer_options)
+
+        windows = {
+            "observer-only": observer_only,
+            "geometric-entry": entry_transition,
+            "geometric-active": active_hover,
+            "geometric-translation": active_translation,
+            "geometric-braking": active_braking,
+            "geometric-yaw": active_yaw,
+            "geometric-yaw-return": active_yaw_return,
+            "geometric-climb": active_climb,
+            "geometric-z-return": active_z_return,
+            "geometric-default7-limited": active_limited,
+            "geometric-after-limit": active_after_limit,
+            "geometric-fault-off": fault_off,
+            "geometric-fault-latched": fault_latched,
+            "geometric-fault-clear-bit2": fault_latch_clear,
+            "geometric-recovery-entry": recovery_transition,
+            "geometric-recovered": recovered_active,
+        }
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        geox_msgs = []
+        geol_msgs = []
+        gelr_msgs = []
+        gelo_msgs = []
+        gefr_msgs = []
+        geoh_msgs = []
+        parm_msgs = []
+        for message_name in ("GELR", "GELO"):
+            format_ids = [
+                fmt.type for fmt in dfreader.formats.values()
+                if fmt.name == message_name
+            ]
+            if len(format_ids) != 1:
+                raise NotAchievedException(
+                    "Expected exactly one %s FMT ID, got %s" %
+                    (message_name, format_ids))
+        while True:
+            m = dfreader.recv_match(
+                type=["GEOX", "GEOL", "GELR", "GELO", "GEFR", "GEOH", "PARM"])
+            if m is None:
+                break
+            if m.get_type() == "GEOX":
+                geox_msgs.append(m)
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            "GEOX.%s is not finite in Loiter output test" % field)
+            elif m.get_type() == "GEOL":
+                geol_msgs.append(m)
+                for field in ("PZ", "VX", "VY", "VZ", "AX", "AY", "AZ", "YRN"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            "GEOL.%s is not finite in Loiter output test" % field)
+            elif m.get_type() == "GELR":
+                gelr_msgs.append(m)
+                for field in ("PX", "PY", "PZ", "VX", "VY", "VZ", "AX", "AY", "AZ"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            "GELR.%s is not finite in Loiter output test" % field)
+            elif m.get_type() == "GELO":
+                gelo_msgs.append(m)
+                for field in ("Yaw", "YR"):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            "GELO.%s is not finite in Loiter output test" % field)
+            elif m.get_type() == "GEFR":
+                gefr_msgs.append(m)
+            elif m.get_type() == "GEOH":
+                geoh_msgs.append(m)
+            elif m.get_type() == "PARM":
+                parm_msgs.append(m)
+
+        geox_by_window = {
+            name: messages_in_window(geox_msgs, window)
+            for name, window in windows.items()
+        }
+        geol_by_window = {
+            name: messages_in_window(geol_msgs, window)
+            for name, window in windows.items()
+        }
+        gelr_by_window = {
+            name: messages_in_window(gelr_msgs, window)
+            for name, window in windows.items()
+        }
+        gelo_by_window = {
+            name: messages_in_window(gelo_msgs, window)
+            for name, window in windows.items()
+        }
+        gefr_by_window = {
+            name: messages_in_window(gefr_msgs, window)
+            for name, window in windows.items()
+        }
+
+        # The MAVLink parameter transaction can consume a significant amount
+        # of accelerated simulation time.  The collection windows deliberately
+        # begin before each transaction, so frame-path assertions must anchor
+        # their settled interval to the DataFlash PARM timestamp rather than
+        # to the preceding telemetry sample.
+        fault_off_time_us = first_parameter_time(
+            parm_msgs,
+            "GEO_OUT_EN",
+            0,
+            fault_off_start_us - 10000,
+            fault_off[1],
+        )
+        fault_on_time_us = first_parameter_time(
+            parm_msgs,
+            "GEO_OUT_EN",
+            1,
+            fault_on_start_us - 10000,
+            fault_latched[1],
+        )
+        clear_time_us = first_parameter_time(
+            parm_msgs,
+            "LOIT_OPTIONS",
+            observer_options,
+            clear_start_us - 10000,
+            fault_latch_clear[1],
+        )
+        recovery_time_us = first_parameter_time(
+            parm_msgs,
+            "LOIT_OPTIONS",
+            active_options,
+            recovery_start_us - 10000,
+            recovery_transition[1],
+        )
+
+        def check_frame_path(name, expect_geometric, settle_us=0,
+                             transition_time_us=None):
+            start_time_us = windows[name][0]
+            if transition_time_us is not None:
+                start_time_us = max(start_time_us, transition_time_us)
+            frame_msgs = sorted(
+                [m for m in gefr_by_window[name]
+                 if m.TimeUS >= start_time_us + settle_us],
+                key=lambda m: m.TimeUS,
+            )
+            if len(frame_msgs) < 2:
+                raise NotAchievedException("Too few GEFR samples during %s" % name)
+            delta_main = int(frame_msgs[-1].MFrm) - int(frame_msgs[0].MFrm)
+            delta_geometric = int(frame_msgs[-1].GFrm) - int(frame_msgs[0].GFrm)
+            delta_native = int(frame_msgs[-1].NFrm) - int(frame_msgs[0].NFrm)
+            self.progress(
+                "%s frame path main=%u geometric=%u native=%u samples=%u" %
+                (name, delta_main, delta_geometric, delta_native, len(frame_msgs)))
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException("Invalid GEFR accounting during %s" % name)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException(
+                        "%s was not geometric on every main-loop frame" % name)
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException(
+                    "%s did not remain on the native rate controller" % name)
+        for name in windows:
+            if not geox_by_window[name]:
+                raise NotAchievedException(
+                    "GEOX log message not found during %s" % name)
+            if not geol_by_window[name]:
+                raise NotAchievedException(
+                    "GEOL log message not found during %s" % name)
+            if any(int(m.St) != 4 for m in geol_by_window[name]):
+                raise NotAchievedException(
+                    "GEOL left Flying state during %s" % name)
+            if any(m.RT for m in geox_by_window[name]):
+                raise NotAchievedException(
+                    "GEOX showed rate thread during %s" % name)
+            if max(m.GAge for m in geox_by_window[name]) > 100:
+                raise NotAchievedException(
+                    "GEOX geometric output was stale during %s" % name)
+
+        observer_geox = geox_by_window["observer-only"]
+        observer_geol = geol_by_window["observer-only"]
+        if any(not m.OEn or m.Allow or m.Wrote for m in observer_geox):
+            raise NotAchievedException(
+                "Observer-only Loiter allowed or wrote geometric motor output")
+        if any(m.Act or m.Wrote for m in observer_geol):
+            raise NotAchievedException(
+                "GEOL became active during observer-only Loiter")
+
+        entry_time_us = first_parameter_time(
+            parm_msgs,
+            "LOIT_OPTIONS",
+            active_options,
+            entry_start_us - 10000,
+            entry_transition[1],
+        )
+        entry_geol = [
+            m for m in geol_msgs
+            if entry_time_us - 10000 <= m.TimeUS <= active_hover[1]
+        ]
+        entry_geox = [
+            m for m in geox_msgs
+            if entry_time_us - 10000 <= m.TimeUS <= active_hover[1]
+        ]
+        first_entry_active = [m for m in entry_geol if m.Act]
+        first_entry_write = [m for m in entry_geox if m.Allow and m.Wrote]
+        if not first_entry_active or not first_entry_write:
+            raise NotAchievedException(
+                "Setting Loiter bit 2 did not activate geometric output")
+        entry_latency_us = max(
+            min(m.TimeUS for m in first_entry_active),
+            min(m.TimeUS for m in first_entry_write),
+        ) - entry_time_us
+        if entry_latency_us < -10000 or entry_latency_us > 200000:
+            raise NotAchievedException(
+                "Loiter geometric entry was not immediate: %uus" % entry_latency_us)
+
+        active_window_names = (
+            "geometric-active",
+            "geometric-translation",
+            "geometric-braking",
+            "geometric-yaw",
+            "geometric-yaw-return",
+            "geometric-climb",
+            "geometric-z-return",
+            "geometric-default7-limited",
+            "geometric-after-limit",
+            "geometric-recovered",
+        )
+        for name in active_window_names:
+            window_geox = geox_by_window[name]
+            window_geol = geol_by_window[name]
+            if len(window_geox) < 3 or len(window_geol) < 3:
+                raise NotAchievedException(
+                    "Not enough active geometric samples during %s" % name)
+            if any(not m.OEn or not m.Allow or not m.Wrote for m in window_geox):
+                raise NotAchievedException(
+                    "GEOX did not remain OEn/Allow/Wrote during %s" % name)
+            if any(not m.Act or not m.Wrote for m in window_geol):
+                raise NotAchievedException(
+                    "GEOL did not remain Act/Wrote during %s" % name)
+            if max(m.WAge for m in window_geox) > 100:
+                raise NotAchievedException(
+                    "Geometric motor writes became stale during %s" % name)
+
+        check_frame_path("observer-only", False)
+        check_frame_path("geometric-active", True)
+        check_frame_path("geometric-climb", True)
+        check_frame_path("geometric-z-return", True)
+        check_frame_path("geometric-default7-limited", True, settle_us=100000)
+        check_frame_path("geometric-fault-off", False, settle_us=150000,
+                         transition_time_us=fault_off_time_us)
+        check_frame_path("geometric-fault-latched", False, settle_us=150000,
+                         transition_time_us=fault_on_time_us)
+        check_frame_path("geometric-fault-clear-bit2", False, settle_us=100000,
+                         transition_time_us=clear_time_us)
+        check_frame_path("geometric-recovered", True)
+
+        translation_positions = active_translation[2]
+        translation_attitudes = active_translation[3]
+        translation_start = translation_positions[0]
+        max_translation_distance = max(
+            math.hypot(m.x - translation_start.x, m.y - translation_start.y)
+            for m in translation_positions)
+        max_translation_speed = max(
+            math.hypot(m.vx, m.vy) for m in translation_positions)
+        max_translation_tilt = max(
+            max(abs(m.roll), abs(m.pitch)) for m in translation_attitudes)
+        yaw_attitudes = active_yaw[3]
+        yaw_start = yaw_attitudes[0].yaw
+        max_yaw_excursion = max(
+            abs(math.atan2(math.sin(m.yaw - yaw_start), math.cos(m.yaw - yaw_start)))
+            for m in yaw_attitudes)
+        max_yaw_rate = max(abs(m.yawspeed) for m in yaw_attitudes)
+
+        translation_geol = geol_by_window["geometric-translation"]
+        translation_geox = geox_by_window["geometric-translation"]
+        yaw_geol = geol_by_window["geometric-yaw"]
+        yaw_geox = geox_by_window["geometric-yaw"]
+        max_target_speed = max(
+            math.hypot(m.VX, m.VY) for m in translation_geol)
+        max_target_accel = max(
+            math.hypot(m.AX, m.AY) for m in translation_geol)
+        max_target_yaw_rate = max(abs(m.YRN) for m in yaw_geol)
+        max_translation_actuator = max(
+            math.hypot(m.Roll, m.Pitch) for m in translation_geox)
+        max_yaw_actuator = max(abs(m.Yaw) for m in yaw_geox)
+
+        self.progress(
+            "Loiter immediate entry=%uus translation=%fm/%fm/s/%fdeg "
+            "yaw=%fdeg/%fdeg/s targets=%fm/s/%fm/s/s/%frad/s "
+            "actuators=%f/%f" %
+            (
+                entry_latency_us,
+                max_translation_distance,
+                max_translation_speed,
+                math.degrees(max_translation_tilt),
+                math.degrees(max_yaw_excursion),
+                math.degrees(max_yaw_rate),
+                max_target_speed,
+                max_target_accel,
+                max_target_yaw_rate,
+                max_translation_actuator,
+                max_yaw_actuator,
+            ))
+        if max_translation_distance < 0.05 or max_translation_speed < 0.10:
+            raise NotAchievedException(
+                "Active geometric Loiter did not translate under pitch input")
+        if max_translation_tilt < math.radians(0.3):
+            raise NotAchievedException(
+                "Active geometric Loiter did not tilt under pitch input")
+        if max_yaw_excursion < math.radians(2.0) or max_yaw_rate < math.radians(5.0):
+            raise NotAchievedException(
+                "Active geometric Loiter did not yaw under yaw input")
+        if max_target_speed < 0.15 or max_target_accel < 0.1:
+            raise NotAchievedException(
+                "Loiter PVA target did not respond to pitch input")
+        if max_target_yaw_rate < 0.1:
+            raise NotAchievedException(
+                "Loiter yaw-rate target did not respond to yaw input")
+        if max_translation_actuator < 0.005 or max_yaw_actuator < 0.005:
+            raise NotAchievedException(
+                "Geometric actuators did not respond to Loiter RC input")
+
+        # Reference-level brake checks deliberately use GELR/GELO instead of
+        # vehicle position or attitude.  This isolates trajectory generation
+        # from feedback gains, estimator motion and simulated disturbances.
+        braking_reference = sorted(
+            gelr_by_window["geometric-braking"], key=lambda m: m.TimeUS)
+        braking_samples = [m for m in braking_reference if m.Brk]
+        if not braking_samples:
+            raise NotAchievedException(
+                "Dedicated horizontal brake did not activate after pitch release")
+        # collect_window() starts only after set_rc() has confirmed the new RC
+        # value, so this first DataFlash sample is not the exact release edge.
+        # Exact BDLY semantics are covered by the reference unit test below
+        # the scheduler/MAVLink layers; this test checks observable behavior.
+        horizontal_window_start = braking_reference[0]
+        first_brake = braking_samples[0]
+        horizontal_brake_window_offset_us = first_brake.TimeUS - active_braking[0]
+        if horizontal_brake_window_offset_us > 450000:
+            raise NotAchievedException(
+                "Dedicated horizontal brake was not visible near the release window: %uus" %
+                horizontal_brake_window_offset_us)
+        post_brake = [m for m in braking_reference if m.TimeUS >= first_brake.TimeUS]
+        horizontal_stop = None
+        for i in range(len(post_brake) - 2):
+            if all(math.hypot(m.VX, m.VY) < 0.02 for m in post_brake[i:i + 3]):
+                horizontal_stop = post_brake[i]
+                break
+        if horizontal_stop is None:
+            raise NotAchievedException(
+                "Dedicated horizontal reference did not settle after braking")
+        horizontal_stop_time_s = (horizontal_stop.TimeUS - first_brake.TimeUS) * 1.0e-6
+        if horizontal_stop_time_s > 1.6:
+            raise NotAchievedException(
+                "Dedicated horizontal reference stopped too slowly: %fs" %
+                horizontal_stop_time_s)
+        horizontal_window_stop_time_s = (
+            horizontal_stop.TimeUS - horizontal_window_start.TimeUS) * 1.0e-6
+        if horizontal_window_stop_time_s > 1.9:
+            raise NotAchievedException(
+                "Dedicated horizontal reference window-to-stop time is excessive: %fs" %
+                horizontal_window_stop_time_s)
+        horizontal_window_start_speed = math.hypot(
+            horizontal_window_start.VX, horizontal_window_start.VY)
+        horizontal_brake_distance = math.hypot(
+            horizontal_stop.PX - horizontal_window_start.PX,
+            horizontal_stop.PY - horizontal_window_start.PY,
+        )
+        if horizontal_brake_distance > 1.1 * horizontal_window_start_speed + 0.05:
+            raise NotAchievedException(
+                "Dedicated horizontal brake distance is excessive: %fm at %fm/s" %
+                (horizontal_brake_distance, horizontal_window_start_speed))
+        previous_speed = math.hypot(first_brake.VX, first_brake.VY)
+        for m in post_brake[1:]:
+            speed = math.hypot(m.VX, m.VY)
+            if speed > previous_speed + 0.005:
+                raise NotAchievedException(
+                    "Horizontal reference accelerated after brake activation")
+            previous_speed = speed
+
+        yaw_return_reference = sorted(
+            gelo_by_window["geometric-yaw-return"], key=lambda m: m.TimeUS)
+        yaw_braking_samples = [m for m in yaw_return_reference if m.YB]
+        if not yaw_braking_samples:
+            raise NotAchievedException(
+                "Dedicated yaw brake did not activate after yaw-stick release")
+        first_yaw_return = yaw_return_reference[0]
+        first_yaw_rate = first_yaw_return.YR
+        if abs(first_yaw_rate) < 0.1:
+            raise NotAchievedException(
+                "Yaw release did not exercise a meaningful reference rate")
+        if not first_yaw_return.YB:
+            raise NotAchievedException(
+                "Dedicated yaw brake was not active on the first post-release sample")
+        first_yaw_brake = yaw_braking_samples[0]
+        yaw_brake_window_offset_us = first_yaw_brake.TimeUS - active_yaw_return[0]
+        if yaw_brake_window_offset_us > 250000:
+            raise NotAchievedException(
+                "Dedicated yaw brake was not visible near the release window: %uus" %
+                yaw_brake_window_offset_us)
+        post_yaw_release = yaw_return_reference
+        yaw_direction = 1.0 if first_yaw_rate > 0.0 else -1.0
+        previous_yaw_rate_abs = abs(first_yaw_rate)
+        for m in post_yaw_release[1:]:
+            yaw_rate_abs = abs(m.YR)
+            if yaw_direction * m.YR < -0.005:
+                raise NotAchievedException(
+                    "Dedicated yaw brake reversed the yaw-rate reference")
+            if yaw_rate_abs > previous_yaw_rate_abs + 0.005:
+                raise NotAchievedException(
+                    "Yaw-rate reference continued rising after stick release")
+            previous_yaw_rate_abs = yaw_rate_abs
+        yaw_stop = None
+        for i in range(len(post_yaw_release) - 2):
+            if all(abs(m.YR) < 0.02 for m in post_yaw_release[i:i + 3]):
+                yaw_stop = post_yaw_release[i]
+                break
+        if yaw_stop is None:
+            raise NotAchievedException(
+                "Dedicated yaw-rate reference did not settle after release")
+        yaw_stop_time_s = (yaw_stop.TimeUS - first_yaw_brake.TimeUS) * 1.0e-6
+        if yaw_stop_time_s > 1.6:
+            raise NotAchievedException(
+                "Dedicated yaw-rate reference stopped too slowly: %fs" %
+                yaw_stop_time_s)
+
+        climb_reference = sorted(
+            gelr_by_window["geometric-climb"], key=lambda m: m.TimeUS)
+        if len(climb_reference) < 3 or max(abs(m.VZ) for m in climb_reference) < 0.2:
+            raise NotAchievedException(
+                "Vertical RC pulse did not produce a meaningful geometric reference")
+        z_return_reference = sorted(
+            gelr_by_window["geometric-z-return"], key=lambda m: m.TimeUS)
+        z_return_status = sorted(
+            gelo_by_window["geometric-z-return"], key=lambda m: m.TimeUS)
+        if len(z_return_reference) < 6 or len(z_return_status) < 3:
+            raise NotAchievedException(
+                "Too few vertical-release reference/status samples")
+        z_braking_samples = [m for m in z_return_status if m.ZB]
+        if not z_braking_samples:
+            raise NotAchievedException(
+                "Dedicated vertical brake did not activate after throttle release")
+        first_z_brake = z_braking_samples[0]
+        vertical_brake_window_offset_us = first_z_brake.TimeUS - active_z_return[0]
+        if vertical_brake_window_offset_us > 450000:
+            raise NotAchievedException(
+                "Dedicated vertical brake was not visible near release: %uus" %
+                vertical_brake_window_offset_us)
+
+        first_z_reference = min(
+            z_return_reference,
+            key=lambda m: abs(m.TimeUS - first_z_brake.TimeUS),
+        )
+        if abs(first_z_reference.VZ) < 0.1:
+            raise NotAchievedException(
+                "Throttle release did not exercise a meaningful vertical speed")
+        z_direction = 1.0 if first_z_reference.VZ > 0.0 else -1.0
+        deceleration_started = False
+        previous_z_speed = abs(first_z_reference.VZ)
+        for m in [sample for sample in z_return_reference
+                  if sample.TimeUS > first_z_reference.TimeUS]:
+            if z_direction * m.VZ < -0.005:
+                raise NotAchievedException(
+                    "Dedicated vertical brake reversed the velocity reference")
+            if not deceleration_started and m.AZ * m.VZ <= 0.0:
+                deceleration_started = True
+                previous_z_speed = abs(m.VZ)
+                continue
+            if deceleration_started and abs(m.VZ) > previous_z_speed + 0.01:
+                raise NotAchievedException(
+                    "Vertical speed increased after deceleration began")
+            if deceleration_started:
+                previous_z_speed = abs(m.VZ)
+
+        z_stop = None
+        post_z_brake = [m for m in z_return_reference
+                        if m.TimeUS >= first_z_brake.TimeUS]
+        for i in range(len(post_z_brake) - 2):
+            if all(abs(m.VZ) < 0.02 for m in post_z_brake[i:i + 3]):
+                z_stop = post_z_brake[i]
+                break
+        if z_stop is None:
+            raise NotAchievedException(
+                "Dedicated vertical reference did not settle after release")
+        vertical_stop_time_s = (z_stop.TimeUS - first_z_brake.TimeUS) * 1.0e-6
+        if vertical_stop_time_s > 2.0:
+            raise NotAchievedException(
+                "Dedicated vertical reference stopped too slowly: %fs" %
+                vertical_stop_time_s)
+        if not any(m.ZS and m.TimeUS >= z_stop.TimeUS for m in z_return_status):
+            raise NotAchievedException(
+                "Latched vertical-settled status was not observable after stop")
+
+        self.progress(
+            "Loiter vertical brake window-offset=%uus stop=%fs first-speed=%fm/s" %
+            (vertical_brake_window_offset_us,
+             vertical_stop_time_s,
+             first_z_reference.VZ))
+
+        self.progress(
+            "Loiter dedicated brakes XY window-offset=%uus window-stop=%fs "
+            "brake-stop=%fs distance=%fm; yaw window-offset=%uus stop=%fs "
+            "first-rate=%frad/s" %
+            (
+                horizontal_brake_window_offset_us,
+                horizontal_window_stop_time_s,
+                horizontal_stop_time_s,
+                horizontal_brake_distance,
+                yaw_brake_window_offset_us,
+                yaw_stop_time_s,
+                first_yaw_rate,
+            ))
+
+        limit_parameter_time_us = first_parameter_time(
+            parm_msgs,
+            "GEO_MOM_NORM_Y",
+            0.02,
+            limit_start_us - 10000,
+            active_limited[1],
+        )
+        limited_geox = [
+            m for m in geox_by_window["geometric-default7-limited"]
+            if m.TimeUS >= limit_parameter_time_us
+        ]
+        if len(limited_geox) < 2 or not any(m.RLim for m in limited_geox):
+            raise NotAchievedException(
+                "Default LOIT_OPTIONS=7 mapped-limit test did not produce RLim")
+        limit_handoffs = [
+            m for m in geoh_msgs
+            if limit_parameter_time_us - 10000 <= m.TimeUS <= active_after_limit[1]
+        ]
+        if limit_handoffs:
+            raise NotAchievedException(
+                "Mapped limiting handed Loiter back to native control")
+
+        fault_events = [
+            m for m in geoh_msgs
+            if fault_off_time_us - 10000 <= m.TimeUS <= recovered_active[1]
+        ]
+        if len(fault_events) != 1:
+            raise NotAchievedException(
+                "Expected one GEO_OUT_EN hard-fault GEOH event, got %u" %
+                len(fault_events))
+        fault_event = fault_events[0]
+        if (int(fault_event.Mode) != 5 or
+                (int(fault_event.Fail) & (1 << 1)) == 0 or
+                not fault_event.Prev or fault_event.Act or
+                not fault_event.Hand or fault_event.RT):
+            raise NotAchievedException(
+                "GEOH did not record the expected Loiter output-disabled handoff")
+
+        settled_fault_geox = [
+            m for m in geox_by_window["geometric-fault-off"]
+            if m.TimeUS >= fault_off_time_us + 150000
+        ]
+        settled_fault_geol = [
+            m for m in geol_by_window["geometric-fault-off"]
+            if m.TimeUS >= fault_off_time_us + 150000
+        ]
+        if not settled_fault_geox or not settled_fault_geol:
+            raise NotAchievedException(
+                "Not enough settled GEO_OUT_EN=0 log samples")
+        if any(m.OEn or m.Allow or m.Wrote for m in settled_fault_geox):
+            raise NotAchievedException(
+                "GEOX remained enabled, allowed or recently written after hard fault")
+        if any(m.Act or m.Wrote for m in settled_fault_geol):
+            raise NotAchievedException(
+                "GEOL remained active after GEO_OUT_EN hard fault")
+
+        latched_geox = [
+            m for m in geox_by_window["geometric-fault-latched"]
+            if m.TimeUS >= fault_on_time_us + 150000
+        ]
+        latched_geol = [
+            m for m in geol_by_window["geometric-fault-latched"]
+            if m.TimeUS >= fault_on_time_us + 150000
+        ]
+        if not latched_geox or not latched_geol:
+            raise NotAchievedException(
+                "Not enough logs after GEO_OUT_EN was re-enabled")
+        if any(not m.OEn or m.Allow or m.Wrote for m in latched_geox):
+            raise NotAchievedException(
+                "GEO_OUT_EN re-enable bypassed the Loiter fault latch")
+        if any(m.Act or m.Wrote for m in latched_geol):
+            raise NotAchievedException(
+                "GEOL automatically re-entered with bit 2 still set")
+
+        cleared_geox = [
+            m for m in geox_by_window["geometric-fault-clear-bit2"]
+            if m.TimeUS >= clear_time_us + 100000
+        ]
+        cleared_geol = [
+            m for m in geol_by_window["geometric-fault-clear-bit2"]
+            if m.TimeUS >= clear_time_us + 100000
+        ]
+        if not cleared_geox or not cleared_geol:
+            raise NotAchievedException(
+                "No settled observer-only samples after clearing bit 2")
+        if any(not m.OEn or m.Allow or m.Wrote for m in cleared_geox):
+            raise NotAchievedException(
+                "Clearing bit 2 did not leave Loiter observer-only")
+        if any(m.Act or m.Wrote for m in cleared_geol):
+            raise NotAchievedException(
+                "GEOL stayed active after clearing bit 2")
+
+        recovery_geol = [
+            m for m in geol_msgs
+            if recovery_time_us - 10000 <= m.TimeUS <= recovered_active[1]
+        ]
+        recovery_geox = [
+            m for m in geox_msgs
+            if recovery_time_us - 10000 <= m.TimeUS <= recovered_active[1]
+        ]
+        first_recovery_active = [m for m in recovery_geol if m.Act]
+        first_recovery_write = [
+            m for m in recovery_geox if m.OEn and m.Allow and m.Wrote
+        ]
+        if not first_recovery_active or not first_recovery_write:
+            raise NotAchievedException(
+                "Clearing and re-setting bit 2 did not recover geometric output")
+        recovery_latency_us = max(
+            min(m.TimeUS for m in first_recovery_active),
+            min(m.TimeUS for m in first_recovery_write),
+        ) - recovery_time_us
+        if recovery_latency_us < -10000 or recovery_latency_us > 200000:
+            raise NotAchievedException(
+                "Loiter explicit geometric recovery was not immediate: %uus" %
+                recovery_latency_us)
+
+        self.progress(
+            "Loiter default7 RLim=%u hard-fault GEOH=0x%02x "
+            "explicit recovery=%uus" %
+            (
+                sum(1 for m in limited_geox if m.RLim),
+                int(fault_event.Fail),
+                recovery_latency_us,
+            ))
+
+        self.do_RTL()
+
+    def GeometricGuidedFullLifecycle(self):
+        '''prove nominal Guided takeoff-through-touchdown uses geometric output on every main-loop frame'''
+        self.set_parameters({
+            'GUID_OPTIONS': 258,
+            'GEO_OUT_EN': 1,
+            'GEO_SHAPE_EN': 1,
+            'GEO_HOV_THR': 0,
+            'FSTRATE_ENABLE': 0,
+        })
+        self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
+
+        self.change_mode('GUIDED')
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.delay_sim_time(0.4, reason='settle armed Guided ground state before geometric takeoff')
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            p7=10,
+        )
+        self.wait_altitude(9, 13, relative=True, timeout=60)
+        self.wait_mode('GUIDED')
+        self.delay_sim_time(3, reason='pure geometric Guided hover before landing')
+
+        # QGC uses MAV_CMD_NAV_LAND.  With full geometric Guided active this
+        # enters Guided::Land instead of changing to native LAND mode.
+        self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_LAND)
+        self.wait_mode('GUIDED')
+        self.wait_landed_and_disarmed(timeout=90)
+
+        # Do not leave Guided between epochs.  The completed geometric landing
+        # must return to a supported zero-collective ground hold rather than
+        # leaving a stale Land submode that immediately disarms the next arm.
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.delay_sim_time(0.4, reason='settle second armed Guided geometric ground state')
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_NAV_TAKEOFF,
+            p7=6,
+        )
+        self.wait_altitude(5, 9, relative=True, timeout=60)
+        self.wait_mode('GUIDED')
+        self.delay_sim_time(1, reason='second pure geometric Guided hover')
+        self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_LAND)
+        self.wait_mode('GUIDED')
+        self.wait_landed_and_disarmed(timeout=90)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        for message_name in ('GEFC', 'GEOX', 'GEFR'):
+            format_ids = [
+                fmt.type for fmt in dfreader.formats.values()
+                if fmt.name == message_name
+            ]
+            if len(format_ids) != 1:
+                raise NotAchievedException(
+                    'Expected exactly one %s FMT ID, got %s' %
+                    (message_name, format_ids))
+        gefc_msgs = []
+        geox_msgs = []
+        geoh_msgs = []
+        spol_msgs = []
+        mode_msgs = []
+        while True:
+            m = dfreader.recv_match(type=['GEFC', 'GEOX', 'GEOH', 'SPOL', 'MODE'])
+            if m is None:
+                break
+            msg_type = m.get_type()
+            if msg_type == 'GEFC':
+                gefc_msgs.append(m)
+            elif msg_type == 'GEOX':
+                geox_msgs.append(m)
+            elif msg_type == 'GEOH':
+                geoh_msgs.append(m)
+            elif msg_type == 'SPOL':
+                spol_msgs.append(m)
+            elif msg_type == 'MODE':
+                mode_msgs.append(m)
+
+        lifecycles = []
+        current_lifecycle = None
+        expected_phase = None
+        for m in sorted(gefc_msgs, key=lambda msg: msg.TimeUS):
+            phase_number = int(m.Phase)
+            if phase_number == 0:
+                if current_lifecycle is not None:
+                    raise NotAchievedException('A new Guided arm edge appeared before the prior lifecycle completed')
+                current_lifecycle = {0: m}
+                expected_phase = 1
+                continue
+            if current_lifecycle is None:
+                raise NotAchievedException('GEFC phase %u appeared without a phase-0 arm edge' % phase_number)
+            if phase_number != expected_phase:
+                raise NotAchievedException(
+                    'Guided lifecycle expected GEFC phase %u, got %u' %
+                    (expected_phase, phase_number))
+            current_lifecycle[phase_number] = m
+            if phase_number == 4:
+                lifecycles.append(current_lifecycle)
+                current_lifecycle = None
+                expected_phase = None
+            else:
+                expected_phase += 1
+
+        if current_lifecycle is not None:
+            raise NotAchievedException('Final Guided lifecycle did not reach GEFC phase 4')
+        if len(lifecycles) != 2:
+            raise NotAchievedException('Expected two complete Guided lifecycles, got %u' % len(lifecycles))
+
+        for lifecycle_index, phase in enumerate(lifecycles, start=1):
+            arm_edge = phase[0]
+            takeoff_edge = phase[1]
+            land_edge = phase[2]
+            touchdown_edge = phase[3]
+            ground_idle_edge = phase[4]
+            if not (arm_edge.TimeUS < takeoff_edge.TimeUS < land_edge.TimeUS <
+                    touchdown_edge.TimeUS < ground_idle_edge.TimeUS):
+                raise NotAchievedException(
+                    'Guided lifecycle %u phases are out of order' % lifecycle_index)
+
+            armed_main = int(ground_idle_edge.MFrm) - int(arm_edge.MFrm)
+            armed_geometric = int(ground_idle_edge.GFrm) - int(arm_edge.GFrm)
+            armed_native = int(ground_idle_edge.NFrm) - int(arm_edge.NFrm)
+            pre_takeoff_main = int(takeoff_edge.MFrm) - int(arm_edge.MFrm)
+            pre_takeoff_geometric = int(takeoff_edge.GFrm) - int(arm_edge.GFrm)
+            pre_takeoff_native = int(takeoff_edge.NFrm) - int(arm_edge.NFrm)
+            self.progress(
+                'Guided lifecycle %u armed frames main=%u geometric=%u native=%u; '
+                'pre-takeoff main=%u geometric=%u native=%u' %
+                (lifecycle_index,
+                 armed_main,
+                 armed_geometric,
+                 armed_native,
+                 pre_takeoff_main,
+                 pre_takeoff_geometric,
+                 pre_takeoff_native))
+            if armed_main <= 0 or armed_geometric != armed_main or armed_native != 0:
+                raise NotAchievedException(
+                    'Guided lifecycle %u was not geometric on every armed main-loop frame' %
+                    lifecycle_index)
+            if (pre_takeoff_main <= 0 or
+                    pre_takeoff_geometric != pre_takeoff_main or
+                    pre_takeoff_native != 0):
+                raise NotAchievedException(
+                    'Guided lifecycle %u arm-to-takeoff wait was not fully geometric' %
+                    lifecycle_index)
+
+            spooldown_main = int(ground_idle_edge.MFrm) - int(touchdown_edge.MFrm)
+            spooldown_geometric = int(ground_idle_edge.GFrm) - int(touchdown_edge.GFrm)
+            spooldown_native = int(ground_idle_edge.NFrm) - int(touchdown_edge.NFrm)
+            if spooldown_main <= 0 or spooldown_geometric != spooldown_main or spooldown_native != 0:
+                raise NotAchievedException(
+                    'Guided lifecycle %u spool-down was not geometric on every main-loop frame' %
+                    lifecycle_index)
+
+            lifecycle_geox = [m for m in geox_msgs
+                              if arm_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+            if len(lifecycle_geox) < 20:
+                raise NotAchievedException(
+                    'Not enough GEOX samples in Guided lifecycle %u' % lifecycle_index)
+            if any(m.RT or not m.OEn for m in lifecycle_geox):
+                raise NotAchievedException(
+                    'Guided lifecycle %u did not keep output enabled with rate-thread off' %
+                    lifecycle_index)
+            # The synchronous takeoff observer emits one boundary GEOX before
+            # prepared is retagged.  It consumes no rate frame; the exact GEFC
+            # counters above remain the motor-path oracle.
+            settled_lifecycle_geox = [m for m in lifecycle_geox
+                                      if m.TimeUS >= takeoff_edge.TimeUS + 100000]
+            if len(settled_lifecycle_geox) < 20:
+                raise NotAchievedException(
+                    'Not enough settled GEOX samples in Guided lifecycle %u' % lifecycle_index)
+            if any(not m.Allow or not m.Wrote for m in settled_lifecycle_geox):
+                raise NotAchievedException(
+                    'Guided lifecycle %u settled GEOX did not remain Allow/Wrote' %
+                    lifecycle_index)
+            for m in lifecycle_geox:
+                for field in ('Roll', 'Pitch', 'Yaw', 'Thr'):
+                    if not math.isfinite(getattr(m, field)):
+                        raise NotAchievedException(
+                            'GEOX.%s is not finite in Guided lifecycle %u' %
+                            (field, lifecycle_index))
+
+            lifecycle_handoffs = [m for m in geoh_msgs
+                                  if arm_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+            if lifecycle_handoffs:
+                raise NotAchievedException(
+                    'Geometric output handed off during Guided lifecycle %u' % lifecycle_index)
+
+            armed_ground_safe = [m for m in geox_msgs
+                                 if arm_edge.TimeUS <= m.TimeUS < takeoff_edge.TimeUS and
+                                 m.Allow and m.OEn and m.Wrote and not m.RT]
+            if len(armed_ground_safe) < 3:
+                raise NotAchievedException(
+                    'Too few armed zero-collective samples before Guided takeoff %u' %
+                    lifecycle_index)
+            if any(abs(m.Thr) > 0.05 for m in armed_ground_safe):
+                raise NotAchievedException(
+                    'Guided lifecycle %u requested collective while awaiting takeoff' %
+                    lifecycle_index)
+
+            positive_takeoff_collective = [m for m in geox_msgs
+                                           if takeoff_edge.TimeUS <= m.TimeUS < land_edge.TimeUS and
+                                           m.Allow and m.OEn and m.Wrote and not m.RT and
+                                           abs(m.Thr) > 0.05]
+            if not positive_takeoff_collective:
+                raise NotAchievedException(
+                    'Guided lifecycle %u never requested takeoff collective' % lifecycle_index)
+            first_takeoff_collective_us = min(m.TimeUS for m in positive_takeoff_collective)
+            ground_safe_geox = [m for m in geox_msgs
+                                if takeoff_edge.TimeUS <= m.TimeUS < first_takeoff_collective_us and
+                                m.Allow and m.OEn and m.Wrote and not m.RT]
+            if len(ground_safe_geox) < 3:
+                raise NotAchievedException(
+                    'Too few zero-collective samples during Guided spool-up %u' %
+                    lifecycle_index)
+            if any(abs(m.Thr) > 0.05 for m in ground_safe_geox):
+                raise NotAchievedException(
+                    'Guided lifecycle %u ground-safe target requested takeoff collective early' %
+                    lifecycle_index)
+
+            touchdown_ground_safe = [m for m in geox_msgs
+                                     if touchdown_edge.TimeUS + 50000 <= m.TimeUS <= ground_idle_edge.TimeUS and
+                                     m.Allow and m.OEn and m.Wrote and not m.RT]
+            if len(touchdown_ground_safe) < 3:
+                raise NotAchievedException(
+                    'Too few geometric ground-safe samples after Guided touchdown %u' %
+                    lifecycle_index)
+            if any(abs(m.Thr) > 0.05 for m in touchdown_ground_safe):
+                raise NotAchievedException(
+                    'Guided lifecycle %u touchdown spool-down requested collective' %
+                    lifecycle_index)
+
+            lifecycle_modes = [int(m.Mode) for m in mode_msgs
+                               if land_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+            if any(mode != 4 for mode in lifecycle_modes):
+                raise NotAchievedException(
+                    'Guided lifecycle %u switched to another flight mode' % lifecycle_index)
+
+            spool_states = [int(m.Spl) for m in spol_msgs
+                            if takeoff_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+            for required_spool_state in (2, 3, 1):
+                if required_spool_state not in spool_states:
+                    raise NotAchievedException(
+                        'SPOL state %u missing from Guided lifecycle %u' %
+                        (required_spool_state, lifecycle_index))
+            spool_indices = [spool_states.index(state) for state in (2, 3, 1)]
+            if spool_indices != sorted(spool_indices):
+                raise NotAchievedException(
+                    'Guided lifecycle %u spool states are out of order' % lifecycle_index)
+            ground_idle_desired = [m for m in spol_msgs
+                                   if touchdown_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS and
+                                   int(m.SplDes) == 1]
+            if not ground_idle_desired:
+                raise NotAchievedException(
+                    'Guided landing %u never requested AP_Motors GROUND_IDLE' % lifecycle_index)
 
     def GeometricGuidedMotorOutputDisabled(self):
         '''test Guided geometric motor-output hook requires GEO_OUT_EN'''
@@ -17476,6 +19396,46 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.set_parameter('GUID_OPTIONS', 258)
         second_geometric_window = collect_window("geometric-second", 1.2)
+
+        fault_off_start_us = int(self.get_sim_time() * 1000000)
+        self.set_parameter('GEO_OUT_EN', 0)
+        self.delay_sim_time(0.2, reason="settle Guided hard-fault native handoff")
+        fault_off_window = collect_window("fault-output-disabled", 0.6)
+
+        self.set_parameter('GEO_OUT_EN', 1)
+        self.delay_sim_time(0.2, reason="prove Guided hard-fault latch survives GEO_OUT_EN recovery")
+        fault_latched_window = collect_window("fault-latched", 0.6)
+
+        self.set_parameter('GUID_OPTIONS', 2)
+        self.delay_sim_time(0.2, reason="acknowledge Guided geometric hard fault by clearing bit 8")
+        fault_clear_window = collect_window("fault-clear-bit8", 0.4)
+
+        self.set_parameter('GUID_OPTIONS', 258)
+        recovered_geometric_window = collect_window("geometric-recovered", 0.8)
+        fault_recovery_end_us = recovered_geometric_window[1]
+
+        # Direct attitude/thrust semantics are deliberately unsupported by
+        # the position-derived geometric mapper.  They must run natively, then
+        # return to geometric output only after a compatible PVA observer frame.
+        recovered_attitude = recovered_geometric_window[3][-1]
+        angle_start_us = int(self.get_sim_time() * 1000000)
+        self.mav.mav.set_attitude_target_send(
+            0,
+            1,
+            1,
+            0,
+            mavextra.euler_to_quat([0, 0, recovered_attitude.yaw]),
+            0,
+            0,
+            0,
+            0.5,
+        )
+        self.delay_sim_time(0.2, reason="settle unsupported Guided Angle native path")
+        angle_native_window = collect_window("angle-native", 0.6)
+
+        self.send_position_target_local_ned(0, 0, 10)
+        position_recovered_window = collect_window("geometric-after-angle", 0.8)
+        angle_recovery_end_us = position_recovered_window[1]
         self.set_parameter('GUID_OPTIONS', 2)
 
         windows = {
@@ -17483,6 +19443,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "geometric-first": first_geometric_window,
             "official-return": official_return_window,
             "geometric-second": second_geometric_window,
+            "fault-output-disabled": fault_off_window,
+            "fault-latched": fault_latched_window,
+            "fault-clear-bit8": fault_clear_window,
+            "geometric-recovered": recovered_geometric_window,
+            "angle-native": angle_native_window,
+            "geometric-after-angle": position_recovered_window,
         }
         all_positions = []
         all_attitudes = []
@@ -17512,18 +19478,114 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         dfreader = self.dfreader_for_current_onboard_log()
         geox_by_window = {name: [] for name in windows}
+        gefr_by_window = {name: [] for name in windows}
+        geoh_msgs = []
+        gefb_msgs = []
         while True:
-            m = dfreader.recv_match(type="GEOX")
+            m = dfreader.recv_match(type=["GEOX", "GEFR", "GEOH", "GEFB"])
             if m is None:
                 break
+            if m.get_type() == "GEOH":
+                geoh_msgs.append(m)
+                continue
+            if m.get_type() == "GEFB":
+                gefb_msgs.append(m)
+                continue
             for name, (start_us, end_us, _, _) in windows.items():
                 if start_us <= m.TimeUS <= end_us:
-                    geox_by_window[name].append(m)
+                    if m.get_type() == "GEOX":
+                        geox_by_window[name].append(m)
+                    elif m.get_type() == "GEFR":
+                        gefr_by_window[name].append(m)
+
+        def check_frame_window(label, messages, expect_geometric):
+            if len(messages) < 2:
+                raise NotAchievedException("Too few GEFR samples during %s" % label)
+            ordered = sorted(messages, key=lambda m: m.TimeUS)
+            delta_main = int(ordered[-1].MFrm) - int(ordered[0].MFrm)
+            delta_geometric = int(ordered[-1].GFrm) - int(ordered[0].GFrm)
+            delta_native = int(ordered[-1].NFrm) - int(ordered[0].NFrm)
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException("Invalid GEFR accounting during %s" % label)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException(
+                        "%s was not geometric on every sampled main-loop frame" % label)
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException(
+                    "%s was not native on every sampled main-loop frame" % label)
 
         check_geox_window("official-before", geox_by_window["official-before"], False, False, False)
         check_geox_window("geometric-first", geox_by_window["geometric-first"], True, True, True)
         check_geox_window("official-return", geox_by_window["official-return"], False, True, False)
         check_geox_window("geometric-second", geox_by_window["geometric-second"], True, True, True)
+        check_geox_window("fault-output-disabled", geox_by_window["fault-output-disabled"], False, False, False)
+        check_geox_window("fault-latched", geox_by_window["fault-latched"], False, True, False)
+        check_geox_window("fault-clear-bit8", geox_by_window["fault-clear-bit8"], False, True, False)
+        check_geox_window("geometric-recovered", geox_by_window["geometric-recovered"], True, True, True)
+        check_geox_window("angle-native", geox_by_window["angle-native"], False, True, False)
+        check_geox_window("geometric-after-angle", geox_by_window["geometric-after-angle"], True, True, True)
+
+        for name in ("official-before", "official-return", "fault-output-disabled",
+                     "fault-latched", "fault-clear-bit8", "angle-native"):
+            check_frame_window(name, gefr_by_window[name], False)
+        for name in ("geometric-first", "geometric-second", "geometric-recovered",
+                     "geometric-after-angle"):
+            check_frame_window(name, gefr_by_window[name], True)
+
+        fault_events = [m for m in geoh_msgs
+                        if fault_off_start_us <= m.TimeUS <= fault_recovery_end_us]
+        if len(fault_events) != 1:
+            raise NotAchievedException(
+                "Expected one Guided GEO_OUT_EN hard-fault event, got %u" % len(fault_events))
+        fault_event = fault_events[0]
+        if (int(fault_event.Mode) != 4 or
+                (int(fault_event.Fail) & (1 << 1)) == 0 or
+                not fault_event.Prev or fault_event.Act or
+                not fault_event.Hand or fault_event.RT):
+            raise NotAchievedException("Guided hard-fault GEOH fields are invalid")
+
+        angle_events = [m for m in geoh_msgs
+                        if angle_start_us <= m.TimeUS <= angle_recovery_end_us]
+        if len(angle_events) != 1:
+            raise NotAchievedException(
+                "Expected one Guided Angle native-boundary event, got %u" % len(angle_events))
+        angle_event = angle_events[0]
+        if (int(angle_event.Mode) != 4 or
+                (int(angle_event.Fail) & 1) == 0 or
+                not angle_event.Prev or angle_event.Act or
+                not angle_event.Hand or angle_event.RT):
+            raise NotAchievedException("Guided Angle GEOH fields are invalid")
+
+        # GEFR is intentionally decimated and a collect window can absorb its
+        # first sample into the baseline.  GEFB brackets the command handler
+        # and the immediately following rate frame exactly, proving that the
+        # unsupported Angle -> supported Pos recovery has no native bridge.
+        angle_boundary = sorted(
+            [m for m in gefb_msgs
+             if angle_start_us <= m.TimeUS <= angle_recovery_end_us],
+            key=lambda m: m.TimeUS)
+        if len(angle_boundary) != 2:
+            raise NotAchievedException(
+                "Expected two exact Guided boundary records, got %u" %
+                len(angle_boundary))
+        boundary_prepared, boundary_first_frame = angle_boundary
+        if (int(boundary_prepared.Edge) != int(boundary_first_frame.Edge) or
+                int(boundary_prepared.Phase) != 0 or
+                int(boundary_first_frame.Phase) != 1 or
+                int(boundary_prepared.Sub) != 2 or
+                int(boundary_first_frame.Sub) != 2 or
+                not boundary_prepared.Prep or not boundary_prepared.Allow or
+                not boundary_first_frame.Prep or not boundary_first_frame.Allow):
+            raise NotAchievedException("Guided Angle-to-Pos GEFB fields are invalid")
+        boundary_main = int(boundary_first_frame.MFrm) - int(boundary_prepared.MFrm)
+        boundary_geometric = int(boundary_first_frame.GFrm) - int(boundary_prepared.GFrm)
+        boundary_native = int(boundary_first_frame.NFrm) - int(boundary_prepared.NFrm)
+        if boundary_main != 1 or boundary_geometric != 1 or boundary_native != 0:
+            raise NotAchievedException(
+                "Guided Angle-to-Pos first frame was not purely geometric: "
+                "main=%u geometric=%u native=%u" %
+                (boundary_main, boundary_geometric, boundary_native))
 
         self.do_RTL()
 
@@ -19550,6 +21612,11 @@ return update, 1000
             self.GuidedModeThrust,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
+            self.GeometricLoiterObserver,
+            self.GeometricLoiterTakeoffLandingMotorOutput,
+            self.GeometricLoiterAirborneEntry,
+            self.GeometricLoiterMotorOutput,
+            self.GeometricGuidedFullLifecycle,
             self.GeometricGuidedMotorOutputDisabled,
             self.GeometricGuidedMotorOutput,
             self.GeometricGuidedMotorOutputHover,

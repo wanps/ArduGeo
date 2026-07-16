@@ -306,6 +306,21 @@ public:
     // Use when path planning or shaping is done outside this controller.
     void set_pos_vel_accel_NE_m(const Vector2p& pos_ne_m, const Vector2f& vel_ne_ms, const Vector2f& accel_ne_mss);
 
+    // Publishes a complete target owned by an external position controller for
+    // safety, telemetry and navigation consumers. Desired and target caches
+    // are updated together as one publication, but no native feedback PID is
+    // evaluated and no attitude or motor output is produced.
+    bool publish_external_reference_NED_m(const Vector3p& pos_ned_m,
+                                          const Vector3f& vel_ned_ms,
+                                          const Vector3f& accel_ned_mss);
+    void clear_external_reference();
+
+    // True when either the corresponding native controller or a recently
+    // published external-controller target owns that axis. NE_is_active() and
+    // D_is_active() retain their narrower native-controller-run semantics.
+    bool NE_reference_is_active() const { return NE_is_active() || external_reference_is_active(); }
+    bool D_reference_is_active() const { return D_is_active() || external_reference_is_active(); }
+
 
     /// Position
 
@@ -358,17 +373,17 @@ public:
     /// Position Error
 
     // Returns NED position error vector in meters between current and target positions.
-    const Vector3f get_pos_error_NED_m() const { return Vector3f{_p_pos_ne_m.get_error().x, _p_pos_ne_m.get_error().y, _p_pos_d_m.get_error()}; }
+    Vector3f get_pos_error_NED_m() const;
 
     // Returns total NE-plane position error magnitude in meters.
-    float get_pos_error_NE_m() const { return _p_pos_ne_m.get_error().length(); }
+    float get_pos_error_NE_m() const;
 
     // Returns vertical position error (altitude) in centimeters.
     // See get_pos_error_D_m() for full details.
     float get_pos_error_U_cm() const { return -get_pos_error_D_m() * 100.0; }
 
     // Returns vertical position error (altitude) in meters.
-    float get_pos_error_D_m() const { return _p_pos_d_m.get_error(); }
+    float get_pos_error_D_m() const;
 
 
     /// Velocity
@@ -733,6 +748,8 @@ protected:
     float       _dt_s;                      // time difference (in seconds) since the last loop time
     uint32_t    _last_update_ne_ticks;      // ticks of last NE_update_controller call
     uint32_t    _last_update_d_ticks;       // ticks of last update_z_controller call
+    uint32_t    _external_reference_ticks = 0; // ticks of last complete externally owned PVA publication
+    bool        _external_reference_valid = false; // true after a valid external publication until explicitly cleared
     float       _vel_max_ne_ms;             // max horizontal speed in m/s used for kinematic shaping
     float       _vel_max_up_ms;             // max climb rate in m/s used for kinematic shaping
     float       _vel_max_down_ms;           // max descent rate in m/s used for kinematic shaping
@@ -794,6 +811,8 @@ protected:
     bool has_good_timing(void) const;
 
 private:
+    bool external_reference_is_active() const;
+
     // Internal log writer for PSCx (North, East, Down tracking).
     // Reduces duplication between Write_PSCN, PSCE, and PSCD.
     // Used for logging desired/target/actual position, velocity, and acceleration per axis.

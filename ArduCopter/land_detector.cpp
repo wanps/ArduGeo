@@ -221,6 +221,18 @@ void Copter::set_land_complete(bool b)
 #endif
     ap.land_complete = b;
 
+#if HAL_LOGGING_ENABLED && MODE_GUIDED_ENABLED
+    if (b &&
+        flightmode != nullptr &&
+        flightmode->mode_number() == Mode::Number::GUIDED &&
+        mode_guided.is_landing()) {
+        Log_Write_Geometric_Full_Lifecycle(3,
+                                           main_rate_controller_frames(),
+                                           geometric_motor_output_frames(),
+                                           native_rate_controller_frames());
+    }
+#endif
+
 #if AP_STATS_ENABLED
     AP::stats()->set_flying(!b);
 #endif

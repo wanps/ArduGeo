@@ -37,7 +37,7 @@ uint8_t GCS_MAVLINK_Copter::base_mode() const
     // only get useful information from the custom_mode, which maps to
     // the APM flight mode and has a well defined meaning in the
     // ArduPlane documentation
-    if ((copter.pos_control != nullptr) && copter.pos_control->NE_is_active()) {
+    if ((copter.pos_control != nullptr) && copter.pos_control->NE_reference_is_active()) {
         _base_mode |= MAV_MODE_FLAG_GUIDED_ENABLED;
         // note that MAV_MODE_FLAG_AUTO_ENABLED does not match what
         // APM does in any mode, as that is defined as "system finds its own goal
@@ -126,6 +126,7 @@ void GCS_MAVLINK_Copter::send_position_target_local_ned()
 
     switch (guided_mode) {
     case ModeGuided::SubMode::Angle:
+    case ModeGuided::SubMode::Land:
         // we don't have a local target when in angle mode
         return;
     case ModeGuided::SubMode::TakeOff:
@@ -530,6 +531,12 @@ MAV_RESULT GCS_MAVLINK_Copter::handle_command_int_packet(const mavlink_command_i
 
     case MAV_CMD_NAV_VTOL_LAND:
     case MAV_CMD_NAV_LAND:
+#if MODE_GUIDED_ENABLED
+        if (copter.flightmode->mode_number() == Mode::Number::GUIDED &&
+            copter.mode_guided.start_geometric_landing()) {
+            return MAV_RESULT_ACCEPTED;
+        }
+#endif
         if (!copter.set_mode(Mode::Number::LAND, ModeReason::GCS_COMMAND)) {
             return MAV_RESULT_FAILED;
         }

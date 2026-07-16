@@ -24,6 +24,39 @@ Mode::Mode(void) :
     G_Dt(copter.G_Dt)
 { };
 
+void Mode::handle_geometric_motor_output_fallback()
+{
+    // Use the current AP_Motors collective as the first native shadow output
+    // and rebuild the frozen native rate-controller state from the latest gyro.
+    const float handoff_throttle = motors->get_throttle();
+    attitude_control->set_throttle_out(handoff_throttle, false, g.throttle_filt);
+    attitude_control->relax_attitude_controllers(ahrs.get_gyro_latest());
+
+    copter.geometric_control.set_enabled(false);
+}
+
+bool Mode::run_geometric_observer(const AC_Geometric_Target& target,
+                                  bool enabled,
+                                  AC_Geometric_State& state)
+{
+    copter.geometric_control.set_enabled(enabled);
+    if (!enabled) {
+        return false;
+    }
+
+    const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
+    state.position_ned_m = Vector3f{float(pos_estimate_ned_m.x),
+                                   float(pos_estimate_ned_m.y),
+                                   float(pos_estimate_ned_m.z)};
+    state.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
+    ahrs.get_quat_body_to_ned(state.attitude_body_to_ned);
+    state.omega_body_rads = ahrs.get_gyro_latest();
+
+    copter.geometric_control.set_hover_throttle_reference(motors->get_throttle_hover());
+    copter.geometric_control.update(state, target, G_Dt);
+    return true;
+}
+
 #if AC_PAYLOAD_PLACE_ENABLED
 PayloadPlace Mode::payload_place;
 #endif

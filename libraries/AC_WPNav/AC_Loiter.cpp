@@ -22,7 +22,11 @@ extern const AP_HAL::HAL& hal;
 #define LOITER_VEL_CORRECTION_MAX_MS        2.0     // Maximum speed (in m/s) used for correcting position errors in loiter.
 #define LOITER_POS_CORRECTION_MAX_M         2.0     // Maximum horizontal position error allowed before correction (m).
 #define LOITER_ACTIVE_TIMEOUT_MS            200     // Loiter is considered active if updated within the past 200 ms.
+#if APM_BUILD_TYPE(APM_BUILD_ArduCopter)
+#define LOITER_DEFAULT_OPTIONS              7       // Coordinated turn plus geometric observer and motor output.
+#else
 #define LOITER_DEFAULT_OPTIONS              1       // Enable Coordinated Turn by default.
+#endif
 
 const AP_Param::GroupInfo AC_Loiter::var_info[] = {
 
@@ -54,6 +58,7 @@ const AP_Param::GroupInfo AC_Loiter::var_info[] = {
     // @DisplayName: Loiter mode options
     // @Description: Enables optional Loiter mode behaviors
     // @Bitmask: 0: Enable Coordinated turns
+    // @Bitmask{Copter}: 0:Enable Coordinated turns,1:Enable geometric observer,2:Allow full-lifecycle geometric motor output
     // @User: Standard
     AP_GROUPINFO("OPTIONS", 7, AC_Loiter, _options, LOITER_DEFAULT_OPTIONS),
 
@@ -105,6 +110,14 @@ AC_Loiter::AC_Loiter(const AP_AHRS_View& ahrs, AC_PosControl& pos_control, const
     _attitude_control(attitude_control)
 {
     AP_Param::setup_object_defaults(this, var_info);
+}
+
+AC_Loiter::ReferenceConfig AC_Loiter::get_reference_config() const
+{
+    ReferenceConfig config;
+    config.speed_max_ne_ms = _speed_max_ne_ms.get();
+    config.coordinated_turn_enabled = loiter_option_is_set(LoiterOption::COORDINATED_TURN_ENABLED);
+    return config;
 }
 
 // Sets the initial loiter target position in meters from the EKF origin.
@@ -309,6 +322,22 @@ void AC_Loiter::sanity_check_params()
 
 bool AC_Loiter::loiter_option_is_set(LoiterOption option) const {
     return (_options & int8_t(option)) != 0;
+}
+
+bool AC_Loiter::geometric_observer_enabled() const
+{
+    return loiter_option_is_set(LoiterOption::GEOMETRIC_OBSERVER_ENABLED);
+}
+
+bool AC_Loiter::geometric_motor_output_requested() const
+{
+    return loiter_option_is_set(LoiterOption::GEOMETRIC_MOTOR_OUTPUT_ENABLED);
+}
+
+bool AC_Loiter::geometric_motor_output_enabled() const
+{
+    return geometric_observer_enabled() &&
+           geometric_motor_output_requested();
 }
 
 // Updates feed-forward velocity using pilot-requested acceleration and braking logic.

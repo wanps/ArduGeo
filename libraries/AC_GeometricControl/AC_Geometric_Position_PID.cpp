@@ -2,6 +2,14 @@
 
 namespace {
 
+// Below five percent of the hover specific force the mapped collective is
+// effectively near zero (five percent of the configured hover throttle), and
+// using its direction to construct R_c is ill-conditioned: an arbitrarily
+// small lateral residual can request a near-90-degree tilt.  Treat this as the
+// zero-collective attitude domain for a conventional upright multirotor.
+constexpr float UPRIGHT_MIN_UPWARD_SPECIFIC_FORCE_MSS = GRAVITY_MSS * 0.05f;
+constexpr float UPRIGHT_RELEASE_UPWARD_SPECIFIC_FORCE_MSS = GRAVITY_MSS * 0.07f;
+
 Vector3f apply_optional_lowpass(const Vector3f& input,
                                 float cutoff_hz,
                                 float dt,
@@ -60,6 +68,19 @@ Quaternion attitude_from_thrust_vector(Vector3f thrust_vector, float yaw_rad)
     return thrust_vec_quat * yaw_quat;
 }
 
+// A conventional multirotor can only produce non-negative collective along
+// body -Z.  The position controller therefore must not turn a force with a
+// non-upward NED component into an inverted attitude target.  A force on or
+// below the NED horizontal plane is outside the upright flight domain.  The
+// near-zero-collective region above that exact boundary is regularised too,
+// because its force direction is not a useful attitude command.  Use the
+// zero-force member of the feasible set and let attitude_from_thrust_vector()
+// select the finite, level attitude at the requested yaw.
+//
+// Keep this projection separate from specific_force_ned_mss so the
+// unconstrained geometric request remains available for logging. The applied
+// scalar collective is independently forced to zero only at its physical lower
+// bound; a small force which is still upward remains available to the mapper.
 // Estimate desired body-frame angular velocity from the change in commanded
 // body-to-NED attitude. For body-to-inertial R, R_prev^T * R_curr is the small
 // body-frame rotation over dt.
@@ -96,6 +117,8 @@ void AC_Geometric_Position_PID::reset()
     _omega_dot_c_filtered_radss.zero();
     _filter_reset = true;
     _attitude_target_reset = true;
+    _regularization_derivative_reset = false;
+    _upright_thrust_regularized = false;
 }
 
 void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
@@ -133,24 +156,76 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
         output.velocity_error_ms.y + _gains.integral_error_p.y * output.position_error_m.y,
         output.velocity_error_ms.z + _gains.integral_error_p.z * output.position_error_m.z
     };
+    // Apply a possibly reduced runtime limit before remembering the state used
+    // by conditional integration below.
+    constrain_integral(_integral_error_m, _integral_limits.integral_error_m);
+    const Vector3f integral_error_before_update_m = _integral_error_m;
     if (is_positive(dt)) {
         _integral_error_m += integral_input * dt;
     }
     constrain_integral(_integral_error_m, _integral_limits.integral_error_m);
-    output.integral_error_m = _integral_error_m;
 
     // Lee/Gao geometric PID position channel. The integral state follows the
     // geometric PID form e_XI = integral(e_v + c_x * e_x).
     // Lee writes the resultant command as A; Gao uses F_d.
     Vector3f accel_cmd_ned = target.accel_ned_mss;
-    accel_cmd_ned.x += -_gains.p.x * output.position_error_m.x - _gains.d.x * output.velocity_error_ms.x - _gains.i.x * output.integral_error_m.x;
-    accel_cmd_ned.y += -_gains.p.y * output.position_error_m.y - _gains.d.y * output.velocity_error_ms.y - _gains.i.y * output.integral_error_m.y;
-    accel_cmd_ned.z += -_gains.p.z * output.position_error_m.z - _gains.d.z * output.velocity_error_ms.z - _gains.i.z * output.integral_error_m.z;
+    accel_cmd_ned.x += -_gains.p.x * output.position_error_m.x - _gains.d.x * output.velocity_error_ms.x - _gains.i.x * _integral_error_m.x;
+    accel_cmd_ned.y += -_gains.p.y * output.position_error_m.y - _gains.d.y * output.velocity_error_ms.y - _gains.i.y * _integral_error_m.y;
+    accel_cmd_ned.z += -_gains.p.z * output.position_error_m.z - _gains.d.z * output.velocity_error_ms.z - _gains.i.z * _integral_error_m.z;
+
+    // Conditional vertical anti-windup for the conventional multirotor
+    // boundary. If this sample's integral increment would make the raw force
+    // point downward, analytically project I_z onto the zero-collective force
+    // boundary. This lets the mapper reach exactly zero instead of holding a
+    // small positive collective at the attitude-regularisation threshold.
+    // Integral motion which unwinds the saturation remains active. This is
+    // deliberately local to build_attitude_from_position: observer targets do
+    // not use this force to construct an attitude.
+    const float specific_force_z_mss = accel_cmd_ned.z - GRAVITY_MSS;
+    const float integral_force_delta_z_mss = -_gains.i.z *
+                                               (_integral_error_m.z - integral_error_before_update_m.z);
+    bool vertical_collective_lower_limited = false;
+    if (target.build_attitude_from_position &&
+        specific_force_z_mss >= 0.0f &&
+        integral_force_delta_z_mss > 0.0f &&
+        !is_zero(_gains.i.z)) {
+        const float specific_force_without_integral_z_mss = specific_force_z_mss +
+                                                             _gains.i.z * _integral_error_m.z;
+        _integral_error_m.z = specific_force_without_integral_z_mss / _gains.i.z;
+        // If the exact zero-force boundary is outside Imax, retain the closest
+        // reachable integral. The raw force and mapper clamp still provide the
+        // safe fallback for that case.
+        constrain_integral(_integral_error_m, _integral_limits.integral_error_m);
+        accel_cmd_ned.z = target.accel_ned_mss.z
+                          - _gains.p.z * output.position_error_m.z
+                          - _gains.d.z * output.velocity_error_ms.z
+                          - _gains.i.z * _integral_error_m.z;
+        // Remember the analytical lower-bound projection independently of
+        // floating-point roundoff in the recomputed raw force.
+        vertical_collective_lower_limited = fabsf(accel_cmd_ned.z - GRAVITY_MSS) <= 1.0e-4f;
+    }
+    output.integral_error_m = _integral_error_m;
 
     output.specific_force_ned_mss = accel_cmd_ned;
     output.specific_force_ned_mss.z -= GRAVITY_MSS;
-    // Keep the direction in NED for constructing R_c. Negative Z is upward.
-    output.thrust_vector_ned = output.specific_force_ned_mss;
+    // Keep a feasible, well-conditioned direction in NED for constructing R_c.
+    // Enter level-yaw regularisation at 5% of hover specific force and release
+    // only above 7%; the small hysteresis prevents attitude/rate chatter.
+    const bool upright_thrust_regularized_before_update = _upright_thrust_regularized;
+    if (target.build_attitude_from_position) {
+        if (_upright_thrust_regularized) {
+            if (output.specific_force_ned_mss.z < -UPRIGHT_RELEASE_UPWARD_SPECIFIC_FORCE_MSS) {
+                _upright_thrust_regularized = false;
+            }
+        } else if (output.specific_force_ned_mss.z >= -UPRIGHT_MIN_UPWARD_SPECIFIC_FORCE_MSS) {
+            _upright_thrust_regularized = true;
+        }
+    } else {
+        _upright_thrust_regularized = false;
+    }
+    const bool upright_thrust_regularization_transition =
+        _upright_thrust_regularized != upright_thrust_regularized_before_update;
+    output.thrust_vector_ned = _upright_thrust_regularized ? Vector3f{} : output.specific_force_ned_mss;
 
     if (target.build_attitude_from_position) {
         // Full SE(3) coupling path: convert the desired force direction plus
@@ -158,14 +233,18 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
         output.attitude_body_to_ned = attitude_from_thrust_vector(output.thrust_vector_ned, target.yaw_rad);
         Vector3f fallback_omega_body_rads = target.omega_body_rads;
         fallback_omega_body_rads.z = target.yaw_rate_rads;
-        if (_attitude_target_reset) {
+        if (_attitude_target_reset || upright_thrust_regularization_transition) {
             // On the first sample, avoid differentiating from an uninitialised
-            // attitude. Use the caller-provided angular target as a seed.
+            // attitude. The same reset is required when near-zero collective
+            // enters or exits level-yaw regularisation; finite-differencing that
+            // deliberate attitude switch would create a spurious rate impulse.
+            // Use the caller-provided angular target as a seed.
             _omega_c_filtered_rads = fallback_omega_body_rads;
             _omega_dot_c_filtered_radss.zero();
             output.omega_body_rads = _omega_c_filtered_rads;
             output.omega_dot_body_radss = _omega_dot_c_filtered_radss;
             _attitude_target_reset = false;
+            _regularization_derivative_reset = upright_thrust_regularization_transition;
         } else {
             // The paper defines Omega_c analytically. This implementation
             // approximates it from the discrete R_c sequence and filters the
@@ -178,11 +257,19 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
                                                             _filter_hz.omega_c,
                                                             dt,
                                                             _omega_c_filtered_rads);
-            const Vector3f omega_dot_c_raw_radss = is_positive(dt) ? (output.omega_body_rads - omega_c_previous_rads) / dt : Vector3f{};
-            output.omega_dot_body_radss = apply_optional_lowpass(omega_dot_c_raw_radss,
-                                                                 _filter_hz.omega_dot_c,
-                                                                 dt,
-                                                                 _omega_dot_c_filtered_radss);
+            if (_regularization_derivative_reset) {
+                // The first finite-difference sample after the transition must
+                // not differentiate the fallback seed used on the switch frame.
+                _omega_dot_c_filtered_radss.zero();
+                output.omega_dot_body_radss.zero();
+                _regularization_derivative_reset = false;
+            } else {
+                const Vector3f omega_dot_c_raw_radss = is_positive(dt) ? (output.omega_body_rads - omega_c_previous_rads) / dt : Vector3f{};
+                output.omega_dot_body_radss = apply_optional_lowpass(omega_dot_c_raw_radss,
+                                                                     _filter_hz.omega_dot_c,
+                                                                     dt,
+                                                                     _omega_dot_c_filtered_radss);
+            }
         }
         _last_attitude_target_body_to_ned = output.attitude_body_to_ned;
     } else {
@@ -194,11 +281,26 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
         _omega_c_filtered_rads.zero();
         _omega_dot_c_filtered_radss.zero();
         _attitude_target_reset = true;
+        _regularization_derivative_reset = false;
     }
 
     Matrix3f attitude;
     state.attitude_body_to_ned.rotation_matrix(attitude);
     // Temporary scalar thrust placeholder for the paper quantity f_d/m.
     // attitude.colz() is the body +Z axis expressed in NED.
-    output.thrust = -(output.specific_force_ned_mss * attitude.colz());
+    // At the unidirectional lower bound, no horizontal residual may leak into
+    // collective through a tilted current b3 axis. Keep the raw specific force
+    // above for logging, but explicitly apply zero thrust. In the near-zero
+    // level-yaw domain, project collective through the same regularised force:
+    // retain the small upward Z component but discard the XY component which
+    // was deliberately removed from R_c. Normal upward flight keeps the full
+    // geometric force projection.
+    const bool non_upward_force = output.specific_force_ned_mss.z >= 0.0f;
+    if (vertical_collective_lower_limited || non_upward_force) {
+        output.thrust = 0.0f;
+    } else if (_upright_thrust_regularized) {
+        output.thrust = -output.specific_force_ned_mss.z * attitude.colz().z;
+    } else {
+        output.thrust = -(output.specific_force_ned_mss * attitude.colz());
+    }
 }

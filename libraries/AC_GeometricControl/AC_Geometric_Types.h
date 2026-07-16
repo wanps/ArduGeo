@@ -40,6 +40,10 @@ struct AC_Geometric_Target {
     // True lets AC_GeometricControl apply its optional setpoint shaper. Set
     // false when the target already comes from ArduPilot's trajectory shapers.
     bool shape_position_target = true;
+    // True lets AC_GeometricControl shape explicit yaw or trajectory yaw.
+    // Set false when the target yaw has already been shaped by the source
+    // flight mode, as in native Loiter pilot-yaw handling.
+    bool shape_yaw_target = true;
     // Yaw targets are kept separate so the position channel can later build
     // the full desired attitude from thrust direction plus heading.
     float yaw_rad = 0.0f;

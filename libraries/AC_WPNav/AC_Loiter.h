@@ -15,6 +15,15 @@ public:
     /// Constructor
     AC_Loiter(const AP_AHRS_View& ahrs, AC_PosControl& pos_control, const AC_AttitudeControl& attitude_control);
 
+    // Read-only limits used by controller-independent Loiter reference generators.
+    // This intentionally excludes the native position-correction acceleration.
+    struct ReferenceConfig {
+        float speed_max_ne_ms;
+        bool coordinated_turn_enabled;
+    };
+
+    ReferenceConfig get_reference_config() const;
+
     // Sets the initial loiter target position in meters from the EKF origin.
     // - position_ne_m: horizontal position in the NE frame, in meters.
     // - Initializes internal control state including acceleration targets and feed-forward planning.
@@ -90,6 +99,16 @@ public:
     // Directional only; magnitude is handled by the attitude controller.
     Vector3f get_thrust_vector() const { return _pos_control.get_thrust_vector(); }
 
+    // Returns true when Copter Loiter should run the geometric observer.
+    bool geometric_observer_enabled() const;
+
+    // Returns true when the full-lifecycle motor-output bit is requested,
+    // even if its observer prerequisite is missing.
+    bool geometric_motor_output_requested() const;
+
+    // Returns true when both Loiter geometric observer and motor-output bits are set.
+    bool geometric_motor_output_enabled() const;
+
     // perform any required parameter conversions
     void convert_parameters();
 
@@ -124,6 +143,8 @@ protected:
     // Bitfields of LOITER_OPTIONS
     enum class LoiterOption {
         COORDINATED_TURN_ENABLED    = (1U << 0),    // Enable Coordinated Turn
+        GEOMETRIC_OBSERVER_ENABLED = (1U << 1),    // Enable Copter geometric observer
+        GEOMETRIC_MOTOR_OUTPUT_ENABLED = (1U << 2), // Allow full-lifecycle Copter geometric motor output
     };
     bool loiter_option_is_set(LoiterOption option) const;
 

@@ -300,4 +300,256 @@ TEST(AC_Geometric_Position_PID, IntegralStateUsesVelocityPlusPositionWeight)
     EXPECT_NEAR(output.specific_force_ned_mss.z, -GRAVITY_MSS, 1.0e-5f);
 }
 
+TEST(AC_Geometric_Position_PID, NonUpwardForceUsesLevelYawAndZeroCollectiveDirection)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    // The unconstrained request points below the NED horizontal plane.  Its
+    // lateral part must not turn a zero/negative collective request into a
+    // 90-plus-degree attitude target.
+    target.accel_ned_mss = Vector3f{2.0f, -1.0f, GRAVITY_MSS + 0.5f};
+    target.yaw_rad = 0.6f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Gains gains {};
+    const AC_Geometric_Position_Output output = run_position_pid(gains, state, target);
+
+    // Preserve the raw force for diagnostics, but apply the physical zero
+    // collective lower bound and use level-yaw for R_c.
+    EXPECT_NEAR(output.specific_force_ned_mss.x, 2.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.y, -1.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.z, 0.5f, 1.0e-5f);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.thrust, 0.0f, 1.0e-6f);
+
+    float roll_rad;
+    float pitch_rad;
+    float yaw_rad;
+    output.attitude_body_to_ned.to_euler(roll_rad, pitch_rad, yaw_rad);
+    EXPECT_NEAR(roll_rad, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(pitch_rad, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(yaw_rad, target.yaw_rad, 1.0e-6f);
+}
+
+TEST(AC_Geometric_Position_PID, ZeroVerticalForceCannotLeakLateralForceIntoCollective)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.35f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.accel_ned_mss = Vector3f{-4.0f, 0.0f, GRAVITY_MSS};
+    target.yaw_rad = 0.2f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Gains gains {};
+    const AC_Geometric_Position_Output output = run_position_pid(gains, state, target);
+
+    Matrix3f actual_attitude;
+    state.attitude_body_to_ned.rotation_matrix(actual_attitude);
+    const float leaked_collective_without_lower_bound =
+        -(output.specific_force_ned_mss * actual_attitude.colz());
+
+    EXPECT_GT(leaked_collective_without_lower_bound, 1.0f);
+    EXPECT_NEAR(output.specific_force_ned_mss.x, -4.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.z, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.thrust, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+}
+
+TEST(AC_Geometric_Position_PID, NearZeroUpwardForceCannotLeakLateralForceIntoCollective)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.35f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.accel_ned_mss = Vector3f{-4.0f, 0.0f, GRAVITY_MSS - 0.1f};
+    target.yaw_rad = -0.2f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Gains gains {};
+    const AC_Geometric_Position_Output output = run_position_pid(gains, state, target);
+
+    Matrix3f actual_attitude;
+    state.attitude_body_to_ned.rotation_matrix(actual_attitude);
+    const float leaked_collective_without_regularized_force =
+        -(output.specific_force_ned_mss * actual_attitude.colz());
+    const float expected_vertical_collective =
+        -output.specific_force_ned_mss.z * actual_attitude.colz().z;
+
+    EXPECT_GT(leaked_collective_without_regularized_force, 1.0f);
+    EXPECT_NEAR(output.specific_force_ned_mss.x, -4.0f, 1.0e-6f);
+    EXPECT_NEAR(output.specific_force_ned_mss.z, -0.1f, 1.0e-5f);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+    EXPECT_GT(output.thrust, 0.0f);
+    EXPECT_NEAR(output.thrust, expected_vertical_collective, 1.0e-6f);
+}
+
+TEST(AC_Geometric_Position_PID, GroundedDescentCannotWindUpIntoInvertedTarget)
+{
+    AC_Geometric_Position_PID controller;
+
+    AC_Geometric_Position_Gains gains {};
+    // Match the default-style gains from the touchdown failure: D initially
+    // leaves ample upward force, then I moves it toward zero over a few seconds.
+    gains.d.z = 3.0f;
+    gains.i.z = 5.0f;
+    controller.set_gains(gains);
+
+    AC_Geometric_Position_Integral_Limits integral_limits {};
+    integral_limits.integral_error_m.z = 100.0f;
+    controller.set_integral_limits(integral_limits);
+
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    // Include a small lateral residual: without the feasibility boundary this
+    // removes the antipodal-axis degeneracy and exposes the near-180-degree
+    // roll/pitch target seen at touchdown.
+    target.accel_ned_mss.x = 0.1f;
+    target.velocity_ned_ms.z = 0.7f;
+    target.yaw_rad = -0.4f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Output output {};
+    float minimum_body_z_down = 1.0f;
+    float integral_after_three_seconds = 0.0f;
+    bool reached_level_yaw_regularisation = false;
+    // Exercise longer than the Loiter landing timeout that exposed the fault.
+    for (uint16_t i = 0; i < 6000; i++) {
+        controller.update(state, target, 0.01f, output);
+        Matrix3f attitude;
+        output.attitude_body_to_ned.rotation_matrix(attitude);
+        minimum_body_z_down = MIN(minimum_body_z_down, attitude.colz().z);
+        reached_level_yaw_regularisation |= is_zero(output.thrust_vector_ned.length_squared());
+        if (i == 299) {
+            integral_after_three_seconds = output.integral_error_m.z;
+        }
+    }
+
+    const float specific_force_without_integral_z_mss = gains.d.z * target.velocity_ned_ms.z - GRAVITY_MSS;
+    const float expected_zero_force_integral_z_m = specific_force_without_integral_z_mss / gains.i.z;
+    EXPECT_TRUE(reached_level_yaw_regularisation);
+    EXPECT_NEAR(output.specific_force_ned_mss.z, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.thrust, 0.0f, 1.0e-5f);
+    EXPECT_NEAR(output.integral_error_m.z, expected_zero_force_integral_z_m, 1.0e-5f);
+    EXPECT_NEAR(integral_after_three_seconds, output.integral_error_m.z, 1.0e-6f);
+    EXPECT_GT(minimum_body_z_down, cosf(radians(15.0f)));
+
+    float roll_rad;
+    float pitch_rad;
+    float yaw_rad;
+    output.attitude_body_to_ned.to_euler(roll_rad, pitch_rad, yaw_rad);
+    EXPECT_NEAR(roll_rad, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(pitch_rad, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(yaw_rad, target.yaw_rad, 1.0e-6f);
+
+    // Reverse the vertical error. The force increment now points back into the
+    // attainable domain, so conditional anti-windup must release immediately.
+    target.velocity_ned_ms.z = -0.7f;
+    for (uint8_t i = 0; i < 100; i++) {
+        controller.update(state, target, 0.01f, output);
+    }
+    EXPECT_GT(output.integral_error_m.z, expected_zero_force_integral_z_m);
+    EXPECT_LT(output.specific_force_ned_mss.z, -GRAVITY_MSS * 0.05f);
+    EXPECT_GT(output.thrust_vector_ned.length(), 0.0f);
+}
+
+TEST(AC_Geometric_Position_PID, UpwardTiltForceIsNotProjected)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.accel_ned_mss = Vector3f{2.0f, -1.0f, 0.0f};
+    target.yaw_rad = 0.3f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Gains gains {};
+    const AC_Geometric_Position_Output output = run_position_pid(gains, state, target);
+
+    EXPECT_NEAR(output.thrust_vector_ned.x, output.specific_force_ned_mss.x, 1.0e-6f);
+    EXPECT_NEAR(output.thrust_vector_ned.y, output.specific_force_ned_mss.y, 1.0e-6f);
+    EXPECT_NEAR(output.thrust_vector_ned.z, output.specific_force_ned_mss.z, 1.0e-6f);
+
+    Matrix3f attitude;
+    output.attitude_body_to_ned.rotation_matrix(attitude);
+    const Vector3f thrust_direction_ned = normalized(output.thrust_vector_ned);
+    EXPECT_NEAR(thrust_direction_ned.x, -attitude.colz().x, 1.0e-5f);
+    EXPECT_NEAR(thrust_direction_ned.y, -attitude.colz().y, 1.0e-5f);
+    EXPECT_NEAR(thrust_direction_ned.z, -attitude.colz().z, 1.0e-5f);
+    EXPECT_GT(attitude.colz().z, 0.0f);
+}
+
+TEST(AC_Geometric_Position_PID, NearZeroAttitudeRegularizationHasHysteresisAndRateReset)
+{
+    AC_Geometric_Position_PID controller;
+    AC_Geometric_Position_Gains gains {};
+    controller.set_gains(gains);
+
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.accel_ned_mss.x = 0.1f;
+    target.yaw_rad = 0.3f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Output output {};
+    // Establish a normal upward-force attitude and a valid finite-difference
+    // history before crossing the regularisation boundary.
+    controller.update(state, target, 0.01f, output);
+    controller.update(state, target, 0.01f, output);
+    EXPECT_GT(output.thrust_vector_ned.length(), 0.0f);
+
+    // Four percent of hover force enters the level-yaw domain. The upward
+    // collective remains available; only its ill-conditioned direction is
+    // regularised. The transition uses the caller fallback, not delta-R/dt.
+    target.accel_ned_mss.z = GRAVITY_MSS * 0.96f;
+    target.omega_body_rads = Vector3f{0.12f, -0.08f, 0.9f};
+    target.yaw_rate_rads = 0.2f;
+    controller.update(state, target, 0.01f, output);
+    EXPECT_NEAR(output.thrust, GRAVITY_MSS * 0.04f, 1.0e-5f);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.x, target.omega_body_rads.x, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.y, target.omega_body_rads.y, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.z, target.yaw_rate_rads, 1.0e-6f);
+    EXPECT_NEAR(output.omega_dot_body_radss.length(), 0.0f, 1.0e-6f);
+
+    // Six percent lies between the 5% entry and 7% release thresholds, so it
+    // must remain regularised. The post-transition derivative reset suppresses
+    // a one-frame omega-dot impulse from the fallback seed.
+    target.accel_ned_mss.z = GRAVITY_MSS * 0.94f;
+    controller.update(state, target, 0.01f, output);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+    EXPECT_NEAR(output.omega_dot_body_radss.length(), 0.0f, 1.0e-6f);
+
+    // Eight percent releases regularisation. This attitude switch also uses
+    // fallback rates and resets the derivative path.
+    target.accel_ned_mss.z = GRAVITY_MSS * 0.92f;
+    target.omega_body_rads = Vector3f{-0.11f, 0.07f, -0.8f};
+    target.yaw_rate_rads = -0.15f;
+    controller.update(state, target, 0.01f, output);
+    EXPECT_GT(output.thrust_vector_ned.length(), 0.0f);
+    EXPECT_NEAR(output.omega_body_rads.x, target.omega_body_rads.x, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.y, target.omega_body_rads.y, 1.0e-6f);
+    EXPECT_NEAR(output.omega_body_rads.z, target.yaw_rate_rads, 1.0e-6f);
+    EXPECT_NEAR(output.omega_dot_body_radss.length(), 0.0f, 1.0e-6f);
+
+    controller.update(state, target, 0.01f, output);
+    EXPECT_NEAR(output.omega_dot_body_radss.length(), 0.0f, 1.0e-6f);
+
+    // On the released side, 6% is retained by hysteresis; falling to 4%
+    // re-enters level-yaw regularisation.
+    target.accel_ned_mss.z = GRAVITY_MSS * 0.94f;
+    controller.update(state, target, 0.01f, output);
+    EXPECT_GT(output.thrust_vector_ned.length(), 0.0f);
+    target.accel_ned_mss.z = GRAVITY_MSS * 0.96f;
+    controller.update(state, target, 0.01f, output);
+    EXPECT_NEAR(output.thrust_vector_ned.length(), 0.0f, 1.0e-6f);
+}
+
 AP_GTEST_MAIN()

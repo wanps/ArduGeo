@@ -696,6 +696,11 @@ bool AC_PosControl::NE_is_active() const
 // Requires all desired targets to be pre-set using the input_* or set_* methods.
 void AC_PosControl::NE_update_controller()
 {
+    // A native feedback update takes ownership of the complete NED target.
+    // The external publication API intentionally has no hybrid per-axis
+    // semantics, so either native axis update invalidates that ownership.
+    clear_external_reference();
+
     // check for ekf xy position reset
     NE_handle_ekf_reset();
 
@@ -1071,6 +1076,10 @@ bool AC_PosControl::D_is_active() const
 // Desired position, velocity, and acceleration must be set before calling.
 void AC_PosControl::D_update_controller()
 {
+    // See NE_update_controller(): native feedback and externally owned full
+    // NED references are mutually exclusive controller-ownership states.
+    clear_external_reference();
+
     // check for ekf z-axis position reset
     D_handle_ekf_reset();
 
@@ -1187,6 +1196,70 @@ void AC_PosControl::set_pos_vel_accel_NE_m(const Vector2p& pos_ne_m, const Vecto
     _pos_desired_ned_m.xy() = pos_ne_m;
     _vel_desired_ned_ms.xy() = vel_ne_ms;
     _accel_desired_ned_mss.xy() = accel_ne_mss;
+}
+
+bool AC_PosControl::publish_external_reference_NED_m(const Vector3p& pos_ned_m,
+                                                     const Vector3f& vel_ned_ms,
+                                                     const Vector3f& accel_ned_mss)
+{
+    const Vector3f pos_ned_m_float = pos_ned_m.tofloat();
+    if (pos_ned_m_float.is_nan() || pos_ned_m_float.is_inf() ||
+        vel_ned_ms.is_nan() || vel_ned_ms.is_inf() ||
+        accel_ned_mss.is_nan() || accel_ned_mss.is_inf()) {
+        // Fail closed.  A rejected new publication must not leave the
+        // previous external target looking fresh for generic consumers.
+        _external_reference_valid = false;
+        return false;
+    }
+
+    // These are compatibility/publication caches only. Do not call
+    // update_all(), alter PID state, or refresh the native controller ticks.
+    _pos_desired_ned_m = pos_ned_m;
+    _pos_target_ned_m = pos_ned_m;
+    _vel_desired_ned_ms = vel_ned_ms;
+    _vel_target_ned_ms = vel_ned_ms;
+    _accel_desired_ned_mss = accel_ned_mss;
+    _accel_target_ned_mss = accel_ned_mss;
+    _external_reference_ticks = AP::scheduler().ticks32();
+    _external_reference_valid = true;
+    return true;
+}
+
+void AC_PosControl::clear_external_reference()
+{
+    _external_reference_valid = false;
+}
+
+bool AC_PosControl::external_reference_is_active() const
+{
+    return _external_reference_valid &&
+           AP::scheduler().ticks32() - _external_reference_ticks <= 1;
+}
+
+Vector3f AC_PosControl::get_pos_error_NED_m() const
+{
+    if (external_reference_is_active()) {
+        return (_pos_target_ned_m - _pos_estimate_ned_m).tofloat();
+    }
+    return Vector3f{_p_pos_ne_m.get_error().x,
+                    _p_pos_ne_m.get_error().y,
+                    _p_pos_d_m.get_error()};
+}
+
+float AC_PosControl::get_pos_error_NE_m() const
+{
+    if (external_reference_is_active()) {
+        return (_pos_target_ned_m.xy() - _pos_estimate_ned_m.xy()).tofloat().length();
+    }
+    return _p_pos_ne_m.get_error().length();
+}
+
+float AC_PosControl::get_pos_error_D_m() const
+{
+    if (external_reference_is_active()) {
+        return float(_pos_target_ned_m.z - _pos_estimate_ned_m.z);
+    }
+    return _p_pos_d_m.get_error();
 }
 
 // Converts lean angles (rad) to NED acceleration in m/s².
@@ -1310,7 +1383,7 @@ bool AC_PosControl::get_posvelaccel_offset(Vector3f &pos_offset_ned_m, Vector3f 
 // Used in LUA
 bool AC_PosControl::get_vel_target(Vector3f &vel_target_ned_ms)
 {
-    if (!NE_is_active() || !D_is_active()) {
+    if (!NE_reference_is_active() || !D_reference_is_active()) {
         return false;
     }
 
@@ -1322,7 +1395,7 @@ bool AC_PosControl::get_vel_target(Vector3f &vel_target_ned_ms)
 // Used in LUA
 bool AC_PosControl::get_accel_target(Vector3f &accel_target_ned_mss)
 {
-    if (!NE_is_active() || !D_is_active()) {
+    if (!NE_reference_is_active() || !D_reference_is_active()) {
         return false;
     }
 
@@ -1498,7 +1571,7 @@ void AC_PosControl::NED_standby_reset()
 // Writes position controller diagnostic logs (PSCN, PSCE, etc).
 void AC_PosControl::write_log()
 {
-    if (NE_is_active()) {
+    if (NE_is_active() && !external_reference_is_active()) {
         float accel_n_mss, accel_e_mss;
         lean_angles_to_accel_NE_mss(accel_n_mss, accel_e_mss);
 
@@ -1522,7 +1595,7 @@ void AC_PosControl::write_log()
         }
     }
 
-    if (D_is_active()) {
+    if (D_is_active() && !external_reference_is_active()) {
         // Log Down-axis position control (PSCD)
         Write_PSCD(_pos_desired_ned_m.z, _pos_target_ned_m.z, _pos_estimate_ned_m.z,
                    _vel_desired_ned_ms.z, _vel_target_ned_ms.z, _vel_estimate_ned_ms.z,

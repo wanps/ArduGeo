@@ -67,6 +67,16 @@ void Mode::_TakeOff::stop()
     }
 }
 
+// Clear a stale takeoff epoch without changing land detection.  This is used
+// after disarm, where stop()'s throttle-based airborne inference would be a
+// side effect from the previous armed frame rather than evidence of flight.
+void Mode::_TakeOff::reset()
+{
+    _running = false;
+    take_off_start_alt_m = 0.0f;
+    take_off_complete_alt_m = 0.0f;
+}
+
 // do_pilot_takeoff_ms - controls the vertical position controller during the process of taking off
 //  take off is complete when the vertical target reaches the take off altitude.
 //  climb is cancelled if pilot_climb_rate_ms becomes negative
@@ -96,17 +106,28 @@ void Mode::_TakeOff::do_pilot_takeoff_ms(float pilot_climb_rate_ms)
             copter.set_land_complete(false);
         }
     } else {
-        float pos_d_m = -take_off_complete_alt_m;
-        float vel_d_ms = -pilot_climb_rate_ms;
+        update_pva_target_ms(pilot_climb_rate_ms);
+    }
+}
 
-        // command the aircraft to the take off altitude and current pilot climb rate
-        copter.pos_control->input_pos_vel_accel_D_m(pos_d_m, vel_d_ms, 0.0);
+// Generate only the jerk-limited vertical PVA reference for takeoff.  This is
+// shared by the native takeoff path and by full-geometric Loiter, where the
+// geometric controller owns feedback and motor output from the first takeoff
+// frame and the native throttle ramp must not be used.
+void Mode::_TakeOff::update_pva_target_ms(float pilot_climb_rate_ms)
+{
+    if (!_running) {
+        return;
+    }
 
-        // stop take off early and return if negative climb rate is commanded or we are within 0.1% of our take off altitude
-        if (is_negative(pilot_climb_rate_ms) ||
-            (take_off_complete_alt_m  - take_off_start_alt_m) * 0.999f < copter.pos_control->get_pos_desired_U_m() - take_off_start_alt_m) {
-            stop();
-        }
+    float pos_d_m = -take_off_complete_alt_m;
+    float vel_d_ms = -pilot_climb_rate_ms;
+    copter.pos_control->input_pos_vel_accel_D_m(pos_d_m, vel_d_ms, 0.0);
+
+    if (is_negative(pilot_climb_rate_ms) ||
+        (take_off_complete_alt_m - take_off_start_alt_m) * 0.999f <
+            copter.pos_control->get_pos_desired_U_m() - take_off_start_alt_m) {
+        stop();
     }
 }
 

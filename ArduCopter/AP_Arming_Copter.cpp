@@ -746,6 +746,32 @@ bool AP_Arming_Copter::arm(const AP_Arming::Method method, const bool do_arming_
     copter.g2.smart_rtl.set_home(copter.position_ok());
 #endif
 
+    // Logger startup, notifications and home initialisation above may take
+    // longer than a mode's prepared-output freshness budget.  Give the mode a
+    // final synchronous refresh/check immediately before the motor-arm commit
+    // so a nominal full-geometric arm cannot begin with one stale native frame.
+    if (!copter.flightmode->prepare_for_arming(method)) {
+        AP_Notify::events.arming_failed = true;
+        AP_Notify::flags.armed = false;
+        // AP_Arming::arm() has already committed its internal armed state,
+        // even though soft-armed and AP_Motors are still false here.  Roll
+        // that state back with an internal method which cannot be rejected by
+        // pilot-method policy.  In particular, reusing Method::RUDDER would
+        // fail when ARMING_RUDDER permits arm-only operation and would leave
+        // AP_Arming permanently armed while the motors remain disarmed.
+        if (!AP_Arming::disarm(AP_Arming::Method::UNKNOWN, false)) {
+            INTERNAL_ERROR(AP_InternalError::error_t::flow_of_control);
+        }
+#if HAL_LOGGING_ENABLED
+        // Keep the logger armed until AP_Arming records the compensating
+        // disarm event, then close/transition it like a normal disarm.
+        AP::logger().set_vehicle_armed(false);
+#endif
+        copter.failsafe_enable();
+        in_arm_motors = false;
+        return false;
+    }
+
     hal.util->set_soft_armed(true);
 
 #if HAL_SPRAYER_ENABLED

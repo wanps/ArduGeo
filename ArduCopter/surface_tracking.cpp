@@ -70,6 +70,20 @@ float Copter::SurfaceTracking::get_dist_for_logging() const
     return ((surface == Surface::CEILING) ? copter.rangefinder_up_state.alt_m : copter.rangefinder_state.alt_m);
 }
 
+bool Copter::SurfaceTracking::active() const
+{
+    switch (surface) {
+    case Surface::GROUND:
+        return copter.rangefinder_alt_ok() && (copter.rangefinder_state.glitch_count == 0);
+    case Surface::CEILING:
+        return copter.rangefinder_up_ok() && (copter.rangefinder_up_state.glitch_count == 0);
+    case Surface::NONE:
+        return false;
+    }
+
+    return false;
+}
+
 // set direction
 void Copter::SurfaceTracking::set_surface(Surface new_surface)
 {

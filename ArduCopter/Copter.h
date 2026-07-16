@@ -290,6 +290,9 @@ private:
         // initialise surface tracking
         void init(Surface surf) { surface = surf; }
 
+        // true only while the selected surface has a healthy, glitch-free sensor
+        bool active() const;
+
     private:
         Surface surface;
         uint32_t last_update_ms;    // system time of last update to target_alt_m
@@ -480,6 +483,10 @@ private:
     AC_PosControl *pos_control;
     AC_GeometricControl geometric_control;
     uint32_t geometric_motor_output_last_ms = 0;
+    uint32_t main_rate_controller_frame_count = 0;
+    uint32_t geometric_motor_output_frame_count = 0;
+    uint32_t native_rate_controller_frame_count = 0;
+    bool geometric_motor_output_was_active = false;
     AC_WPNav *wp_nav;
     AC_Loiter *loiter_nav;
 
@@ -741,8 +748,13 @@ private:
     float get_pilot_speed_dn_adjusted_ms() const;
     void run_rate_controller_main();
     bool geometric_motor_output_active() const;
+    bool geometric_motor_output_is_valid() const;
+    uint8_t geometric_motor_output_failure_flags() const;
     bool geometric_motor_output_blocked_by_rate_thread() const;
     uint32_t geometric_motor_output_age_ms(uint32_t now_ms) const;
+    uint32_t main_rate_controller_frames() const { return main_rate_controller_frame_count; }
+    uint32_t geometric_motor_output_frames() const { return geometric_motor_output_frame_count; }
+    uint32_t native_rate_controller_frames() const { return native_rate_controller_frame_count; }
     void geometric_motor_output_to_motors();
 
     // if AP_INERTIALSENSOR_FAST_SAMPLE_WINDOW_ENABLED
@@ -928,6 +940,16 @@ private:
     void Log_Write_SysID_Data(float waveform_time, float waveform_sample, float waveform_freq_hz, float angle_x_degs, float angle_y_degs, float angle_z_degs, float accel_x_mss, float accel_y_mss, float accel_z_mss);
     void Log_Write_Vehicle_Startup_Messages();
     void Log_Write_Rate_Thread_Dt(float dt, float dtAvg, float dtMax, float dtMin);
+    void Log_Write_Geometric_Full_Lifecycle(uint8_t phase, uint32_t main_frames, uint32_t geometric_frames, uint32_t native_frames);
+    void Log_Write_Geometric_Loiter_Lifecycle(uint8_t phase, uint32_t main_frames, uint32_t geometric_frames, uint32_t native_frames, float throttle);
+    void Log_Write_Geometric_Output_State(bool motor_output_allowed,
+                                          bool geometric_output_enabled,
+                                          bool rate_thread_active,
+                                          bool motor_output_written_recently,
+                                          uint32_t geometric_age_ms,
+                                          uint32_t motor_output_age_ms,
+                                          const AC_Geometric_Mapped_Output &mapped);
+    void Log_Write_Geometric_Frame_Counters();
 #endif  // HAL_LOGGING_ENABLED
 
     // mode.cpp
