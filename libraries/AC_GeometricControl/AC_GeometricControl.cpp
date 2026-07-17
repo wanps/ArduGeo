@@ -2,28 +2,28 @@
 
 #include <AP_HAL/AP_HAL.h>
 
-#define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f // Horizontal position gain k_x.
-#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 3.0f // Vertical position gain k_x.
+#define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f // Horizontal position gain K_x.
+#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 3.0f // Vertical position gain K_x.
 #define AC_GEOMETRIC_POS_KI_XY_DEFAULT 1.0f // Horizontal position integral gain.
 #define AC_GEOMETRIC_POS_KI_Z_DEFAULT 5.0f // Vertical position integral gain.
-#define AC_GEOMETRIC_POS_KV_XY_DEFAULT 2.0f // Horizontal velocity gain k_v.
-#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 3.0f // Vertical velocity gain k_v.
+#define AC_GEOMETRIC_POS_KV_XY_DEFAULT 2.0f // Horizontal velocity gain K_v.
+#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 3.0f // Vertical velocity gain K_v.
 #define AC_GEOMETRIC_POS_IMAX_XY_DEFAULT 10.0f // Horizontal position integral limit.
 #define AC_GEOMETRIC_POS_IMAX_Z_DEFAULT 10.0f // Vertical position integral limit.
-#define AC_GEOMETRIC_POS_INT_C_DEFAULT 1.0f // Position integral error weight c_x.
-#define AC_GEOMETRIC_ATT_KR_X_DEFAULT 4.0f // Roll attitude gain k_R.
-#define AC_GEOMETRIC_ATT_KR_Y_DEFAULT 4.0f // Pitch attitude gain k_R.
-#define AC_GEOMETRIC_ATT_KR_Z_DEFAULT 2.0f // Yaw attitude gain k_R.
-#define AC_GEOMETRIC_ATT_KO_X_DEFAULT 0.2f // Roll angular-rate gain k_Omega.
-#define AC_GEOMETRIC_ATT_KO_Y_DEFAULT 0.2f // Pitch angular-rate gain k_Omega.
-#define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.4f // Yaw angular-rate gain k_Omega.
+#define AC_GEOMETRIC_POS_INT_C_DEFAULT 1.0f // Position integral error weight C_x.
+#define AC_GEOMETRIC_ATT_KR_X_DEFAULT 4.0f // Roll attitude gain K_R.
+#define AC_GEOMETRIC_ATT_KR_Y_DEFAULT 4.0f // Pitch attitude gain K_R.
+#define AC_GEOMETRIC_ATT_KR_Z_DEFAULT 2.0f // Yaw attitude gain K_R.
+#define AC_GEOMETRIC_ATT_KO_X_DEFAULT 0.2f // Roll angular-rate gain K_Omega.
+#define AC_GEOMETRIC_ATT_KO_Y_DEFAULT 0.2f // Pitch angular-rate gain K_Omega.
+#define AC_GEOMETRIC_ATT_KO_Z_DEFAULT 0.4f // Yaw angular-rate gain K_Omega.
 #define AC_GEOMETRIC_ATT_KI_X_DEFAULT 0.0f // Roll attitude integral gain.
 #define AC_GEOMETRIC_ATT_KI_Y_DEFAULT 0.0f // Pitch attitude integral gain.
 #define AC_GEOMETRIC_ATT_KI_Z_DEFAULT 0.1f // Yaw attitude integral gain.
 #define AC_GEOMETRIC_ATT_IMAX_X_DEFAULT 0.0f // Roll attitude integral limit.
 #define AC_GEOMETRIC_ATT_IMAX_Y_DEFAULT 0.0f // Pitch attitude integral limit.
 #define AC_GEOMETRIC_ATT_IMAX_Z_DEFAULT 1.0f // Yaw attitude integral limit.
-#define AC_GEOMETRIC_ATT_INT_C_DEFAULT 0.5f // Attitude integral error weight c_R.
+#define AC_GEOMETRIC_ATT_INT_C_DEFAULT 0.5f // Attitude integral error weight C_R.
 #define AC_GEOMETRIC_ATT_J_X_DEFAULT 0.010f // Roll-axis inertia model Jx.
 #define AC_GEOMETRIC_ATT_J_Y_DEFAULT 0.020f // Pitch-axis inertia model Jy.
 #define AC_GEOMETRIC_ATT_J_Z_DEFAULT 0.020f // Yaw-axis inertia model Jz.
@@ -49,7 +49,7 @@
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Param: POS_KX_XY
     // @DisplayName: Geometric position horizontal Kx
-    // @Description: Lee SE(3) position error gain k_x for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Description: Lee SE(3) position error gain K_x for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -57,7 +57,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KX_Z
     // @DisplayName: Geometric position vertical Kx
-    // @Description: Lee SE(3) position error gain k_x for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Description: Lee SE(3) position error gain K_x for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -65,7 +65,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KI_XY
     // @DisplayName: Geometric position horizontal Ki
-    // @Description: Geometric position integral gain k_i for the horizontal axes. This multiplies e_XI = integral(e_v + POS_INT_C*e_x). It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Description: Geometric position integral gain K_I for the horizontal axes. This multiplies e_I^x = integral(e_v + POS_INT_C*e_x). It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -73,7 +73,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KI_Z
     // @DisplayName: Geometric position vertical Ki
-    // @Description: Geometric position integral gain k_i for the vertical axis. This multiplies e_XI = integral(e_v + POS_INT_C*e_x). It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Description: Geometric position integral gain K_I for the vertical axis. This multiplies e_I^x = integral(e_v + POS_INT_C*e_x). It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -81,7 +81,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KV_XY
     // @DisplayName: Geometric velocity horizontal Kv
-    // @Description: Lee SE(3) velocity error gain k_v for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Description: Lee SE(3) velocity error gain K_v for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -89,7 +89,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_KV_Z
     // @DisplayName: Geometric velocity vertical Kv
-    // @Description: Lee SE(3) velocity error gain k_v for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Description: Lee SE(3) velocity error gain K_v for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -97,7 +97,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KR_X
     // @DisplayName: Geometric attitude roll KR
-    // @Description: Lee SO(3) attitude error gain k_R for the body X axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric roll output.
+    // @Description: Lee SO(3) attitude error gain K_R for the body X axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric roll output.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -105,7 +105,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KR_Y
     // @DisplayName: Geometric attitude pitch KR
-    // @Description: Lee SO(3) attitude error gain k_R for the body Y axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric pitch output.
+    // @Description: Lee SO(3) attitude error gain K_R for the body Y axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric pitch output.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -113,7 +113,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KR_Z
     // @DisplayName: Geometric attitude yaw KR
-    // @Description: Lee SO(3) attitude error gain k_R for the body Z axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric yaw output.
+    // @Description: Lee SO(3) attitude error gain K_R for the body Z axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric yaw output.
     // @Range: 0 20
     // @Increment: 0.01
     // @User: Advanced
@@ -121,7 +121,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KO_X
     // @DisplayName: Geometric angular velocity roll KOmega
-    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body X axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric roll output.
+    // @Description: Lee SO(3) angular velocity error gain K_Omega for the body X axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric roll output.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -129,7 +129,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KO_Y
     // @DisplayName: Geometric angular velocity pitch KOmega
-    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body Y axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric pitch output.
+    // @Description: Lee SO(3) angular velocity error gain K_Omega for the body Y axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric pitch output.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -137,7 +137,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KO_Z
     // @DisplayName: Geometric angular velocity yaw KOmega
-    // @Description: Lee SO(3) angular velocity error gain k_Omega for the body Z axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric yaw output.
+    // @Description: Lee SO(3) angular velocity error gain K_Omega for the body Z axis. This affects the geometric observer moment proxy and, when geometric motor output is enabled, the active geometric yaw output.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -211,7 +211,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_IMAX_XY
     // @DisplayName: Geometric position horizontal integrator limit
-    // @Description: Limit applied to the horizontal geometric position integral state e_XI before the Ki term is applied. The integral state has units of meters because it integrates velocity error plus POS_INT_C times position error. A value of zero disables horizontal integral accumulation.
+    // @Description: Limit applied to the horizontal geometric position integral state e_I^x before the K_I term is applied. The integral state has units of meters because it integrates velocity error plus POS_INT_C times position error. A value of zero disables horizontal integral accumulation.
     // @Range: 0 20
     // @Units: m
     // @Increment: 0.01
@@ -220,7 +220,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_IMAX_Z
     // @DisplayName: Geometric position vertical integrator limit
-    // @Description: Limit applied to the vertical geometric position integral state e_XI before the Ki term is applied. The integral state has units of meters because it integrates velocity error plus POS_INT_C times position error. A value of zero disables vertical integral accumulation.
+    // @Description: Limit applied to the vertical geometric position integral state e_I^x before the K_I term is applied. The integral state has units of meters because it integrates velocity error plus POS_INT_C times position error. A value of zero disables vertical integral accumulation.
     // @Range: 0 20
     // @Units: m
     // @Increment: 0.01
@@ -229,7 +229,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KI_Z
     // @DisplayName: Geometric yaw integral gain
-    // @Description: Yaw geometric integral gain applied to the attitude-channel integral state e_Iz. This term is intended to reject slow yaw bias and drift.
+    // @Description: Yaw geometric integral gain applied to the z-axis of attitude integral state e_I^R. This term is intended to reject slow yaw bias and drift.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -245,7 +245,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_INT_C
     // @DisplayName: Geometric attitude integral error weight
-    // @Description: Attitude-error weight used in the geometric integral state e_I = integral(e_Omega + c*e_R). This has no effect on axes with zero attitude integral gain.
+    // @Description: Attitude-error weight C_R used in e_I^R = integral(e_Omega + C_R*e_R). This has no effect on axes with zero attitude integral gain.
     // @Range: 0 10
     // @Increment: 0.01
     // @User: Advanced
@@ -253,7 +253,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KI_X
     // @DisplayName: Geometric roll integral gain
-    // @Description: Roll geometric integral gain applied to the attitude-channel integral state e_Ix. This defaults to zero so roll remains PD unless explicitly enabled.
+    // @Description: Roll geometric integral gain applied to the x-axis of attitude integral state e_I^R. This defaults to zero so roll remains PD unless explicitly enabled.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -261,7 +261,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: ATT_KI_Y
     // @DisplayName: Geometric pitch integral gain
-    // @Description: Pitch geometric integral gain applied to the attitude-channel integral state e_Iy. This defaults to zero so pitch remains PD unless explicitly enabled.
+    // @Description: Pitch geometric integral gain applied to the y-axis of attitude integral state e_I^R. This defaults to zero so pitch remains PD unless explicitly enabled.
     // @Range: 0 5
     // @Increment: 0.001
     // @User: Advanced
@@ -386,7 +386,7 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
 
     // @Param: POS_INT_C
     // @DisplayName: Geometric position integral error weight
-    // @Description: Position-error weight c_x used in the geometric PID position integral state e_XI = integral(e_v + c_x*e_x). This has no effect on axes with zero position integral gain.
+    // @Description: Position-error weight C_x used in the geometric PID position integral state e_I^x = integral(e_v + C_x*e_x). This has no effect on axes with zero position integral gain.
     // @Range: 0 10
     // @Increment: 0.01
     // @User: Advanced
@@ -467,6 +467,9 @@ void AC_GeometricControl::update_gains_from_params()
 {
     // Refreshing AP_Param-backed gains here keeps QGC/MAVProxy parameter
     // changes live during SITL tuning without requiring a controller restart.
+    // Generic storage names map as p=K_x, d=K_v, and i=K_I.
+    // The d field multiplies velocity error e_v; it is not a numerical
+    // derivative of the filtered position error.
     AC_Geometric_Position_Gains position_gains {};
     position_gains.p = Vector3f{_pos_kx_xy.get(), _pos_kx_xy.get(), _pos_kx_z.get()};
     position_gains.i = Vector3f{_pos_ki_xy.get(), _pos_ki_xy.get(), _pos_ki_z.get()};
@@ -483,6 +486,8 @@ void AC_GeometricControl::update_gains_from_params()
     position_filter_hz.omega_dot_c = _omega_dot_c_filt_hz.get();
     _position_pid.set_filter_hz(position_filter_hz);
 
+    // Attitude storage maps to K_R, K_Omega, K_I, and C_R in the SO(3)
+    // equations; the names describe controller roles, not Euler-angle PIDs.
     AC_Geometric_Attitude_Gains attitude_gains {};
     attitude_gains.attitude_p = Vector3f{_att_kr_x.get(), _att_kr_y.get(), _att_kr_z.get()};
     attitude_gains.omega_p = Vector3f{_att_ko_x.get(), _att_ko_y.get(), _att_ko_z.get()};
@@ -559,11 +564,13 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     }
     _shaped_target = position_target;
 
-    // The position channel owns the SE(3) coupling: it will eventually build
-    // thrust and desired attitude from position/velocity/heading targets.
+    // The shared translational stage always computes (A,f). With
+    // build_attitude_from_position it also derives (R_c,Omega_c,dot(Omega_c));
+    // otherwise it passes through the supplied direct attitude reference.
     _position_pid.update(state, position_target, dt, _output.position);
 
-    // Feed the position-generated desired attitude into the SO(3) attitude channel.
+    // The derived or pass-through attitude state becomes R_ref, Omega_ref and
+    // dot(Omega_ref) for the SO(3) attitude layer.
     AC_Geometric_Target attitude_target = position_target;
     attitude_target.attitude_body_to_ned = _output.position.attitude_body_to_ned;
     attitude_target.omega_body_rads = _output.position.omega_body_rads;
@@ -580,5 +587,7 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         _mom_norm_z.get()
     };
     _output_mapper.update(_output.position, _output.attitude, hover_throttle_norm(), moment_norm, _output.mapped);
+    // This timestamp marks computation freshness only. Vehicle code performs
+    // the separate geometric/native ownership decision and motor write.
     _last_update_ms = AP_HAL::millis();
 }

@@ -2,15 +2,17 @@
 
 #include "AC_Geometric_Types.h"
 
-// Converts physical-looking geometric outputs into the normalized command
-// space expected by the current ArduPilot integration. This layer is the only
-// place that knows about hover-throttle scaling and moment proxy normalisation.
+// Integration adapter between geometric outputs (f, M) and ArduPilot's
+// normalized actuator-intent vector u_geo. This is not a rotor-force
+// allocator: AP_Motors retains limiting, frame mixing, spool management,
+// and hardware output.
 class AC_Geometric_OutputMapper {
 public:
     AC_Geometric_OutputMapper() = default;
 
-    // Build shadow ArduPilot-facing commands from geometric outputs. The
-    // mapper does not write attitude_control or motors.
+    // Compute candidate normalized actuator intent only. The vehicle-level
+    // ownership gate decides whether this result is the sole actuator-intent
+    // writer for the current main-rate frame; this class does not write motors.
     void update(const AC_Geometric_Position_Output& position,
                 const AC_Geometric_Attitude_Output& attitude,
                 float hover_throttle_norm,

@@ -26,14 +26,16 @@ void AC_Geometric_OutputMapper::update(const AC_Geometric_Position_Output& posit
     output.attitude_body_to_ned = position.attitude_body_to_ned;
     output.rate_target_body_rads = attitude.rate_target_body_rads;
 
-    // First shadow mapping: f_d/m -> normalized throttle using hover throttle
-    // as the scale reference. Hover has thrust ~= GRAVITY_MSS.
+    // Collective mapping u_T = sat_[0,1](h*f/g). position.thrust is the
+    // specific-force scalar f, and h is the normalized hover-throttle
+    // reference (f ~= g at hover).
     output.throttle_norm_raw = hover_throttle * position.thrust / GRAVITY_MSS;
     output.throttle_norm = constrain_float(output.throttle_norm_raw, 0.0f, 1.0f);
     output.throttle_limited = !is_equal(output.throttle_norm, output.throttle_norm_raw);
 
-    // M_d proxy -> AP_Motors roll/pitch/yaw command scale. This is still a
-    // shadow command; AP_Motors inputs are normalized, not physical moments.
+    // u_i = sat_[-1,1](M_i/n_i), i in {roll, pitch, yaw}. The normalizers are
+    // interface normalization scales, not an actuator-effectiveness matrix.
+    // AP_Motors performs the downstream frame-specific mixing.
     output.rpy_norm_raw = Vector3f{
         attitude.moment.x / safe_norm.x,
         attitude.moment.y / safe_norm.y,

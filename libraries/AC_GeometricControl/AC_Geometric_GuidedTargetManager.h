@@ -2,10 +2,10 @@
 
 #include <AP_Math/AP_Math.h>
 
-// Owns the geometric Guided target semantics before setpoint shaping.  It
-// separates waypoint-style horizontal destination updates from full 3D
-// position-target updates so vehicle code does not need to infer altitude
-// intent from the measured vehicle state.
+// Owns Guided command semantics before setpoint shaping and geometric
+// feedback. It separates waypoint-style horizontal destination updates from
+// full 3D position-target updates so vehicle code does not need to infer
+// altitude intent from the measured vehicle state.
 class AC_Geometric_GuidedTargetManager {
 public:
     AC_Geometric_GuidedTargetManager() = default;

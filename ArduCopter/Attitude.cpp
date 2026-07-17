@@ -31,12 +31,16 @@ void Copter::run_rate_controller_main()
     pos_control->set_dt_s(last_loop_time_s);
     attitude_control->set_dt_s(last_loop_time_s);
 
+    // Frame-exclusive arbiter: when the main loop owns rate control, exactly
+    // one branch below writes roll, pitch, yaw and collective intent. The
+    // rate-thread configuration is rejected by the geometric gate and writes
+    // through its own native path. This is ownership selection, not blending.
     const uint8_t geometric_failure_flags = geometric_motor_output_failure_flags();
     const bool geometric_output_active = geometric_failure_flags == 0;
     if (geometric_motor_output_was_active && !geometric_output_active) {
-        // This task runs before update_flight_mode().  Complete the native
-        // controller handoff here so a frozen rate PID is never allowed to
-        // produce the first fallback motor output.
+        // Falling-edge state transfer rebuilds native attitude/rate state for
+        // fallback. In the normal main-thread case, rate_controller_run()
+        // below completes the handoff in this frame.
         const uint8_t mode_number = flightmode == nullptr ?
                                     UINT8_MAX :
                                     uint8_t(flightmode->mode_number());
@@ -114,6 +118,9 @@ bool Copter::geometric_motor_output_is_valid() const
 
 uint8_t Copter::geometric_motor_output_failure_flags() const
 {
+    // Geometric-output authorization predicate. Every mode, output-enable,
+    // scheduling, arming, controller-enable, freshness, finiteness and
+    // mode-safety term must pass before geometry is eligible.
     uint8_t failure_flags = 0;
     if (flightmode == nullptr || !flightmode->allows_geometric_motor_output()) {
         failure_flags |= GEO_FAIL_MODE;
@@ -160,9 +167,14 @@ void Copter::geometric_motor_output_to_motors()
 {
     const AC_Geometric_Mapped_Output& mapped = geometric_control.get_output().mapped;
 
+    // Mapper/mixer boundary: mapped is normalized actuator intent
+    // u_geo=(u_R,u_P,u_Y,u_T), not individual motor thrust. AP_Motors later
+    // applies spool logic, saturation and the configured frame mixer to form
+    // the per-motor command u_mot.
     geometric_motor_output_last_ms = millis();
 
     motors->set_roll(mapped.rpy_norm.x);
+    // Do not add stale native feed-forward to geometric R/P/Y intent.
     motors->set_roll_ff(0.0f);
     motors->set_pitch(mapped.rpy_norm.y);
     motors->set_pitch_ff(0.0f);

@@ -1816,6 +1816,10 @@ void ModeGuided::angle_control_run()
 
 bool ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
 {
+    // Historical name: this routine evaluates the shared geometric cascade.
+    // In observer-only configurations its result is diagnostic; when full
+    // output is prepared, the same mapped result becomes actuator intent after
+    // the frame-exclusive ownership gate authorizes it.
     AC_Geometric_State geometric_state {};
     if (!run_geometric_observer(target,
                                 option_is_enabled(Option::GeometricObserver),
@@ -1938,28 +1942,28 @@ bool ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
     // @Field: TLim: True if normalized throttle output was limited
 
     // @LoggerMessage: GEOO
-    // @Description: Geometric guided output mapper observer
+    // @Description: Geometric guided output mapper
     // @Field: TimeUS: Time since system startup
-    // @Field: TRaw: Raw normalized throttle shadow output
-    // @Field: TNorm: Limited normalized throttle shadow output
-    // @Field: TLim: True if normalized throttle shadow output was limited
-    // @Field: RCr: Shadow attitude roll
-    // @Field: RCp: Shadow attitude pitch
-    // @Field: RCy: Shadow attitude yaw
-    // @Field: RTx: Shadow body-rate target, X-Axis
-    // @Field: RTy: Shadow body-rate target, Y-Axis
-    // @Field: RTz: Shadow body-rate target, Z-Axis
+    // @Field: TRaw: Raw candidate normalized collective intent
+    // @Field: TNorm: Limited candidate normalized collective intent
+    // @Field: TLim: True if candidate normalized collective intent was limited
+    // @Field: RCr: Commanded geometric attitude roll
+    // @Field: RCp: Commanded geometric attitude pitch
+    // @Field: RCy: Commanded geometric attitude yaw
+    // @Field: RTx: Legacy diagnostic rate-target proxy, X-Axis
+    // @Field: RTy: Legacy diagnostic rate-target proxy, Y-Axis
+    // @Field: RTz: Legacy diagnostic rate-target proxy, Z-Axis
 
     // @LoggerMessage: GEOM
-    // @Description: Geometric guided motor mapper observer
+    // @Description: Geometric guided candidate actuator-intent mapper
     // @Field: TimeUS: Time since system startup
-    // @Field: RRaw: Raw normalized roll actuator shadow output
-    // @Field: PRaw: Raw normalized pitch actuator shadow output
-    // @Field: YRaw: Raw normalized yaw actuator shadow output
-    // @Field: Roll: Limited normalized roll actuator shadow output
-    // @Field: Pitch: Limited normalized pitch actuator shadow output
-    // @Field: Yaw: Limited normalized yaw actuator shadow output
-    // @Field: Lim: True if any actuator shadow output was limited
+    // @Field: RRaw: Raw candidate normalized roll actuator intent
+    // @Field: PRaw: Raw candidate normalized pitch actuator intent
+    // @Field: YRaw: Raw candidate normalized yaw actuator intent
+    // @Field: Roll: Limited candidate normalized roll actuator intent
+    // @Field: Pitch: Limited candidate normalized pitch actuator intent
+    // @Field: Yaw: Limited candidate normalized yaw actuator intent
+    // @Field: Lim: True if any candidate actuator intent was mapper-limited
 
     // @LoggerMessage: GEOX
     // @Description: Geometric motor-output hook status
@@ -2012,6 +2016,8 @@ bool ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
                                     (double)output.attitude.rate_target_body_rads.x,
                                     (double)output.attitude.rate_target_body_rads.y,
                                     (double)output.attitude.rate_target_body_rads.z);
+
+        copter.Log_Write_Geometric_Attitude_Error(output.attitude);
 
         float rc_roll_rad;
         float rc_pitch_rad;
@@ -2148,6 +2154,9 @@ bool ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
 void ModeGuided::prepare_geometric_position_observer(bool shape_position_target,
                                                      bool allow_trajectory_yaw)
 {
+    // Guided command handlers can accept a new target between main-rate
+    // frames. Prepare it synchronously so the next rate frame sees a fresh,
+    // semantically compatible command instead of a native-PID bridge frame.
     if (!geometric_motor_output_configured() ||
         _geometric_motor_output_rejected) {
         return;
@@ -2279,9 +2288,11 @@ void ModeGuided::update_geometric_angle_observer()
 
 bool ModeGuided::publish_geometric_position_reference()
 {
-    // Publication means the full-geometric path owns both the controller
-    // reference and actuator intent.  Observer-only, rejected, disabled and
-    // rate-thread paths must leave native caches under native ownership.
+    // Publish (x_d, v_d, a_d, R_c, Omega_c) as read-only
+    // compatibility state. This does not run native feedback, refresh native
+    // controller-run timestamps, or independently grant actuator ownership.
+    // Observer-only, rejected, disabled and rate-thread paths leave native
+    // caches native-owned.
     if (!geometric_motor_output_configured() ||
         _geometric_motor_output_rejected ||
         !copter.geometric_control.output_enabled() ||
@@ -2322,6 +2333,9 @@ void ModeGuided::update_geometric_position_observer(const Vector3p* position_tar
                                                     bool shape_position_target,
                                                     bool allow_trajectory_yaw)
 {
+    // Convert Guided command meaning into the common geometric PVA/yaw
+    // contract. Optional shaping belongs to the Guided front end; the
+    // downstream feedback cascade is independent of command source.
     AC_Geometric_Target geometric_target {};
     if (position_target_ned_m != nullptr) {
         geometric_target.position_ned_m = Vector3f{float(position_target_ned_m->x),

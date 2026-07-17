@@ -107,6 +107,33 @@ TEST(AC_Geometric_Attitude_PID, PositiveTargetAnglesProduceNegativeLeeError)
     }
 }
 
+TEST(AC_Geometric_Attitude_PID, ReportsGlobalSO3ConfigurationError)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    const AC_Geometric_Attitude_Gains gains {};
+    const float angles_rad[] {
+        0.0f,
+        radians(60.0f),
+        radians(120.0f),
+        radians(180.0f),
+    };
+
+    for (const float angle_rad : angles_rad) {
+        AC_Geometric_Target target {};
+        target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, angle_rad);
+
+        const AC_Geometric_Attitude_Output output = run_attitude_pid(gains, state, target);
+
+        EXPECT_NEAR(output.attitude_configuration_error,
+                    1.0f - cosf(angle_rad),
+                    1.0e-5f);
+        EXPECT_NEAR(output.attitude_error_angle_rad, angle_rad, 1.0e-4f);
+        EXPECT_NEAR(output.attitude_error.length(), fabsf(sinf(angle_rad)), 1.0e-5f);
+    }
+}
+
 TEST(AC_Geometric_Attitude_PID, AngularVelocityErrorProducesDampingMoment)
 {
     AC_Geometric_State state {};

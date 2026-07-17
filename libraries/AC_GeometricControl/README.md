@@ -453,6 +453,7 @@ Guided geometric logging is emitted while the observer level is enabled.
 | `GELC` | Observer-only/fallback Loiter comparison between geometric position output and native attitude/thrust-vector references; not emitted by the dedicated full-geometric path. |
 | `GEOP` | Position-channel errors, specific force command, projected thrust, commanded attitude, and ArduPilot reference attitude/thrust-vector comparison. |
 | `GEOA` | SO(3) attitude error, angular-rate error, integral error, moment proxy, and rate-target proxy. |
+| `GEOR` | Global SO(3) attitude diagnostics: direct configuration error `PsiR`, Lee-vector norm `ERn`, and principal relative rotation angle `Ang`; emitted by both Guided and Loiter. |
 | `GEOC` | Commanded attitude coupling diagnostics: `R_c`, native attitude target, position-generated `Omega_c`, `dot(Omega_c)`, and yaw inputs. |
 | `GEOS` | Raw and shaped position targets plus shaper and trajectory-yaw state. |
 | `GEOT` | Guided target semantics: target type, AutoYaw mode, pause state, shaping request, and trajectory-yaw permission. |

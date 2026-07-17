@@ -2,9 +2,9 @@
 
 #include "AC_Geometric_Types.h"
 
-// Reference shaper for geometric Guided position targets. It keeps an internal
-// x_d, v_d and a_d state, then advances that state toward the raw target using
-// ArduPilot's jerk-limited square-root shaping helpers before the position PID runs.
+// Guided reference shaper. It keeps an internal x_d, v_d and a_d state, then
+// advances it toward the raw Guided target with ArduPilot's jerk-limited
+// square-root helpers before geometric position feedback runs.
 class AC_Geometric_SetpointShaper {
 public:
     AC_Geometric_SetpointShaper() = default;

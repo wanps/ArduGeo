@@ -26,8 +26,9 @@ Mode::Mode(void) :
 
 void Mode::handle_geometric_motor_output_fallback()
 {
-    // Use the current AP_Motors collective as the first native shadow output
-    // and rebuild the frozen native rate-controller state from the latest gyro.
+    // State-transfer half of the atomic handoff selected in Attitude.cpp. Use
+    // the current AP_Motors collective to seed the native throttle cache and
+    // rebuild the frozen native attitude/rate state from the latest gyro.
     const float handoff_throttle = motors->get_throttle();
     attitude_control->set_throttle_out(handoff_throttle, false, g.throttle_filt);
     attitude_control->relax_attitude_controllers(ahrs.get_gyro_latest());
@@ -39,6 +40,9 @@ bool Mode::run_geometric_observer(const AC_Geometric_Target& target,
                                   bool enabled,
                                   AC_Geometric_State& state)
 {
+    // Common facade entry: sample geometric state X from EKF/AHRS, combine it
+    // with the mode-owned reference X_d, and evaluate the shared geometric
+    // position--attitude--mapper cascade. Motor ownership is decided later.
     copter.geometric_control.set_enabled(enabled);
     if (!enabled) {
         return false;
@@ -1033,6 +1037,9 @@ float Mode::get_avoidance_adjusted_climbrate_ms(float target_rate_ms)
 // send output to the motors, can be overridden by subclasses
 void Mode::output_to_motors()
 {
+    // Shared actuation boundary after controller ownership has been selected.
+    // AP_Motors applies spool state, output limits and the airframe mixer, then
+    // stages channel outputs; Copter::motors_output() performs the SRV/HAL push.
     motors->output();
 }
 

@@ -480,7 +480,22 @@ void Copter::Log_Write_Geometric_Loiter_Lifecycle(uint8_t phase,
     logger.WriteCriticalBlock(&pkt, sizeof(pkt));
 }
 
-// GEOX and GEFR are emitted by both Guided and Loiter.  Keep each dynamic
+// @LoggerMessage: GEOR
+// @Description: Global geometric SO(3) attitude-error diagnostics
+// @Field: TimeUS: Time since system startup
+// @Field: PsiR: Lee attitude configuration error in the range zero to two
+// @Field: ERn: Norm of the Lee attitude-error vector
+// @Field: Ang: Principal relative attitude angle in radians
+void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Output &attitude)
+{
+    logger.WriteStreaming("GEOR", "TimeUS,PsiR,ERn,Ang", "s--r", "F000", "Qfff",
+                          AP_HAL::micros64(),
+                          (double)attitude.attitude_configuration_error,
+                          (double)attitude.attitude_error.length(),
+                          (double)attitude.attitude_error_angle_rad);
+}
+
+// GEOR, GEOX and GEFR are emitted by both Guided and Loiter. Keep each dynamic
 // message registration in this single translation unit so the logger cannot
 // allocate separate FMT IDs for identical names from different mode files.
 void Copter::Log_Write_Geometric_Output_State(bool motor_output_allowed,

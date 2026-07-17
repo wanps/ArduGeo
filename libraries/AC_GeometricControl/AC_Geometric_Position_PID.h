@@ -2,9 +2,10 @@
 
 #include "AC_Geometric_Types.h"
 
-// Lee/Gao SE(3) position channel. It converts translational state errors and
-// feed-forward acceleration into a commanded resultant force, then constructs
-// the commanded attitude R_c that aligns body thrust with that force.
+// SE(3) translational channel. It converts translational errors and
+// feed-forward acceleration into A and applied f. When
+// build_attitude_from_position is true it constructs R_c from the feasible
+// force direction; otherwise it passes through the direct attitude reference.
 class AC_Geometric_Position_PID {
 public:
     AC_Geometric_Position_PID() = default;
@@ -30,7 +31,7 @@ private:
     AC_Geometric_Position_Filter_Hz _filter_hz;
     AC_Geometric_Position_Integral_Limits _integral_limits;
 
-    // The position integral follows e_XI = integral(e_v + c_x e_x). It is
+    // The position integral follows e_I^x = integral(e_v + C_x*e_x). It is
     // stored in SI units and bounded before the Ki term is applied.
     Vector3f _integral_error_m;
     Vector3f _position_error_filtered_m;

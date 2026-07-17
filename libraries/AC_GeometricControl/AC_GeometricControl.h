@@ -15,6 +15,13 @@
 // Vehicle code owns mode gating, safety checks and motor writes; this class
 // only shapes references, runs the geometric control cascade and exposes the
 // latest mapped command for the caller to consume.
+//
+// Shared geometric pipeline:
+// (X, X_d) -> (A, R_ref, Omega_ref, dot(Omega_ref), f)
+//          -> (e_R, e_Omega, e_I^R, M) -> u_geo.
+// R_ref is position-derived R_c in the coupled path or direct R_d in the
+// SO(3)-only path.
+// Guided and Loiter provide different references but share this cascade.
 class AC_GeometricControl {
 public:
     AC_GeometricControl();
@@ -50,6 +57,8 @@ private:
     void update_gains_from_params();
     float hover_throttle_norm() const;
 
+    // Controls whether the cascade computes. GEO_OUT_EN is a separate output
+    // permission, and vehicle-level mode/safety checks still decide ownership.
     bool _enabled = false;
 
     // The cascade is kept as separate components so future controllers can
@@ -64,6 +73,8 @@ private:
     AC_Geometric_Output _output;
     AC_Geometric_Target _raw_target;
     AC_Geometric_Target _shaped_target;
+    // Time of the latest computed mapped intent. Freshness alone does not
+    // prove that the vehicle-level arbiter selected or wrote it on this frame.
     uint32_t _last_update_ms = 0;
     bool _shaper_active = false;
 

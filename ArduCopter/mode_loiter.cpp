@@ -442,6 +442,9 @@ bool ModeLoiter::handle_geometric_ekf_resets()
 
 AC_Geometric_LoiterReference_Limits ModeLoiter::geometric_reference_limits() const
 {
+    // These are reference-generation limits, not geometric feedback gains.
+    // Horizontal speed is the minimum of the dedicated LREF, native Loiter,
+    // and EKF navigation limits; lean angle also bounds horizontal acceleration.
     const AC_Loiter::ReferenceConfig loiter_config = loiter_nav->get_reference_config();
     const AC_Geometric_LoiterReference_Profile profile =
         copter.geometric_control.get_loiter_reference_profile();
@@ -493,6 +496,9 @@ AC_Geometric_LoiterReference_Limits ModeLoiter::geometric_reference_limits() con
 
 void ModeLoiter::build_geometric_ground_safe_target(AC_Geometric_Target& target) const
 {
+    // Ground-safe boundary: measured state plus a_d=(0,0,g) cancels
+    // gravity in NED and yields nominally zero collective. AP_Motors still
+    // owns arming, interlock, idle and spool enforcement.
     target = {};
     target.position_ned_m = pos_control->get_pos_estimate_NED_m().tofloat();
     // Match the measured velocity as well as position so estimator noise does
@@ -518,6 +524,9 @@ bool ModeLoiter::run_geometric_loiter_reference(AltHoldModeState loiter_state,
                                                 bool& takeoff_stopped_this_cycle,
                                                 bool& ground_safe_prepared)
 {
+    // This mode front end maps pilot lean, climb-rate and yaw-rate requests
+    // into a dedicated PVA/yaw reference before the shared geometric cascade.
+    // A successful full-output frame does not reuse native Loiter feedback.
     takeoff_stopped_this_cycle = false;
     ground_safe_prepared = false;
 
@@ -619,6 +628,10 @@ bool ModeLoiter::run_geometric_loiter_reference(AltHoldModeState loiter_state,
         limits.speed_up_max_ms = MIN(limits.speed_up_max_ms,
                                      target_climb_rate_ms);
     }
+    // Integrate pilot motion into one coherent NED PVA/yaw reference. Neutral
+    // XY uses delayed jerk-limited braking; neutral/reversed Z and neutral yaw
+    // use their dedicated finite-time brake profiles. Raw-stick activity is
+    // kept separate from residual shaped motion so release is unambiguous.
     if (!_geometric_reference.update(input,
                                      limits,
                                      G_Dt,
@@ -682,6 +695,9 @@ void ModeLoiter::finish_geometric_lifecycle(AltHoldModeState loiter_state,
                                             bool takeoff_stopped_this_cycle,
                                             bool ground_safe_prepared)
 {
+    // Retain geometric intent through touchdown and AP_Motors GROUND_IDLE,
+    // then apply the established PILOT_THR_BHV disarm policy only at that
+    // safe spool boundary.
     // A pilot can cancel takeoff before liftoff.  Replace any last non-zero
     // target synchronously, then close that lifecycle epoch.
     if (takeoff_stopped_this_cycle &&
@@ -893,6 +909,9 @@ void ModeLoiter::write_geometric_lifecycle_frame(uint8_t phase) const
 bool ModeLoiter::update_geometric_observer(AltHoldModeState loiter_state,
                                            const AC_Geometric_Target* reference_target)
 {
+    // A non-null target is the dedicated full-geometric Loiter reference. A
+    // null target is the native-reference comparison/observer path and must
+    // not publish externally owned compatibility references.
     const bool dedicated_reference = reference_target != nullptr;
     const bool motor_output_option_requested = loiter_nav->geometric_motor_output_enabled();
     const bool motor_output_requested = geometric_motor_output_requested();
@@ -1127,6 +1146,7 @@ bool ModeLoiter::update_geometric_observer(AltHoldModeState loiter_state,
         const bool geometric_output_enabled = copter.geometric_control.output_enabled();
         const bool rate_thread_active = copter.geometric_motor_output_blocked_by_rate_thread();
         const bool motor_output_written_recently = motor_output_age_ms <= loiter_geometric_output_recent_ms;
+        copter.Log_Write_Geometric_Attitude_Error(output.attitude);
         AP::logger().WriteStreaming("GEOL", "TimeUS,St,Act,Wrote,Shp,PX,PY,PZ,VX,VY,VZ,AX,AY,AZ,Yaw,YRN", "QBBBBfffffffffff",
                                     AP_HAL::micros64(),
                                     (uint8_t)loiter_state,

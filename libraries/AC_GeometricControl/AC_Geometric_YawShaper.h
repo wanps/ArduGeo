@@ -2,9 +2,10 @@
 
 #include "AC_Geometric_Types.h"
 
-// Independent yaw reference shaper for the geometric SE(3) path. It follows
-// ArduPilot's angle/velocity/acceleration shaping helper but does not read or
-// write AC_AttitudeControl yaw target state.
+// Guided front-end yaw reference shaper. It follows ArduPilot's
+// angle/velocity/acceleration helper but owns yaw_d and the yaw-rate reference
+// independently of AC_AttitudeControl, keeping native attitude feedback outside
+// this path.
 class AC_Geometric_YawShaper {
 public:
     AC_Geometric_YawShaper() = default;

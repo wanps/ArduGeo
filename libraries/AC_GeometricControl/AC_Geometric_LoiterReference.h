@@ -4,7 +4,7 @@
 
 #include <AP_Param/AP_Param.h>
 
-// Slow, mode-specific command profile.  These values are intentionally
+// Mode-specific pilot-command profile. These values are intentionally
 // separate from the Guided setpoint shaper and from the native Loiter
 // position-correction controller.
 struct AC_Geometric_LoiterReference_Profile {
@@ -112,9 +112,10 @@ struct AC_Geometric_LoiterReference_Status {
     bool vertical_position_anchored = false;
 };
 
-// Generates an already-shaped PVA/yaw reference for pilot-controlled Loiter.
-// It owns no feedback controller state and deliberately has no dependency on
-// AC_PosControl, AC_AttitudeControl or AP_Motors.
+// Generates one internally consistent Loiter PVA/yaw reference from pilot
+// motion requests, including dedicated neutral/reversal braking. It owns no
+// feedback-controller state and has no dependency on AC_PosControl,
+// AC_AttitudeControl or AP_Motors.
 class AC_Geometric_LoiterReference {
 public:
     AC_Geometric_LoiterReference() = default;

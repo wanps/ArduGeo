@@ -9,10 +9,11 @@
 // - Body vectors use ArduPilot FRD: X forward, Y right, Z down.
 // - Attitude quaternions are body-to-NED. A matching rotation matrix has its
 //   columns as body basis vectors expressed in NED.
-// Paper notation is kept in comments only. Lee's SE(3) paper writes the
-// position-channel resultant command as A, while Gao uses
-// F_d for desired resultant force, f_d for projected total thrust, and M_d
-// for desired resultant moment.
+// Geometric data path: X and X_d feed the position layer, which produces
+// (A, R_ref, Omega_ref, dot(Omega_ref), f); the attitude layer produces
+// (e_R, e_Omega, e_I^R, M); the mapper produces normalized intent u_geo.
+// R_ref is position-derived R_c or, for direct SO(3) tracking, supplied R_d.
+// Symbols remain comments only; storage names follow ArduPilot conventions.
 struct AC_Geometric_State {
     // Current vehicle translational state in NED.
     Vector3f position_ned_m;
@@ -80,27 +81,28 @@ struct AC_Geometric_Yaw_Shaper_Limits {
 
 // Per-axis PID gains for the geometric position channel.
 struct AC_Geometric_Position_Gains {
-    Vector3f p;
-    Vector3f i;
-    Vector3f d;
-    // Position geometric integral weight c_x in
-    // e_XI = integral(e_v + c_x * e_x).
+    Vector3f p; // K_x: position-error gain.
+    Vector3f i; // K_I: integral-state gain.
+    Vector3f d; // K_v: velocity-error gain, not a numerical derivative.
+    // Position geometric integral weight C_x in
+    // e_I^x = integral(e_v + C_x*e_x).
     Vector3f integral_error_p;
 };
 
 // Per-axis PID gains for the Lee SO(3) attitude channel.
 struct AC_Geometric_Attitude_Gains {
-    Vector3f attitude_p;
-    Vector3f omega_p;
+    Vector3f attitude_p; // K_R: SO(3) attitude-error gain.
+    Vector3f omega_p; // K_Omega: body angular-rate-error gain.
     // Geometric integral gains. Roll/pitch default to zero parameters for now
     // to avoid coupling attitude integral action back into the position-generated R_c.
-    Vector3f attitude_i;
-    Vector3f integral_error_p;
+    Vector3f attitude_i; // K_I: geometric attitude-integral gain.
+    Vector3f integral_error_p; // C_R in integral(e_Omega + C_R*e_R).
 };
 
-// Diagonal rigid-body inertia model used by the Lee SO(3) moment formula.
-// Defaults follow the Gao quadrotor reference model
-// J = 10^-2 diag(1.1, 2.0, 2.3) kg*m*m and should be identified per vehicle.
+// Diagonal rigid-body inertia model used by the SO(3) moment equation. These
+// member initializers are the direct-construction/test fallback; Copter
+// refreshes the runtime model from GEO_ATT_J_* on every controller update.
+// The parameters should be identified for the actual vehicle.
 struct AC_Geometric_Attitude_Model {
     Vector3f inertia {0.011f, 0.020f, 0.023f};
 };
@@ -116,8 +118,8 @@ struct AC_Geometric_Position_Filter_Hz {
     float omega_dot_c = 0.0f;
 };
 
-// Per-axis limits for the geometric position integral state e_XI. The state has
-// units of m because it integrates velocity error plus c_x times position error.
+// Per-axis limits for the geometric position integral state e_I^x. The state
+// has units of m because it integrates velocity error plus C_x*e_x.
 struct AC_Geometric_Position_Integral_Limits {
     Vector3f integral_error_m;
 };
@@ -128,26 +130,28 @@ struct AC_Geometric_Attitude_Filter_Hz {
 };
 
 struct AC_Geometric_Attitude_Integral_Limits {
-    // Per-axis bounds for e_I. A zero axis disables that integrator.
+    // Per-axis bounds for e_I^R. A zero axis disables that integrator.
     Vector3f integral_error;
 };
 
 struct AC_Geometric_Position_Output {
-    // Commanded body-to-NED attitude/rate passed from the position channel
-    // to the attitude channel. In Lee notation this is R_c, not the external
-    // desired attitude R_d.
+    // Body-to-NED reference attitude/rate passed to the attitude channel. The
+    // coupled path supplies position-derived (R_c,Omega_c,dot(Omega_c)); the
+    // direct SO(3) path passes through (R_d,Omega_d,dot(Omega_d)).
     Quaternion attitude_body_to_ned;
     Vector3f omega_body_rads;
     Vector3f omega_dot_body_radss;
-    // Placeholder collective thrust command. This corresponds to the projected
-    // thrust quantity f_d in Gao notation, but is not connected to
-    // ArduPilot normalized throttle yet.
+    // Applied collective specific-force proxy f [m/s^2]. In the nominal domain
+    // f=-A^T R e_D; boundary handling may project it or set it to zero. The
+    // mapper converts f to u_T; this is neither newtons nor rotor force.
     float thrust = 0.0f;
     // Resultant command per unit mass in NED. This is Lee's A/m and Gao's
     // F_d/m. Hover is approximately {0, 0, -GRAVITY_MSS}; negative Z means
     // upward because NED uses positive down.
     Vector3f specific_force_ned_mss;
-    // Unnormalised ArduPilot-style thrust vector in NED used to construct R_c.
+    // Feasible, regularized copy of A used to construct the thrust direction
+    // d_T and R_c. It may differ from specific_force_ned_mss near the
+    // unidirectional or near-zero-collective boundary.
     Vector3f thrust_vector_ned;
     // Errors are exposed for logging and future Gao-style compensation terms.
     Vector3f position_error_m;
@@ -156,37 +160,51 @@ struct AC_Geometric_Position_Output {
 };
 
 struct AC_Geometric_Attitude_Output {
-    // Lee attitude and angular-rate errors used by the PD moment calculation.
+    // Lee SO(3) attitude-error vector e_R.
     Vector3f attitude_error;
-    Vector3f omega_error_rads;
-    // Geometric body-frame moment proxy. This corresponds to M_d in Gao
-    // notation, but is not sent directly to AP_Motors.
+    // Scalar SO(3) attitude diagnostics. The configuration error is
+    // Psi_R = 0.5*tr(I - R_ref^T*R) in [0, 2], while the principal relative
+    // rotation angle is in [0, pi]. Unlike norm(attitude_error), these
+    // remain informative at the antipodal 180-degree attitude.
+    float attitude_configuration_error = 0.0f;
+    float attitude_error_angle_rad = 0.0f;
+    Vector3f omega_error_rads; // Angular-rate error e_Omega.
+    // Geometric body-frame moment proxy M. The output mapper normalizes it;
+    // it is not an individual motor torque command.
     Vector3f moment;
-    // Geometric integral state e_I = integral(e_Omega + c*e_R).
+    // Geometric integral state e_I^R = integral(e_Omega + C_R*e_R).
     Vector3f integral_error;
-    // Temporary body-frame compatibility output for the existing ArduPilot rate-control path.
+    // Legacy diagnostic rate-target proxy. It is not a physical angular-rate
+    // reference and the active geometric path does not feed it to the native
+    // rate PID.
     Vector3f rate_target_body_rads;
 };
 
 struct AC_Geometric_Mapped_Output {
-    // Shadow ArduPilot-facing attitude command. This is R_c in body-to-NED
-    // form and is not applied to attitude_control yet.
+    // R_ref and the legacy rate-target proxy are compatibility/diagnostic
+    // mirrors; they are not passed through native attitude or rate feedback.
     Quaternion attitude_body_to_ned;
-    // Shadow body-frame rate command in rad/s. This is diagnostic only.
     Vector3f rate_target_body_rads;
-    // Raw normalized throttle before limiting. Computed from f_d/m using the
-    // mapper hover throttle reference.
+    // Raw normalized collective intent before limiting. It is computed from
+    // the scalar f using the mapper hover-throttle reference.
     float throttle_norm_raw = 0.0f;
-    // Limited normalized throttle in ArduPilot's 0..1 command range.
+    // Limited collective intent u_T in ArduPilot's 0..1 command range. When
+    // authorized, vehicle code passes it to the normal AP_Motors-facing path.
     float throttle_norm = 0.0f;
     bool throttle_limited = false;
-    // Shadow AP_Motors roll/pitch/yaw actuator commands. Vector axes map to
-    // set_roll(), set_pitch(), and set_yaw(); raw is before limiting.
+    // Normalized actuator intent (u_R,u_P,u_Y). On an authorized geometric
+    // frame these axes feed AP_Motors set_roll(), set_pitch(), and set_yaw();
+    // raw is the value before mapper limiting.
     Vector3f rpy_norm_raw;
     Vector3f rpy_norm;
+    // Mapper saturation precedes AP_Motors and does not report per-motor
+    // saturation or remaining mixer authority.
     bool rpy_limited = false;
 };
 
+// Snapshot of the three shared-cascade stages:
+// position=(A,R_ref,Omega_ref,dot(Omega_ref),f),
+// attitude=(e_R,e_Omega,e_I^R,M), and mapped=u_geo.
 struct AC_Geometric_Output {
     AC_Geometric_Position_Output position;
     AC_Geometric_Attitude_Output attitude;

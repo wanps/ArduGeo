@@ -149,7 +149,7 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     output.position_error_m = _position_error_filtered_m;
     output.velocity_error_ms = _velocity_error_filtered_ms;
 
-    // Geometric PID integral. The c_x weighting lets the integral term reject
+    // Geometric PID integral. The C_x weighting lets the integral term reject
     // constant disturbances without requiring raw position error integration.
     const Vector3f integral_input {
         output.velocity_error_ms.x + _gains.integral_error_p.x * output.position_error_m.x,
@@ -166,7 +166,7 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     constrain_integral(_integral_error_m, _integral_limits.integral_error_m);
 
     // Lee/Gao geometric PID position channel. The integral state follows the
-    // geometric PID form e_XI = integral(e_v + c_x * e_x).
+    // geometric PID form e_I^x = integral(e_v + C_x*e_x).
     // Lee writes the resultant command as A; Gao uses F_d.
     Vector3f accel_cmd_ned = target.accel_ned_mss;
     accel_cmd_ned.x += -_gains.p.x * output.position_error_m.x - _gains.d.x * output.velocity_error_ms.x - _gains.i.x * _integral_error_m.x;
@@ -206,6 +206,9 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     }
     output.integral_error_m = _integral_error_m;
 
+    // A = a_d - K_x*e_x - K_v*e_v - K_I*e_I^x - g*e_D, where
+    // e_D={0,0,1} in NED. At zero tracking error and level hover,
+    // A = {0, 0, -g} because NED is down-positive.
     output.specific_force_ned_mss = accel_cmd_ned;
     output.specific_force_ned_mss.z -= GRAVITY_MSS;
     // Keep a feasible, well-conditioned direction in NED for constructing R_c.
@@ -230,6 +233,9 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
     if (target.build_attitude_from_position) {
         // Full SE(3) coupling path: convert the desired force direction plus
         // yaw reference into R_c, then estimate Omega_c and dot(Omega_c).
+        // In the feasible non-regularized domain, R_c aligns commanded body
+        // -Z with d_T=A/|A| while retaining heading psi_d. The near-zero-force
+        // domain deliberately uses the regularized level-yaw attitude instead.
         output.attitude_body_to_ned = attitude_from_thrust_vector(output.thrust_vector_ned, target.yaw_rad);
         Vector3f fallback_omega_body_rads = target.omega_body_rads;
         fallback_omega_body_rads.z = target.yaw_rate_rads;
@@ -286,8 +292,12 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
 
     Matrix3f attitude;
     state.attitude_body_to_ned.rotation_matrix(attitude);
-    // Temporary scalar thrust placeholder for the paper quantity f_d/m.
-    // attitude.colz() is the body +Z axis expressed in NED.
+    // Nominal collective projection is f = -A^T R e_D. attitude.colz() is
+    // R*e_D, the current body +Z axis expressed in NED, so the leading minus
+    // sign gives f ~= g at level hover. The branches below apply the feasible
+    // force projection or zero at the multirotor boundary.
+    // The boundary branches below enforce the conventional multirotor domain
+    // f >= 0 and prevent discarded lateral force from leaking into collective.
     // At the unidirectional lower bound, no horizontal residual may leak into
     // collective through a tilted current b3 axis. Keep the raw specific force
     // above for logging, but explicitly apply zero thrust. In the near-zero

@@ -17,12 +17,18 @@ Vector3f apply_optional_lowpass(const Vector3f& input,
     return filtered;
 }
 
-// Lee/Gao attitude error e_R = vee(0.5 * (Rd^T * R - R^T * Rd)).
-// Both R and Rd are body-to-NED attitudes; their matrix columns are body
-// basis vectors expressed in NED. The vee extraction follows Matrix3 row
-// storage.
-Vector3f attitude_error_lee(const Quaternion& attitude_body_to_ned,
-                            const Quaternion& attitude_target_to_ned)
+// Let R_ref denote position-derived R_c or a direct target R_d. The attitude
+// error is e_R = vee(0.5 * (R_ref^T*R - R^T*R_ref)). Both matrices are
+// body-to-NED attitudes; their columns are body basis vectors expressed in
+// NED. The vee extraction follows Matrix3 row storage.
+struct LeeAttitudeError {
+    Vector3f vector;
+    float configuration_error = 0.0f;
+    float angle_rad = 0.0f;
+};
+
+LeeAttitudeError attitude_error_lee(const Quaternion& attitude_body_to_ned,
+                                    const Quaternion& attitude_target_to_ned)
 {
     Matrix3f attitude;
     Matrix3f attitude_target;
@@ -30,12 +36,23 @@ Vector3f attitude_error_lee(const Quaternion& attitude_body_to_ned,
     attitude_body_to_ned.rotation_matrix(attitude);
     attitude_target_to_ned.rotation_matrix(attitude_target);
 
-    const Matrix3f attitude_error_matrix = attitude_target.transposed() * attitude -
-                                           attitude.transposed() * attitude_target;
+    const Matrix3f attitude_relative = attitude_target.transposed() * attitude;
+    const Matrix3f attitude_error_matrix = attitude_relative - attitude_relative.transposed();
+    const float relative_trace = attitude_relative.a.x +
+                                 attitude_relative.b.y +
+                                 attitude_relative.c.z;
 
-    return Vector3f{attitude_error_matrix.c.y,
-                    attitude_error_matrix.a.z,
-                    attitude_error_matrix.b.x} * 0.5f;
+    LeeAttitudeError output {};
+    output.vector = Vector3f{attitude_error_matrix.c.y,
+                             attitude_error_matrix.a.z,
+                             attitude_error_matrix.b.x} * 0.5f;
+    output.configuration_error = constrain_float(0.5f * (3.0f - relative_trace),
+                                                  0.0f,
+                                                  2.0f);
+    output.angle_rad = acosf(constrain_float(1.0f - output.configuration_error,
+                                             -1.0f,
+                                             1.0f));
+    return output;
 }
 
 Vector3f rotate_target_body_to_current_body(const Quaternion& attitude_body_to_ned,
@@ -48,7 +65,7 @@ Vector3f rotate_target_body_to_current_body(const Quaternion& attitude_body_to_n
     attitude_body_to_ned.rotation_matrix(attitude);
     attitude_target_to_ned.rotation_matrix(attitude_target);
 
-    // Lee uses R^T * R_c to express desired angular terms in the current body frame.
+    // R^T*R_ref expresses reference-body angular terms in the current body frame.
     return attitude.mul_transpose(attitude_target * vector_target_body);
 }
 
@@ -97,10 +114,15 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
                                        float dt,
                                        AC_Geometric_Attitude_Output& output)
 {
-    output.attitude_error = attitude_error_lee(state.attitude_body_to_ned, target.attitude_body_to_ned);
+    const LeeAttitudeError attitude_diagnostics =
+        attitude_error_lee(state.attitude_body_to_ned, target.attitude_body_to_ned);
+    output.attitude_error = attitude_diagnostics.vector;
+    output.attitude_configuration_error = attitude_diagnostics.configuration_error;
+    output.attitude_error_angle_rad = attitude_diagnostics.angle_rad;
 
-    // Desired angular velocity and acceleration are defined in the target
-    // body frame; Lee's error equation compares them in the current body frame.
+    // e_Omega = Omega - R^T*R_ref*Omega_ref. Desired angular velocity and
+    // acceleration are defined in the reference body frame, so R^T*R_ref
+    // transports them into the current body frame.
     const Vector3f omega_target_current_body_rads =
         rotate_target_body_to_current_body(state.attitude_body_to_ned,
                                            target.attitude_body_to_ned,
@@ -121,8 +143,8 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
     }
     output.omega_error_rads = _omega_error_filtered_rads;
 
-    // Geometric PID attitude integral e_I = integral(e_Omega + c e_R).
-    // Each axis can be independently disabled with zero Ki or zero IMAX.
+    // Geometric PID attitude integral e_I^R = integral(e_Omega + C_R*e_R).
+    // Each axis can be independently disabled with zero K_I or zero IMAX.
     const Vector3f integral_input {
         output.omega_error_rads.x + _gains.integral_error_p.x * output.attitude_error.x,
         output.omega_error_rads.y + _gains.integral_error_p.y * output.attitude_error.y,
@@ -145,12 +167,13 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
                                              dt);
     output.integral_error = _integral_error;
 
-    // Lee SO(3) attitude control structure:
-    // M = -k_R e_R - k_Omega e_Omega
+    // SO(3) PID moment equation:
+    // M = -K_R*e_R - K_Omega*e_Omega - K_I*e_I^R
     //     + Omega x J*Omega
-    //     - J*(Omega x (R^T R_c Omega_c) - R^T R_c dot(Omega_c)).
-    // J is currently represented as a diagonal model because the mapper consumes
-    // normalized moment proxies, not physical motor torques yet.
+    //     - J[Omega x (R^T R_ref Omega_ref)
+    //         - R^T R_ref dot(Omega_ref)].
+    // J is the configured diagonal rigid-body model. M remains a moment proxy
+    // because the downstream mapper normalizes it before AP_Motors.
     const Vector3f inertia = safe_inertia(_model.inertia);
     const Vector3f gyro = state.omega_body_rads % scale_by_axis(state.omega_body_rads, inertia);
     const Vector3f desired_transport = state.omega_body_rads % omega_target_current_body_rads;
@@ -170,6 +193,8 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
                       _gains.attitude_i.z * output.integral_error.z +
                       feedforward.z;
 
-    // Temporary compatibility output for early Guided/attitude experiments.
+    // Legacy diagnostic rate-target proxy retained for geometric logging. It
+    // adds the moment proxy M to transported Omega_ref, so it is not a physical
+    // angular-rate reference and is not fed into the native rate PID.
     output.rate_target_body_rads = omega_target_current_body_rads + output.moment;
 }

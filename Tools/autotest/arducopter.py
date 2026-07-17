@@ -15793,6 +15793,30 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_altitude(0.5, 100, relative=True, timeout=10)
         self.do_RTL()
 
+    def assert_geometric_attitude_error_message(self, message, context):
+        '''validate one global SO(3) attitude-error diagnostic sample'''
+        for field in ("PsiR", "ERn", "Ang"):
+            if not math.isfinite(getattr(message, field)):
+                raise NotAchievedException(
+                    "GEOR.%s is not finite during %s" % (field, context))
+
+        tolerance = 1.0e-4
+        if not -tolerance <= message.PsiR <= 2.0 + tolerance:
+            raise NotAchievedException("GEOR.PsiR is outside [0,2] during %s" % context)
+        if not -tolerance <= message.ERn <= 1.0 + tolerance:
+            raise NotAchievedException("GEOR.ERn is outside [0,1] during %s" % context)
+        if not -tolerance <= message.Ang <= math.pi + tolerance:
+            raise NotAchievedException("GEOR.Ang is outside [0,pi] during %s" % context)
+
+        expected_psi = 1.0 - math.cos(message.Ang)
+        if abs(message.PsiR - expected_psi) > tolerance:
+            raise NotAchievedException(
+                "GEOR PsiR/Ang identity failed during %s" % context)
+        expected_er_norm_sq = message.PsiR * (2.0 - message.PsiR)
+        if abs(message.ERn * message.ERn - expected_er_norm_sq) > tolerance:
+            raise NotAchievedException(
+                "GEOR ERn/PsiR identity failed during %s" % context)
+
     def GeometricGuidedObserver(self):
         '''test Guided geometric observer logging'''
         self.set_parameter('GUID_OPTIONS', 2)
@@ -15836,25 +15860,39 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.delay_sim_time(1, reason="geometric observer to return to level")
 
         dfreader = self.dfreader_for_current_onboard_log()
+        geor_format_ids = [
+            fmt.type for fmt in dfreader.formats.values()
+            if fmt.name == "GEOR"
+        ]
+        if len(geor_format_ids) != 1:
+            raise NotAchievedException(
+                "Expected exactly one GEOR FMT ID, got %s" % geor_format_ids)
         msg_count = 0
         gui_msgs = []
         geo_msgs = []
+        geor_msgs = []
         while True:
-            m = dfreader.recv_match(type=["GUIA", "GEOA"])
+            m = dfreader.recv_match(type=["GUIA", "GEOA", "GEOR"])
             if m is None:
                 break
             if m.get_type() == "GUIA":
                 gui_msgs.append(m)
-            if m.get_type() == "GEOA":
+            elif m.get_type() == "GEOA":
                 geo_msgs.append(m)
                 msg_count += 1
                 for field in ("ERx", "ERy", "ERz", "EOx", "EOy", "EOz"):
                     value = getattr(m, field)
                     if not math.isfinite(value):
                         raise NotAchievedException("GEOA.%s is not finite" % field)
+            elif m.get_type() == "GEOR":
+                geor_msgs.append(m)
+                self.assert_geometric_attitude_error_message(m, "Guided observer")
         if msg_count == 0:
             raise NotAchievedException("GEOA log message not found")
+        if not geor_msgs:
+            raise NotAchievedException("GEOR log message not found in Guided observer")
         self.progress("Found %u GEOA messages" % msg_count)
+        self.progress("Found %u GEOR messages" % len(geor_msgs))
 
         roll_target = next((m for m in gui_msgs if abs(m.Roll) > 4), None)
         pitch_target = next((m for m in gui_msgs if roll_target is not None and m.TimeUS > roll_target.TimeUS and abs(m.Pitch) > 4), None)
@@ -16078,10 +16116,18 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("Vehicle disarmed during Loiter geometric observer test")
 
         dfreader = self.dfreader_for_current_onboard_log()
+        geor_format_ids = [
+            fmt.type for fmt in dfreader.formats.values()
+            if fmt.name == "GEOR"
+        ]
+        if len(geor_format_ids) != 1:
+            raise NotAchievedException(
+                "Expected exactly one GEOR FMT ID, got %s" % geor_format_ids)
         geol_msgs = []
         gelc_msgs = []
+        geor_msgs = []
         while True:
-            m = dfreader.recv_match(type=["GEOL", "GELC"])
+            m = dfreader.recv_match(type=["GEOL", "GELC", "GEOR"])
             if m is None:
                 break
             if m.get_type() == "GEOL":
@@ -16090,16 +16136,20 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                               "AX", "AY", "AZ", "Yaw", "YRN"):
                     if not math.isfinite(getattr(m, field)):
                         raise NotAchievedException("GEOL.%s is not finite" % field)
-            if m.get_type() == "GELC":
+            elif m.get_type() == "GELC":
                 gelc_msgs.append(m)
                 for field in ("PEx", "PEy", "PEz", "SFx", "SFy", "SFz", "Thr",
                               "RCr", "RCp", "ATr", "ATp", "TVx", "TVy", "TVz"):
                     if not math.isfinite(getattr(m, field)):
                         raise NotAchievedException("GELC.%s is not finite" % field)
+            elif m.get_type() == "GEOR":
+                geor_msgs.append(m)
+                self.assert_geometric_attitude_error_message(m, "Loiter observer")
 
         disabled_geol = [m for m in geol_msgs if disabled_start_us <= m.TimeUS <= disabled_end_us]
         disabled_gelc = [m for m in gelc_msgs if disabled_start_us <= m.TimeUS <= disabled_end_us]
-        if disabled_geol or disabled_gelc:
+        disabled_geor = [m for m in geor_msgs if disabled_start_us <= m.TimeUS <= disabled_end_us]
+        if disabled_geol or disabled_gelc or disabled_geor:
             raise NotAchievedException("Loiter geometric observer logged while LOIT_OPTIONS bit 1 was disabled")
 
         enabled_geol = [m for m in geol_msgs if enabled_start_us <= m.TimeUS <= enabled_end_us]
@@ -16108,6 +16158,9 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("GEOL log message not found in enabled Loiter window")
         if not enabled_gelc:
             raise NotAchievedException("GELC log message not found in enabled Loiter window")
+        enabled_geor = [m for m in geor_msgs if enabled_start_us <= m.TimeUS <= enabled_end_us]
+        if not enabled_geor:
+            raise NotAchievedException("GEOR log message not found in enabled Loiter window")
 
         for m in enabled_geol:
             if int(m.St) not in (1, 4):

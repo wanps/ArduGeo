@@ -942,6 +942,7 @@ private:
     void Log_Write_Rate_Thread_Dt(float dt, float dtAvg, float dtMax, float dtMin);
     void Log_Write_Geometric_Full_Lifecycle(uint8_t phase, uint32_t main_frames, uint32_t geometric_frames, uint32_t native_frames);
     void Log_Write_Geometric_Loiter_Lifecycle(uint8_t phase, uint32_t main_frames, uint32_t geometric_frames, uint32_t native_frames, float throttle);
+    void Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Output &attitude);
     void Log_Write_Geometric_Output_State(bool motor_output_allowed,
                                           bool geometric_output_enabled,
                                           bool rate_thread_active,
