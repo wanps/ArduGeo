@@ -122,6 +122,48 @@ TEST(AC_Geometric_SetpointShaper, HorizontalReferenceSettlesAtTarget)
     }
 }
 
+TEST(AC_Geometric_SetpointShaper, MovingHorizontalPvaIsNotZeroedBySettleShortcut)
+{
+    AC_Geometric_SetpointShaper shaper;
+    AC_Geometric_Setpoint_Shaper_Limits limits = default_limits();
+    limits.vel_xy_max_ms = 5.0f;
+    limits.accel_xy_max_mss = 4.0f;
+    shaper.set_limits(limits);
+
+    const AC_Geometric_State state = state_at_origin();
+    AC_Geometric_Target raw_target = target_from_position(Vector3f{});
+    raw_target.velocity_ned_ms.x = 3.5f;
+    AC_Geometric_Target shaped_target {};
+
+    constexpr float dt = 1.0f / 85.0f;
+    for (uint8_t i = 0; i < 85; i++) {
+        // Each raw-position increment is below the XY settle distance.  A
+        // position-only settle test would therefore snap every frame and
+        // incorrectly erase the moving target's velocity feedforward.
+        raw_target.position_ned_m.x += raw_target.velocity_ned_ms.x * dt;
+        shaper.update(state, raw_target, dt, shaped_target);
+    }
+
+    EXPECT_GT(shaped_target.velocity_ned_ms.x, 1.0f);
+    EXPECT_GT(shaped_target.position_ned_m.x, 0.1f);
+}
+
+TEST(AC_Geometric_SetpointShaper, HorizontalAccelerationFeedforwardPreventsFalseSettle)
+{
+    AC_Geometric_SetpointShaper shaper;
+    shaper.set_limits(default_limits());
+
+    const AC_Geometric_State state = state_at_origin();
+    AC_Geometric_Target raw_target = target_from_position(Vector3f{});
+    raw_target.accel_ned_mss.x = 0.5f;
+    AC_Geometric_Target shaped_target {};
+
+    shaper.update(state, raw_target, 0.01f, shaped_target);
+
+    EXPECT_GT(shaped_target.accel_ned_mss.x, 0.0f);
+    EXPECT_GT(shaped_target.velocity_ned_ms.x, 0.0f);
+}
+
 TEST(AC_Geometric_SetpointShaper, VerticalVelocityUsesNedUpAndDownLimits)
 {
     AC_Geometric_Setpoint_Shaper_Limits limits = default_limits();
@@ -180,6 +222,46 @@ TEST(AC_Geometric_SetpointShaper, VerticalReferenceSettlesAtTarget)
         EXPECT_NEAR(shaped_target.velocity_ned_ms.z, 0.0f, 1.0e-6f);
         EXPECT_NEAR(shaped_target.accel_ned_mss.z, 0.0f, 1.0e-6f);
     }
+}
+
+TEST(AC_Geometric_SetpointShaper, MovingVerticalPvaIsNotZeroedBySettleShortcut)
+{
+    AC_Geometric_SetpointShaper shaper;
+    AC_Geometric_Setpoint_Shaper_Limits limits = default_limits();
+    limits.vel_up_max_ms = 2.0f;
+    limits.accel_z_max_mss = 2.0f;
+    shaper.set_limits(limits);
+
+    const AC_Geometric_State state = state_at_origin();
+    AC_Geometric_Target raw_target = target_from_position(Vector3f{});
+    raw_target.velocity_ned_ms.z = -1.0f;
+    AC_Geometric_Target shaped_target {};
+
+    constexpr float dt = 1.0f / 85.0f;
+    for (uint8_t i = 0; i < 85; i++) {
+        // The per-frame climb increment is below the Z settle distance.
+        raw_target.position_ned_m.z += raw_target.velocity_ned_ms.z * dt;
+        shaper.update(state, raw_target, dt, shaped_target);
+    }
+
+    EXPECT_LT(shaped_target.velocity_ned_ms.z, -0.2f);
+    EXPECT_LT(shaped_target.position_ned_m.z, -0.05f);
+}
+
+TEST(AC_Geometric_SetpointShaper, VerticalAccelerationFeedforwardPreventsFalseSettle)
+{
+    AC_Geometric_SetpointShaper shaper;
+    shaper.set_limits(default_limits());
+
+    const AC_Geometric_State state = state_at_origin();
+    AC_Geometric_Target raw_target = target_from_position(Vector3f{});
+    raw_target.accel_ned_mss.z = -0.25f;
+    AC_Geometric_Target shaped_target {};
+
+    shaper.update(state, raw_target, 0.01f, shaped_target);
+
+    EXPECT_LT(shaped_target.accel_ned_mss.z, 0.0f);
+    EXPECT_LT(shaped_target.velocity_ned_ms.z, 0.0f);
 }
 
 TEST(AC_Geometric_SetpointShaper, ResetInitializesFromCurrentState)

@@ -5,6 +5,7 @@ namespace {
 constexpr float SETTLE_POS_XY_M = 0.05f;
 constexpr float SETTLE_POS_Z_M = 0.02f;
 constexpr float SETTLE_VEL_MS = 0.05f;
+constexpr float SETTLE_ACCEL_MSS = 0.05f;
 constexpr float JERK_FROM_ACCEL_RATIO = 2.0f;
 
 float jerk_from_accel(float accel_max)
@@ -12,14 +13,26 @@ float jerk_from_accel(float accel_max)
     return accel_max * JERK_FROM_ACCEL_RATIO;
 }
 
-bool should_settle(float position_error, float velocity)
+bool should_match_target(float position_error,
+                         float reference_velocity,
+                         float target_velocity,
+                         float reference_acceleration,
+                         float target_acceleration)
 {
-    return fabsf(position_error) <= SETTLE_POS_Z_M && fabsf(velocity) <= SETTLE_VEL_MS;
+    return fabsf(position_error) <= SETTLE_POS_Z_M &&
+           fabsf(reference_velocity - target_velocity) <= SETTLE_VEL_MS &&
+           fabsf(reference_acceleration - target_acceleration) <= SETTLE_ACCEL_MSS;
 }
 
-bool should_settle_xy(const Vector2f& position_error, const Vector2f& velocity)
+bool should_match_target_xy(const Vector2f& position_error,
+                            const Vector2f& reference_velocity,
+                            const Vector2f& target_velocity,
+                            const Vector2f& reference_acceleration,
+                            const Vector2f& target_acceleration)
 {
-    return position_error.length() <= SETTLE_POS_XY_M && velocity.length() <= SETTLE_VEL_MS;
+    return position_error.length() <= SETTLE_POS_XY_M &&
+           (reference_velocity - target_velocity).length() <= SETTLE_VEL_MS &&
+           (reference_acceleration - target_acceleration).length() <= SETTLE_ACCEL_MSS;
 }
 
 }
@@ -62,14 +75,18 @@ void AC_Geometric_SetpointShaper::shape_xy(const AC_Geometric_Target& raw_target
     const Vector2f pos_ref_xy{_pos_ref_ned_m.x, _pos_ref_ned_m.y};
     const Vector2f vel_ref_xy{_vel_ref_ned_ms.x, _vel_ref_ned_ms.y};
     const Vector2f goal_xy{raw_target.position_ned_m.x, raw_target.position_ned_m.y};
+    const Vector2f raw_vel_xy{raw_target.velocity_ned_ms.x, raw_target.velocity_ned_ms.y};
+    const Vector2f raw_accel_xy{raw_target.accel_ned_mss.x, raw_target.accel_ned_mss.y};
+    const Vector2f accel_ref_xy{_accel_ref_ned_mss.x, _accel_ref_ned_mss.y};
     const Vector2f error_xy = goal_xy - pos_ref_xy;
-    if (should_settle_xy(error_xy, vel_ref_xy)) {
+    if (should_match_target_xy(error_xy, vel_ref_xy, raw_vel_xy,
+                               accel_ref_xy, raw_accel_xy)) {
         _pos_ref_ned_m.x = raw_target.position_ned_m.x;
         _pos_ref_ned_m.y = raw_target.position_ned_m.y;
-        _vel_ref_ned_ms.x = 0.0f;
-        _vel_ref_ned_ms.y = 0.0f;
-        _accel_ref_ned_mss.x = 0.0f;
-        _accel_ref_ned_mss.y = 0.0f;
+        _vel_ref_ned_ms.x = raw_target.velocity_ned_ms.x;
+        _vel_ref_ned_ms.y = raw_target.velocity_ned_ms.y;
+        _accel_ref_ned_mss.x = raw_target.accel_ned_mss.x;
+        _accel_ref_ned_mss.y = raw_target.accel_ned_mss.y;
         return;
     }
 
@@ -77,9 +94,6 @@ void AC_Geometric_SetpointShaper::shape_xy(const AC_Geometric_Target& raw_target
     Vector2f next_vel_xy = vel_ref_xy;
     Vector2f next_accel_xy{_accel_ref_ned_mss.x, _accel_ref_ned_mss.y};
     const Vector2p goal_xy_p = goal_xy.topostype();
-    const Vector2f raw_vel_xy{raw_target.velocity_ned_ms.x, raw_target.velocity_ned_ms.y};
-    const Vector2f raw_accel_xy{raw_target.accel_ned_mss.x, raw_target.accel_ned_mss.y};
-
     shape_pos_vel_accel_xy(goal_xy_p, raw_vel_xy, raw_accel_xy,
                            next_pos_xy, next_vel_xy, next_accel_xy,
                            vel_max_ms, accel_max_mss, jerk_max_msss, dt, true);
@@ -91,13 +105,14 @@ void AC_Geometric_SetpointShaper::shape_xy(const AC_Geometric_Target& raw_target
     update_pos_vel_accel_xy(next_pos_xy, next_vel_xy, next_accel_xy, dt, limit_xy, error_zero_xy, error_zero_xy);
 
     const Vector2f next_error_xy = goal_xy - next_pos_xy.tofloat();
-    if (should_settle_xy(next_error_xy, next_vel_xy)) {
+    if (should_match_target_xy(next_error_xy, next_vel_xy, raw_vel_xy,
+                               next_accel_xy, raw_accel_xy)) {
         _pos_ref_ned_m.x = raw_target.position_ned_m.x;
         _pos_ref_ned_m.y = raw_target.position_ned_m.y;
-        _vel_ref_ned_ms.x = 0.0f;
-        _vel_ref_ned_ms.y = 0.0f;
-        _accel_ref_ned_mss.x = 0.0f;
-        _accel_ref_ned_mss.y = 0.0f;
+        _vel_ref_ned_ms.x = raw_target.velocity_ned_ms.x;
+        _vel_ref_ned_ms.y = raw_target.velocity_ned_ms.y;
+        _accel_ref_ned_mss.x = raw_target.accel_ned_mss.x;
+        _accel_ref_ned_mss.y = raw_target.accel_ned_mss.y;
         return;
     }
 
@@ -123,15 +138,21 @@ void AC_Geometric_SetpointShaper::shape_z(const AC_Geometric_Target& raw_target,
 
     const float goal_z_ned_m = raw_target.position_ned_m.z;
     const float error_z_m = goal_z_ned_m - _pos_ref_ned_m.z;
-    if (should_settle(error_z_m, _vel_ref_ned_ms.z)) {
+    if (should_match_target(error_z_m,
+                            _vel_ref_ned_ms.z,
+                            raw_target.velocity_ned_ms.z,
+                            _accel_ref_ned_mss.z,
+                            raw_target.accel_ned_mss.z)) {
         _pos_ref_ned_m.z = goal_z_ned_m;
-        _vel_ref_ned_ms.z = 0.0f;
-        _accel_ref_ned_mss.z = 0.0f;
+        _vel_ref_ned_ms.z = raw_target.velocity_ned_ms.z;
+        _accel_ref_ned_mss.z = raw_target.accel_ned_mss.z;
         return;
     }
 
     // NED positive Z is down, so negative Z error means upward travel.
-    const float vel_max_ms = is_negative(error_z_m) ? MAX(_limits.vel_up_max_ms, 0.0f) : MAX(_limits.vel_down_max_ms, 0.0f);
+    const bool moving_up = is_negative(error_z_m) ||
+                           (is_zero(error_z_m) && is_negative(raw_target.velocity_ned_ms.z));
+    const float vel_max_ms = moving_up ? MAX(_limits.vel_up_max_ms, 0.0f) : MAX(_limits.vel_down_max_ms, 0.0f);
     if (!is_positive(vel_max_ms)) {
         _pos_ref_ned_m.z = goal_z_ned_m;
         _vel_ref_ned_ms.z = 0.0f;
@@ -149,10 +170,14 @@ void AC_Geometric_SetpointShaper::shape_z(const AC_Geometric_Target& raw_target,
                         jerk_max_msss, dt, true);
 
     update_pos_vel_accel(next_pos_z_m, next_vel_z_ms, next_accel_z_mss, dt, 0.0f, 0.0f, 0.0f);
-    if (should_settle(goal_z_ned_m - next_pos_z_m, next_vel_z_ms)) {
+    if (should_match_target(goal_z_ned_m - next_pos_z_m,
+                            next_vel_z_ms,
+                            raw_target.velocity_ned_ms.z,
+                            next_accel_z_mss,
+                            raw_target.accel_ned_mss.z)) {
         _pos_ref_ned_m.z = goal_z_ned_m;
-        _vel_ref_ned_ms.z = 0.0f;
-        _accel_ref_ned_mss.z = 0.0f;
+        _vel_ref_ned_ms.z = raw_target.velocity_ned_ms.z;
+        _accel_ref_ned_mss.z = raw_target.accel_ned_mss.z;
         return;
     }
 
