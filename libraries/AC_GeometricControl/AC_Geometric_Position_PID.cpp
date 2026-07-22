@@ -38,34 +38,48 @@ void constrain_integral(Vector3f& integral, const Vector3f& limits)
     integral.z = constrain_float(integral.z, -safe_limits.z, safe_limits.z);
 }
 
-// Build a body-to-NED commanded attitude R_c from an ArduPilot-style thrust
-// vector expressed in NED and a yaw angle about NED +Z. In NED, hover thrust
-// points upward, so the level reference thrust direction is {0, 0, -1}.
+// Build the Lee body-to-NED commanded attitude R_c from an ArduPilot-style
+// thrust vector and yaw reference. The scalar yaw interface is retained as the
+// desired horizontal first-axis direction b1d={cos(yaw),sin(yaw),0}. In NED,
+// thrust points along body -Z, so b3c is opposite the normalized thrust vector.
 Quaternion attitude_from_thrust_vector(Vector3f thrust_vector, float yaw_rad)
 {
-    const Vector3f thrust_vector_up{0.0f, 0.0f, -1.0f};
-
+    Vector3f body_z_ned;
     if (is_zero(thrust_vector.length_squared())) {
-        thrust_vector = thrust_vector_up;
+        // Zero collective has no force direction. The regularized member of the
+        // feasible set is level attitude at the requested ArduPilot yaw.
+        body_z_ned = Vector3f{0.0f, 0.0f, 1.0f};
     } else {
         thrust_vector.normalize();
+        body_z_ned = -thrust_vector;
     }
 
-    Vector3f thrust_vec_cross = thrust_vector_up % thrust_vector;
-    const float thrust_vector_angle = acosf(constrain_float(thrust_vector_up * thrust_vector, -1.0f, 1.0f));
-    const float thrust_vector_length = thrust_vec_cross.length();
-    if (is_zero(thrust_vector_length) || is_zero(thrust_vector_angle)) {
-        thrust_vec_cross = thrust_vector_up;
-    } else {
-        thrust_vec_cross /= thrust_vector_length;
+    const Vector3f heading_ned{cosf(yaw_rad), sinf(yaw_rad), 0.0f};
+    Vector3f body_y_ned = body_z_ned % heading_ned;
+    float body_y_length = body_y_ned.length();
+    if (is_zero(body_y_length)) {
+        // The classic construction is singular only when b3c and b1d are
+        // parallel. That state is outside the nominal upright-force domain, but
+        // retain the thrust axis and choose the horizontal orthogonal heading as
+        // a finite defensive completion.
+        const Vector3f heading_orthogonal_ned{-sinf(yaw_rad), cosf(yaw_rad), 0.0f};
+        body_y_ned = body_z_ned % heading_orthogonal_ned;
+        body_y_length = body_y_ned.length();
     }
+    body_y_ned /= body_y_length;
+    const Vector3f body_x_ned = body_y_ned % body_z_ned;
 
-    Quaternion thrust_vec_quat;
-    thrust_vec_quat.from_axis_angle(thrust_vec_cross, thrust_vector_angle);
+    // Matrix3f stores rows, while these commanded body axes form the columns
+    // of the body-to-NED rotation matrix R_c=[b1c b2c b3c].
+    const Matrix3f attitude_body_to_ned {
+        Vector3f{body_x_ned.x, body_y_ned.x, body_z_ned.x},
+        Vector3f{body_x_ned.y, body_y_ned.y, body_z_ned.y},
+        Vector3f{body_x_ned.z, body_y_ned.z, body_z_ned.z}
+    };
 
-    Quaternion yaw_quat;
-    yaw_quat.from_axis_angle(Vector3f{0.0f, 0.0f, 1.0f}, yaw_rad);
-    return thrust_vec_quat * yaw_quat;
+    Quaternion attitude;
+    attitude.from_rotation_matrix(attitude_body_to_ned);
+    return attitude;
 }
 
 // A conventional multirotor can only produce non-negative collective along
@@ -232,10 +246,11 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
 
     if (target.build_attitude_from_position) {
         // Full SE(3) coupling path: convert the desired force direction plus
-        // yaw reference into R_c, then estimate Omega_c and dot(Omega_c).
-        // In the feasible non-regularized domain, R_c aligns commanded body
-        // -Z with d_T=A/|A| while retaining heading psi_d. The near-zero-force
-        // domain deliberately uses the regularized level-yaw attitude instead.
+        // ArduPilot yaw reference into R_c, then estimate Omega_c and
+        // dot(Omega_c). In the feasible non-regularized domain, b3c=-A/|A| and
+        // b1c is the projection of b1d={cos(psi_d),sin(psi_d),0} onto the plane
+        // normal to b3c. The near-zero-force domain deliberately uses the
+        // regularized level-yaw attitude instead.
         output.attitude_body_to_ned = attitude_from_thrust_vector(output.thrust_vector_ned, target.yaw_rad);
         Vector3f fallback_omega_body_rads = target.omega_body_rads;
         fallback_omega_body_rads.z = target.yaw_rate_rads;

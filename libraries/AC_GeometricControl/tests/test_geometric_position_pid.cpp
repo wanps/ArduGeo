@@ -107,7 +107,7 @@ TEST(AC_Geometric_Position_PID, NorthAndEastTargetsTiltRcWithNedSigns)
     }
 }
 
-TEST(AC_Geometric_Position_PID, YawDoesNotChangeRcThrustDirection)
+TEST(AC_Geometric_Position_PID, TiltedRcUsesLeeHeadingProjection)
 {
     AC_Geometric_State state {};
     state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
@@ -132,14 +132,35 @@ TEST(AC_Geometric_Position_PID, YawDoesNotChangeRcThrustDirection)
     EXPECT_NEAR(thrust_direction_ned.y, -body_z_ned.y, 1.0e-5f);
     EXPECT_NEAR(thrust_direction_ned.z, -body_z_ned.z, 1.0e-5f);
 
+    const Vector3f heading_ned{cosf(target.yaw_rad), sinf(target.yaw_rad), 0.0f};
+    const Vector3f expected_body_x_ned = normalized(heading_ned - body_z_ned * (heading_ned * body_z_ned));
+    const Vector3f body_x_ned = attitude.colx();
+
+    EXPECT_NEAR(body_x_ned.x, expected_body_x_ned.x, 1.0e-5f);
+    EXPECT_NEAR(body_x_ned.y, expected_body_x_ned.y, 1.0e-5f);
+    EXPECT_NEAR(body_x_ned.z, expected_body_x_ned.z, 1.0e-5f);
+}
+
+TEST(AC_Geometric_Position_PID, LevelRcPreservesArduPilotYawInterface)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    AC_Geometric_Target target {};
+    target.yaw_rad = -0.8f;
+    target.build_attitude_from_position = true;
+
+    AC_Geometric_Position_Gains gains {};
+    const AC_Geometric_Position_Output output = run_position_pid(gains, state, target);
+
     float roll_rad;
     float pitch_rad;
     float yaw_rad;
     output.attitude_body_to_ned.to_euler(roll_rad, pitch_rad, yaw_rad);
 
-    // Euler yaw can shift slightly once the thrust vector tilts; the critical
-    // invariant above is that yaw composition does not change the thrust axis.
-    EXPECT_NEAR(yaw_rad, target.yaw_rad, 2.0e-3f);
+    EXPECT_NEAR(roll_rad, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(pitch_rad, 0.0f, 1.0e-6f);
+    EXPECT_NEAR(wrap_PI(yaw_rad - target.yaw_rad), 0.0f, 1.0e-6f);
 }
 
 TEST(AC_Geometric_Position_PID, PositionGeneratedRcProducesBodyRateFeedForward)

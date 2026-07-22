@@ -149,9 +149,9 @@ struct AC_Geometric_Position_Output {
     // F_d/m. Hover is approximately {0, 0, -GRAVITY_MSS}; negative Z means
     // upward because NED uses positive down.
     Vector3f specific_force_ned_mss;
-    // Feasible, regularized copy of A used to construct the thrust direction
-    // d_T and R_c. It may differ from specific_force_ned_mss near the
-    // unidirectional or near-zero-collective boundary.
+    // Feasible, regularized copy of A used to construct b3c and R_c. It may
+    // differ from specific_force_ned_mss near the unidirectional or
+    // near-zero-collective boundary.
     Vector3f thrust_vector_ned;
     // Errors are exposed for logging and future Gao-style compensation terms.
     Vector3f position_error_m;
