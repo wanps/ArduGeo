@@ -18172,19 +18172,22 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         if len(geox_msgs) == 0:
             raise NotAchievedException("GEOX log message not found during disabled motor-output window")
-        allowed_msgs = [m for m in geox_msgs if m.Allow]
-        if len(allowed_msgs) == 0:
-            raise NotAchievedException("GEOX did not show GUID_OPTIONS allowing geometric motor output")
-        output_enabled_msgs = [m for m in allowed_msgs if m.OEn]
+        # GEOX.Allow is the mode's final geometric-output authorization, not
+        # a direct copy of GUID_OPTIONS bit 8.  With GEO_OUT_EN disabled the
+        # fail-closed Guided path may therefore report Allow=0 as well as
+        # OEn=0.  The safety contract under test is that the output-enable
+        # gate never becomes true and AP_Motors is never written.
+        mode_allowed_msgs = [m for m in geox_msgs if m.Allow]
+        output_enabled_msgs = [m for m in geox_msgs if m.OEn]
         if len(output_enabled_msgs) != 0:
             raise NotAchievedException("GEOX showed GEO_OUT_EN enabled during disabled motor-output test")
-        rate_thread_msgs = [m for m in allowed_msgs if m.RT]
+        rate_thread_msgs = [m for m in geox_msgs if m.RT]
         if len(rate_thread_msgs) != 0:
             raise NotAchievedException("GEOX shows rate-thread active during disabled motor-output test")
-        written_msgs = [m for m in allowed_msgs if m.Wrote]
-        self.progress("GEOX disabled motor-output samples=%u allowed=%u output_enabled=%u wrote=%u" %
+        written_msgs = [m for m in geox_msgs if m.Wrote]
+        self.progress("GEOX disabled motor-output samples=%u mode_allowed=%u output_enabled=%u wrote=%u" %
                       (len(geox_msgs),
-                       len(allowed_msgs),
+                       len(mode_allowed_msgs),
                        len(output_enabled_msgs),
                        len(written_msgs)))
         if len(written_msgs) != 0:
