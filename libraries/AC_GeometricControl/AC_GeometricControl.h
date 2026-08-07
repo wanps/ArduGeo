@@ -29,6 +29,10 @@ public:
 
     static const AP_Param::GroupInfo var_info[];
 
+    // Copy saved values from the pre-module flat GEO_ parameter layout. The
+    // conversion is idempotent and never overwrites configured new storage.
+    void convert_params(uint16_t old_key);
+
     // Clear controller integrators and cached outputs.
     void reset();
 
@@ -64,6 +68,11 @@ private:
     // The cascade is kept as separate components so future controllers can
     // replace one layer, for example an alternative attitude block, without
     // changing the data contract between layers.
+    AC_Geometric_Position_PID_Params _position_params;
+    AC_Geometric_Attitude_PID_Params _attitude_params;
+    AC_Geometric_OutputMapper_Params _output_mapper_params;
+    AC_Geometric_SetpointShaper_Params _setpoint_shaper_params;
+    AC_Geometric_YawShaper_Params _yaw_shaper_params;
     AC_Geometric_Position_PID _position_pid;
     AC_Geometric_Attitude_PID _attitude_pid;
     AC_Geometric_OutputMapper _output_mapper;
@@ -78,52 +87,6 @@ private:
     uint32_t _last_update_ms = 0;
     bool _shaper_active = false;
 
-    AP_Float _pos_kx_xy;
-    AP_Float _pos_kx_z;
-    AP_Float _pos_ki_xy;
-    AP_Float _pos_ki_z;
-    AP_Float _pos_kv_xy;
-    AP_Float _pos_kv_z;
-    AP_Float _pos_imax_xy;
-    AP_Float _pos_imax_z;
-    AP_Float _pos_int_c;
-    AP_Float _pos_error_filt_hz;
-    AP_Float _vel_error_filt_hz;
-    AP_Float _omega_c_filt_hz;
-    AP_Float _omega_dot_c_filt_hz;
-
-    AP_Float _att_kr_x;
-    AP_Float _att_kr_y;
-    AP_Float _att_kr_z;
-    AP_Float _att_ko_x;
-    AP_Float _att_ko_y;
-    AP_Float _att_ko_z;
-    AP_Float _att_ki_x;
-    AP_Float _att_ki_y;
-    AP_Float _att_ki_z;
-    AP_Float _att_imax_x;
-    AP_Float _att_imax_y;
-    AP_Float _att_imax_z;
-    AP_Float _att_int_c;
-    AP_Float _att_j_x;
-    AP_Float _att_j_y;
-    AP_Float _att_j_z;
-    AP_Float _omega_error_filt_hz;
-
-    AP_Float _hover_throttle_norm;
     float _hover_throttle_reference_norm = 0.5f;
-    AP_Float _mom_norm_x;
-    AP_Float _mom_norm_y;
-    AP_Float _mom_norm_z;
     AP_Int8 _output_enabled;
-
-    AP_Int8 _shape_enabled;
-    AP_Float _shape_vel_xy_max_ms;
-    AP_Float _shape_accel_xy_max_mss;
-    AP_Float _shape_vel_up_max_ms;
-    AP_Float _shape_vel_down_max_ms;
-    AP_Float _shape_accel_z_max_mss;
-    AP_Int8 _shape_yaw_enabled;
-    AP_Float _shape_yaw_rate_max_rads;
-    AP_Float _shape_yaw_accel_max_radss;
 };

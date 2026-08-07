@@ -1274,6 +1274,11 @@ void Copter::load_parameters(void)
 {
     AP_Vehicle::load_parameters(g.format_version, Parameters::k_format_version);
 
+    // PARAMETER_CONVERSION - Added: Aug-2026 for the ArduGeo module split.
+    // Public GEO_ names are unchanged, but Position PID, Attitude PID, mapper,
+    // and shaper values moved from the flat object into module-owned storage.
+    geometric_control.convert_params(Parameters::k_param_geometric_control);
+
     // PARAMETER_CONVERSION - Added: Mar-2022
 #if AP_FENCE_ENABLED
     AP_Param::convert_class(g.k_param_fence_old, &fence, fence.var_info, 0, true);

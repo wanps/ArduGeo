@@ -15793,6 +15793,135 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.wait_altitude(0.5, 100, relative=True, timeout=10)
         self.do_RTL()
 
+    def GeometricParameterModules(self):
+        '''validate all GEO names/defaults and moved-module persistence'''
+        expected_defaults = {
+            'GEO_POS_KX_XY': 1.0,
+            'GEO_POS_KX_Z': 3.0,
+            'GEO_POS_KI_XY': 1.0,
+            'GEO_POS_KI_Z': 5.0,
+            'GEO_POS_KV_XY': 2.0,
+            'GEO_POS_KV_Z': 3.0,
+            'GEO_ATT_KR_X': 4.0,
+            'GEO_ATT_KR_Y': 4.0,
+            'GEO_ATT_KR_Z': 2.0,
+            'GEO_ATT_KO_X': 0.2,
+            'GEO_ATT_KO_Y': 0.2,
+            'GEO_ATT_KO_Z': 0.4,
+            'GEO_HOV_THR': 0.0,
+            'GEO_MOM_NORM_X': 4.0,
+            'GEO_MOM_NORM_Y': 4.0,
+            'GEO_MOM_NORM_Z': 2.0,
+            'GEO_OUT_EN': 1,
+            'GEO_POS_FLTE': 5.0,
+            'GEO_VEL_FLTE': 0.0,
+            'GEO_OMG_FLTE': 0.0,
+            'GEO_POS_IMAX_XY': 10.0,
+            'GEO_POS_IMAX_Z': 10.0,
+            'GEO_ATT_KI_Z': 0.1,
+            'GEO_ATT_IMAX_Z': 1.0,
+            'GEO_ATT_INT_C': 0.5,
+            'GEO_ATT_KI_X': 0.0,
+            'GEO_ATT_KI_Y': 0.0,
+            'GEO_ATT_IMAX_X': 0.0,
+            'GEO_ATT_IMAX_Y': 0.0,
+            'GEO_SHAPE_EN': 1,
+            'GEO_SHAPE_VXY': 1.0,
+            'GEO_SHAPE_AXY': 0.5,
+            'GEO_SHAPE_VUP': 2.5,
+            'GEO_SHAPE_VDN': 1.5,
+            'GEO_SHAPE_AZ': 1.0,
+            'GEO_SHAPE_YRAT': 1.0,
+            'GEO_SHAPE_YACC': 1.0,
+            'GEO_SHAPE_YAW': 1,
+            'GEO_ATT_J_X': 0.010,
+            'GEO_ATT_J_Y': 0.020,
+            'GEO_ATT_J_Z': 0.020,
+            'GEO_POS_INT_C': 1.0,
+            'GEO_OMG_C_FLT': 5.0,
+            'GEO_DOMG_C_FLT': 2.0,
+            'GEO_LREF_VXY': 2.0,
+            'GEO_LREF_AXY': 1.0,
+            'GEO_LREF_JXY': 2.0,
+            'GEO_LREF_JZ': 5.0,
+            'GEO_LREF_YACC': 1.0,
+            'GEO_LREF_YJRK': 2.0,
+            'GEO_LREF_BDLY': 0.2,
+            'GEO_LREF_BACC': 2.5,
+            'GEO_LREF_BJRK': 5.0,
+            'GEO_LREF_YBACC': 2.0,
+            'GEO_LREF_YBJRK': 6.0,
+            'GEO_LREF_ZBACC': 2.5,
+            'GEO_LREF_ZBJRK': 5.0,
+        }
+
+        parameters, _ = self.download_parameters(self.sysid_thismav(), 1)
+        geometric_names = {name for name in parameters if name.startswith('GEO_')}
+        expected_names = set(expected_defaults)
+        if geometric_names != expected_names:
+            raise NotAchievedException(
+                "Geometric parameter set changed: missing=%s extra=%s" % (
+                    sorted(expected_names - geometric_names),
+                    sorted(geometric_names - expected_names)))
+        if any(name.startswith('GEO_SANM_') or name.startswith('SANM_') for name in parameters):
+            raise NotAchievedException("PID-only build exposes SANM parameters")
+        self.assert_parameter_values(expected_defaults, epsilon=1.0e-6)
+
+        persisted_values = {
+            'GEO_POS_KX_XY': 0.01,
+            'GEO_POS_KX_Z': 0.02,
+            'GEO_POS_KI_XY': 0.03,
+            'GEO_POS_KI_Z': 0.04,
+            'GEO_POS_KV_XY': 0.05,
+            'GEO_POS_KV_Z': 0.06,
+            'GEO_ATT_KR_X': 0.07,
+            'GEO_ATT_KR_Y': 0.08,
+            'GEO_ATT_KR_Z': 0.09,
+            'GEO_ATT_KO_X': 0.10,
+            'GEO_ATT_KO_Y': 0.11,
+            'GEO_ATT_KO_Z': 0.12,
+            'GEO_HOV_THR': 0.13,
+            'GEO_MOM_NORM_X': 0.14,
+            'GEO_MOM_NORM_Y': 0.15,
+            'GEO_MOM_NORM_Z': 0.16,
+            'GEO_OUT_EN': 0,
+            'GEO_POS_FLTE': 0.18,
+            'GEO_VEL_FLTE': 0.19,
+            'GEO_OMG_FLTE': 0.20,
+            'GEO_POS_IMAX_XY': 0.21,
+            'GEO_POS_IMAX_Z': 0.22,
+            'GEO_ATT_KI_Z': 0.23,
+            'GEO_ATT_IMAX_Z': 0.24,
+            'GEO_ATT_INT_C': 0.25,
+            'GEO_ATT_KI_X': 0.26,
+            'GEO_ATT_KI_Y': 0.27,
+            'GEO_ATT_IMAX_X': 0.28,
+            'GEO_ATT_IMAX_Y': 0.29,
+            'GEO_SHAPE_EN': 0,
+            'GEO_SHAPE_VXY': 0.31,
+            'GEO_SHAPE_AXY': 0.32,
+            'GEO_SHAPE_VUP': 0.33,
+            'GEO_SHAPE_VDN': 0.34,
+            'GEO_SHAPE_AZ': 0.35,
+            'GEO_SHAPE_YRAT': 0.36,
+            'GEO_SHAPE_YACC': 0.37,
+            'GEO_SHAPE_YAW': 0,
+            'GEO_ATT_J_X': 0.39,
+            'GEO_ATT_J_Y': 0.40,
+            'GEO_ATT_J_Z': 0.41,
+            'GEO_POS_INT_C': 0.42,
+            'GEO_OMG_C_FLT': 0.43,
+            'GEO_DOMG_C_FLT': 0.44,
+            'GEO_LREF_VXY': 1.23,
+        }
+        self.context_push()
+        try:
+            self.set_parameters(persisted_values)
+            self.reboot_sitl()
+            self.assert_parameter_values(persisted_values, epsilon=1.0e-6)
+        finally:
+            self.context_pop()
+
     def assert_geometric_attitude_error_message(self, message, context):
         '''validate one global SO(3) attitude-error diagnostic sample'''
         for field in ("PsiR", "ERn", "Ang"):
@@ -21663,6 +21792,7 @@ return update, 1000
             self.CameraLogMessages,
             self.LoiterToGuidedHomeVSOrigin,
             self.GuidedModeThrust,
+            self.GeometricParameterModules,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricLoiterObserver,

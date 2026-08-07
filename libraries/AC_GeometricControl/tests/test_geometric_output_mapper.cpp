@@ -28,6 +28,14 @@ AC_Geometric_Mapped_Output run_mapper(const AC_Geometric_Position_Output& positi
 
 }
 
+TEST(AC_Geometric_OutputMapper, ParameterDefaultsMatchRuntimeBaseline)
+{
+    AC_Geometric_OutputMapper_Params params;
+
+    EXPECT_FLOAT_EQ(params.hover_throttle_override(), 0.0f);
+    EXPECT_EQ(params.moment_norm(), Vector3f(4.0f, 4.0f, 2.0f));
+}
+
 TEST(AC_Geometric_OutputMapper, HoverThrustMapsToHoverThrottle)
 {
     AC_Geometric_Position_Output position {};

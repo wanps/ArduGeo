@@ -34,6 +34,24 @@ Vector3f normalized(Vector3f value)
 
 }
 
+TEST(AC_Geometric_Position_PID, ParameterDefaultsMatchRuntimeBaseline)
+{
+    AC_Geometric_Position_PID_Params params;
+    const AC_Geometric_Position_Gains gains = params.gains();
+    const AC_Geometric_Position_Filter_Hz filters = params.filter_hz();
+    const AC_Geometric_Position_Integral_Limits limits = params.integral_limits();
+
+    EXPECT_EQ(gains.p, Vector3f(1.0f, 1.0f, 3.0f));
+    EXPECT_EQ(gains.i, Vector3f(1.0f, 1.0f, 5.0f));
+    EXPECT_EQ(gains.d, Vector3f(2.0f, 2.0f, 3.0f));
+    EXPECT_EQ(gains.integral_error_p, Vector3f(1.0f, 1.0f, 1.0f));
+    EXPECT_EQ(limits.integral_error_m, Vector3f(10.0f, 10.0f, 10.0f));
+    EXPECT_FLOAT_EQ(filters.position_error, 5.0f);
+    EXPECT_FLOAT_EQ(filters.velocity_error, 0.0f);
+    EXPECT_FLOAT_EQ(filters.omega_c, 5.0f);
+    EXPECT_FLOAT_EQ(filters.omega_dot_c, 2.0f);
+}
+
 TEST(AC_Geometric_Position_PID, HoverBuildsLevelRc)
 {
     AC_Geometric_State state {};

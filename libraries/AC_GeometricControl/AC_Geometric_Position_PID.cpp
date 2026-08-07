@@ -1,5 +1,190 @@
 #include "AC_Geometric_Position_PID.h"
 
+#define AC_GEOMETRIC_POS_KX_XY_DEFAULT 1.0f
+#define AC_GEOMETRIC_POS_KX_Z_DEFAULT 3.0f
+#define AC_GEOMETRIC_POS_KI_XY_DEFAULT 1.0f
+#define AC_GEOMETRIC_POS_KI_Z_DEFAULT 5.0f
+#define AC_GEOMETRIC_POS_KV_XY_DEFAULT 2.0f
+#define AC_GEOMETRIC_POS_KV_Z_DEFAULT 3.0f
+#define AC_GEOMETRIC_POS_IMAX_XY_DEFAULT 10.0f
+#define AC_GEOMETRIC_POS_IMAX_Z_DEFAULT 10.0f
+#define AC_GEOMETRIC_POS_INT_C_DEFAULT 1.0f
+#define AC_GEOMETRIC_POS_FILTER_DEFAULT 5.0f
+#define AC_GEOMETRIC_FILTER_DISABLED 0.0f
+#define AC_GEOMETRIC_OMEGA_C_FILTER_DEFAULT 5.0f
+#define AC_GEOMETRIC_OMEGA_DOT_C_FILTER_DEFAULT 2.0f
+
+const AP_Param::GroupInfo AC_Geometric_Position_PID_Params::var_info[] = {
+    // Local indices mirror the pre-module flat layout for reviewability. The
+    // nested storage identity is new; legacy_var_info performs the upgrade copy.
+
+    // @Param: POS_KX_XY
+    // @DisplayName: Geometric position horizontal Kx
+    // @Description: Lee SE(3) position error gain K_x for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Range: 0 20
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_KX_XY", 1, AC_Geometric_Position_PID_Params, _kx_xy, AC_GEOMETRIC_POS_KX_XY_DEFAULT),
+
+    // @Param: POS_KX_Z
+    // @DisplayName: Geometric position vertical Kx
+    // @Description: Lee SE(3) position error gain K_x for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Range: 0 20
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_KX_Z", 2, AC_Geometric_Position_PID_Params, _kx_z, AC_GEOMETRIC_POS_KX_Z_DEFAULT),
+
+    // @Param: POS_KI_XY
+    // @DisplayName: Geometric position horizontal Ki
+    // @Description: Geometric position integral gain K_I for the horizontal axes. This multiplies e_I^x = integral(e_v + POS_INT_C*e_x). It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Range: 0 5
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("POS_KI_XY", 3, AC_Geometric_Position_PID_Params, _ki_xy, AC_GEOMETRIC_POS_KI_XY_DEFAULT),
+
+    // @Param: POS_KI_Z
+    // @DisplayName: Geometric position vertical Ki
+    // @Description: Geometric position integral gain K_I for the vertical axis. This multiplies e_I^x = integral(e_v + POS_INT_C*e_x). It affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Range: 0 5
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("POS_KI_Z", 4, AC_Geometric_Position_PID_Params, _ki_z, AC_GEOMETRIC_POS_KI_Z_DEFAULT),
+
+    // @Param: POS_KV_XY
+    // @DisplayName: Geometric velocity horizontal Kv
+    // @Description: Lee SE(3) velocity error gain K_v for the horizontal axes. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Range: 0 20
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_KV_XY", 5, AC_Geometric_Position_PID_Params, _kv_xy, AC_GEOMETRIC_POS_KV_XY_DEFAULT),
+
+    // @Param: POS_KV_Z
+    // @DisplayName: Geometric velocity vertical Kv
+    // @Description: Lee SE(3) velocity error gain K_v for the vertical axis. This affects geometric observer outputs and, when geometric motor output is enabled, the active geometric position channel.
+    // @Range: 0 20
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_KV_Z", 6, AC_Geometric_Position_PID_Params, _kv_z, AC_GEOMETRIC_POS_KV_Z_DEFAULT),
+
+    // @Param: POS_FLTE
+    // @DisplayName: Geometric position error filter
+    // @Description: Optional first-order low-pass cutoff applied to Lee position error before the geometric position PID channel. A value of zero disables this filter and preserves the raw state-error path.
+    // @Range: 0 50
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("POS_FLTE", 18, AC_Geometric_Position_PID_Params, _position_error_filt_hz, AC_GEOMETRIC_POS_FILTER_DEFAULT),
+
+    // @Param: VEL_FLTE
+    // @DisplayName: Geometric velocity error filter
+    // @Description: Optional first-order low-pass cutoff applied to Lee velocity error before the geometric position PID channel. A value of zero disables this filter and preserves the raw state-error path.
+    // @Range: 0 50
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("VEL_FLTE", 19, AC_Geometric_Position_PID_Params, _velocity_error_filt_hz, AC_GEOMETRIC_FILTER_DISABLED),
+
+    // @Param: POS_IMAX_XY
+    // @DisplayName: Geometric position horizontal integrator limit
+    // @Description: Limit applied to the horizontal geometric position integral state e_I^x before the K_I term is applied. The integral state has units of meters because it integrates velocity error plus POS_INT_C times position error. A value of zero disables horizontal integral accumulation.
+    // @Range: 0 20
+    // @Units: m
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_IMAX_XY", 21, AC_Geometric_Position_PID_Params, _imax_xy, AC_GEOMETRIC_POS_IMAX_XY_DEFAULT),
+
+    // @Param: POS_IMAX_Z
+    // @DisplayName: Geometric position vertical integrator limit
+    // @Description: Limit applied to the vertical geometric position integral state e_I^x before the K_I term is applied. The integral state has units of meters because it integrates velocity error plus POS_INT_C times position error. A value of zero disables vertical integral accumulation.
+    // @Range: 0 20
+    // @Units: m
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_IMAX_Z", 22, AC_Geometric_Position_PID_Params, _imax_z, AC_GEOMETRIC_POS_IMAX_Z_DEFAULT),
+
+    // @Param: POS_INT_C
+    // @DisplayName: Geometric position integral error weight
+    // @Description: Position-error weight C_x used in the geometric PID position integral state e_I^x = integral(e_v + C_x*e_x). This has no effect on axes with zero position integral gain.
+    // @Range: 0 10
+    // @Increment: 0.01
+    // @User: Advanced
+    AP_GROUPINFO("POS_INT_C", 42, AC_Geometric_Position_PID_Params, _integral_error_p, AC_GEOMETRIC_POS_INT_C_DEFAULT),
+
+    // @Param: OMG_C_FLT
+    // @DisplayName: Geometric Omega_c filter
+    // @Description: Optional first-order low-pass cutoff applied to the position-generated commanded angular velocity Omega_c before the SO(3) attitude channel. This attenuates finite-difference spikes from R_c changes. A value of zero disables this filter.
+    // @Range: 0 50
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("OMG_C_FLT", 43, AC_Geometric_Position_PID_Params, _omega_c_filt_hz, AC_GEOMETRIC_OMEGA_C_FILTER_DEFAULT),
+
+    // @Param: DOMG_C_FLT
+    // @DisplayName: Geometric dot Omega_c filter
+    // @Description: Optional first-order low-pass cutoff applied to the position-generated commanded angular acceleration dot(Omega_c) before the SO(3) attitude feed-forward term. This attenuates second-difference spikes from R_c changes. A value of zero disables this filter.
+    // @Range: 0 50
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("DOMG_C_FLT", 44, AC_Geometric_Position_PID_Params, _omega_dot_c_filt_hz, AC_GEOMETRIC_OMEGA_DOT_C_FILTER_DEFAULT),
+
+    AP_GROUPEND
+};
+
+const AP_Param::GroupInfo AC_Geometric_Position_PID_Params::legacy_var_info[] = {
+    AP_GROUPINFO("", 1, AC_Geometric_Position_PID_Params, _kx_xy, 0.0f),
+    AP_GROUPINFO("", 2, AC_Geometric_Position_PID_Params, _kx_z, 0.0f),
+    AP_GROUPINFO("", 3, AC_Geometric_Position_PID_Params, _ki_xy, 0.0f),
+    AP_GROUPINFO("", 4, AC_Geometric_Position_PID_Params, _ki_z, 0.0f),
+    AP_GROUPINFO("", 5, AC_Geometric_Position_PID_Params, _kv_xy, 0.0f),
+    AP_GROUPINFO("", 6, AC_Geometric_Position_PID_Params, _kv_z, 0.0f),
+    AP_GROUPINFO("", 18, AC_Geometric_Position_PID_Params, _position_error_filt_hz, 0.0f),
+    AP_GROUPINFO("", 19, AC_Geometric_Position_PID_Params, _velocity_error_filt_hz, 0.0f),
+    AP_GROUPINFO("", 21, AC_Geometric_Position_PID_Params, _imax_xy, 0.0f),
+    AP_GROUPINFO("", 22, AC_Geometric_Position_PID_Params, _imax_z, 0.0f),
+    AP_GROUPINFO("", 42, AC_Geometric_Position_PID_Params, _integral_error_p, 0.0f),
+    AP_GROUPINFO("", 43, AC_Geometric_Position_PID_Params, _omega_c_filt_hz, 0.0f),
+    AP_GROUPINFO("", 44, AC_Geometric_Position_PID_Params, _omega_dot_c_filt_hz, 0.0f),
+    AP_GROUPEND
+};
+
+AC_Geometric_Position_PID_Params::AC_Geometric_Position_PID_Params()
+{
+    AP_Param::setup_object_defaults(this, var_info);
+}
+
+void AC_Geometric_Position_PID_Params::convert_legacy_params(uint16_t old_key)
+{
+    AP_Param::convert_class(old_key, this, legacy_var_info, 0, true);
+}
+
+AC_Geometric_Position_Gains AC_Geometric_Position_PID_Params::gains() const
+{
+    AC_Geometric_Position_Gains gains {};
+    gains.p = Vector3f{_kx_xy.get(), _kx_xy.get(), _kx_z.get()};
+    gains.i = Vector3f{_ki_xy.get(), _ki_xy.get(), _ki_z.get()};
+    gains.d = Vector3f{_kv_xy.get(), _kv_xy.get(), _kv_z.get()};
+    gains.integral_error_p = Vector3f{_integral_error_p.get(), _integral_error_p.get(), _integral_error_p.get()};
+    return gains;
+}
+
+AC_Geometric_Position_Filter_Hz AC_Geometric_Position_PID_Params::filter_hz() const
+{
+    AC_Geometric_Position_Filter_Hz filter_hz {};
+    filter_hz.position_error = _position_error_filt_hz.get();
+    filter_hz.velocity_error = _velocity_error_filt_hz.get();
+    filter_hz.omega_c = _omega_c_filt_hz.get();
+    filter_hz.omega_dot_c = _omega_dot_c_filt_hz.get();
+    return filter_hz;
+}
+
+AC_Geometric_Position_Integral_Limits AC_Geometric_Position_PID_Params::integral_limits() const
+{
+    AC_Geometric_Position_Integral_Limits limits {};
+    limits.integral_error_m = Vector3f{_imax_xy.get(), _imax_xy.get(), _imax_z.get()};
+    return limits;
+}
+
 namespace {
 
 // Below five percent of the hover specific force the mapped collective is

@@ -1,6 +1,42 @@
 #pragma once
 
+#include <AP_Param/AP_Param.h>
+
 #include "AC_Geometric_Types.h"
+
+// Persistent configuration for the translational geometric PID channel.
+// Parameter metadata and defaults live beside the implementation while the
+// AC_GeometricControl facade supplies the public GEO_ namespace.
+class AC_Geometric_Position_PID_Params {
+public:
+    AC_Geometric_Position_PID_Params();
+
+    static const AP_Param::GroupInfo var_info[];
+
+    AC_Geometric_Position_Gains gains() const;
+    AC_Geometric_Position_Filter_Hz filter_hz() const;
+    AC_Geometric_Position_Integral_Limits integral_limits() const;
+    void convert_legacy_params(uint16_t old_key);
+
+private:
+    // Frozen migration table. Do not change mapped member types or add future
+    // parameters here.
+    static const AP_Param::GroupInfo legacy_var_info[];
+
+    AP_Float _kx_xy;
+    AP_Float _kx_z;
+    AP_Float _ki_xy;
+    AP_Float _ki_z;
+    AP_Float _kv_xy;
+    AP_Float _kv_z;
+    AP_Float _imax_xy;
+    AP_Float _imax_z;
+    AP_Float _integral_error_p;
+    AP_Float _position_error_filt_hz;
+    AP_Float _velocity_error_filt_hz;
+    AP_Float _omega_c_filt_hz;
+    AP_Float _omega_dot_c_filt_hz;
+};
 
 // SE(3) translational channel. It converts translational errors and
 // feed-forward acceleration into A and applied f. When

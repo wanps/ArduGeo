@@ -41,6 +41,19 @@ AC_Geometric_Target target_from_position(const Vector3f& position_ned_m)
 
 }
 
+TEST(AC_Geometric_SetpointShaper, ParameterDefaultsMatchRuntimeBaseline)
+{
+    AC_Geometric_SetpointShaper_Params params;
+    const AC_Geometric_Setpoint_Shaper_Limits limits = params.limits();
+
+    EXPECT_TRUE(params.enabled());
+    EXPECT_FLOAT_EQ(limits.vel_xy_max_ms, 1.0f);
+    EXPECT_FLOAT_EQ(limits.accel_xy_max_mss, 0.5f);
+    EXPECT_FLOAT_EQ(limits.vel_up_max_ms, 2.5f);
+    EXPECT_FLOAT_EQ(limits.vel_down_max_ms, 1.5f);
+    EXPECT_FLOAT_EQ(limits.accel_z_max_mss, 1.0f);
+}
+
 TEST(AC_Geometric_SetpointShaper, FarHorizontalTargetIsAccelerationLimited)
 {
     AC_Geometric_SetpointShaper shaper;

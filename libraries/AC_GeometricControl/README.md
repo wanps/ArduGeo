@@ -61,9 +61,11 @@ LOIT_OPTIONS = 7
 ```
 
 The default is conditional: other firmware that shares `AC_Loiter` retains
-`LOIT_OPTIONS=1`. Parameter defaults do not migrate an existing EEPROM or
-parameter file, so a vehicle already storing `LOIT_OPTIONS=3` must be changed
-to `7` explicitly (or tested from a deliberately wiped parameter store).
+`LOIT_OPTIONS=1`. Changing a default does not overwrite an explicitly stored
+value, so a vehicle already storing `LOIT_OPTIONS=3` must be changed to `7`
+explicitly (or tested from a deliberately wiped parameter store). This default
+value rule is separate from the structural `GEO_` storage conversion described
+below.
 
 The Loiter active-output bit requires the observer bit. To return to native
 Loiter, clear bit 2 (`LOIT_OPTIONS=3` when coordinated turn and the observer
@@ -368,6 +370,42 @@ All parameters use the `GEO_` prefix in Copter.
 | `GEO_MOM_NORM_Y` | Body-Y moment proxy magnitude that maps to full pitch output. |
 | `GEO_MOM_NORM_Z` | Body-Z moment proxy magnitude that maps to full yaw output. |
 
+### Parameter module ownership and upgrades
+
+The public Copter namespace remains one `GEO_` group with the same 57 names
+and defaults. Internally, the parameters now live beside the components that
+consume them:
+
+| Owner | Parameter count | Definition source |
+| --- | ---: | --- |
+| Position PID | 13 | `AC_Geometric_Position_PID.cpp` |
+| Attitude PID | 17 | `AC_Geometric_Attitude_PID.cpp` |
+| Output mapper | 4 | `AC_Geometric_OutputMapper.cpp` |
+| Translational setpoint shaper | 6 | `AC_Geometric_SetpointShaper.cpp` |
+| Yaw shaper | 3 | `AC_Geometric_YawShaper.cpp` |
+| Controller output gate | 1 | `AC_GeometricControl.cpp` |
+| Loiter reference | 13 | `AC_Geometric_LoiterReference.cpp` |
+
+`AC_GeometricControl::var_info` uses empty-prefix subgroups, so this ownership
+split does not rename parameters or require a new ground-station setup. The 43
+parameters in the first five rows do acquire new nested AP_Param storage
+identities. During Copter parameter loading, frozen per-module legacy tables
+copy configured values from the former flat `GEO_` layout only when the new
+target storage is not already configured. Repeating the conversion therefore
+does not overwrite a value saved by the new firmware. `GEO_OUT_EN` keeps its
+flat index 17 identity, the existing `GEO_LREF_` subgroup keeps root index 62,
+and indices 45 through 61 remain unused on the PID-only branch.
+
+Each module's `legacy_var_info` is a frozen description of the former storage
+schema. Do not change its indices or member types, and do not add future
+parameters to it; new parameters belong only in the current module `var_info`.
+
+The migration is forward-compatible, not a bidirectional mirror. Downgrading
+to a pre-module binary makes that binary read the older flat records, which may
+be stale after parameters were changed on the new firmware. Export the current
+parameter set before a downgrade, then wipe/reapply it when crossing this
+storage-layout boundary.
+
 The gain parameters affect the observer paths whenever `GUID_OPTIONS bit 1` or
 `LOIT_OPTIONS bit 1` is set. They affect active motor output only when the
 corresponding mode requests full-geometric ownership and all runtime gates pass.
@@ -517,6 +555,56 @@ handoff.
 
 ## SITL Coverage
 
+### Current PID-only module-split validation (2026-08-08)
+
+The parameter-module split was validated on `geometric-SE3-control` based on
+`7a907217175ace2842e2e0390a8f976ec6482d04`:
+
+- Copter SITL firmware build: PASS (`Text=4,485,494 B`, `Data=218,725 B`,
+  `BSS=226,272 B`, total flash usage `4,704,219 B`). The resulting ELF SHA-256
+  is `b71b47f7b632c93b4fc829b125330f37c5a663cb27749d65bee4c7d51d1e7829`.
+  Relative to the pre-split build, Text/Data/BSS/flash changed by
+  `+3,064/+1,856/0/+4,920 B`.
+- Eight geometric unit-test binaries: 91/91 PASS. This comprises Loiter
+  reference 25/25, position PID 16/16, attitude PID 12/12, Guided target
+  manager 11/11, output mapper 6/6, setpoint shaper 12/12, yaw shaper 6/6,
+  and external attitude-target publication 3/3.
+- `GeometricParameterModules`: PASS. It requires an exact 57/57 public
+  `GEO_` name set, verifies all 57 compiled defaults, rejects SANM parameters
+  in the PID-only build, and verifies restart persistence for all 43 moved
+  parameters plus `GEO_OUT_EN` and `GEO_LREF_VXY` as unmoved canaries.
+- The repository-native old-to-new EEPROM upgrade test: 45/45 PASS using the
+  pre-split binary to write all 43 moved parameters plus the two canaries, then
+  the new binary with `wipe=False`. A second new-firmware write and
+  `wipe=False` restart also passed 45/45, proving that stale legacy slots do not
+  overwrite configured nested values. Reproduce it with:
+
+  ```bash
+  Tools/autotest/ardugeo_parameter_module_upgrade.py \
+    --old-binary /path/to/pre-module/arducopter \
+    --new-binary build/sitl/bin/arducopter
+  ```
+
+  Build the old binary from the pre-split `7a90721717` revision and supply the
+  module-split build as the new binary. The script rejects identical binary
+  content, but the caller remains responsible for that schema provenance. It
+  creates a retained `/tmp/ardugeo-param-module-upgrade-*` work directory by
+  default, or accepts an explicitly empty directory through `--work-dir`; it
+  preserves EEPROM snapshots from all four stages for review.
+- ArduCopter parameter metadata, Copter logger metadata, and autotest Python
+  syntax checks: PASS.
+- All 16 geometric controller SITL regressions: PASS. These cover the three
+  Guided/Loiter observer paths; Guided lifecycle, output-disabled, active,
+  hover, and filtered-noise gates; position, shaped-position, yaw, combined
+  position/yaw, and in-flight switching maneuvers; and the three Loiter
+  takeoff/landing, airborne-entry, and active-output tests.
+
+These results validate parameter compatibility and the existing SITL control
+contracts. They do not constitute HIL, physical-flight, performance-advantage,
+or downgrade-without-reconfiguration evidence.
+
+### Historical architecture checkpoint (2026-07-16)
+
 The PID-only Guided/Loiter architecture port based on `5904bfbb29` was
 validated on 2026-07-16 after the Guided/Loiter architecture port and the
 single-FMT logging fix:
@@ -567,9 +655,10 @@ The focused SITL evidence is:
   passed; the telemetry window stayed within `0.036432 m` horizontal and
   `0.354999 m` vertical drift.
 
-The other Guided observer, hover, single-axis step and filtered-noise tests
-remain available in `Tools/autotest/arducopter.py`, but were not rerun in this
-focused post-port validation.
+At this historical checkpoint, the other Guided observer, hover, single-axis
+step, and filtered-noise tests remained available in
+`Tools/autotest/arducopter.py` but were not rerun. They are included in the
+2026-08-08 current validation above.
 
 There is no current exact-frame SITL coverage for Guided `PosVelAccel`, ground
 arming rejection with `GEO_OUT_EN=0`, non-finite pre-arm fault injection,

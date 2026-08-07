@@ -1,6 +1,30 @@
 #pragma once
 
+#include <AP_Param/AP_Param.h>
+
 #include "AC_Geometric_Types.h"
+
+// Persistent normalization parameters for the ArduPilot-facing mapper.
+class AC_Geometric_OutputMapper_Params {
+public:
+    AC_Geometric_OutputMapper_Params();
+
+    static const AP_Param::GroupInfo var_info[];
+
+    float hover_throttle_override() const { return _hover_throttle_norm.get(); }
+    Vector3f moment_norm() const;
+    void convert_legacy_params(uint16_t old_key);
+
+private:
+    // Frozen migration table. Do not change mapped member types or add future
+    // parameters here.
+    static const AP_Param::GroupInfo legacy_var_info[];
+
+    AP_Float _hover_throttle_norm;
+    AP_Float _moment_norm_x;
+    AP_Float _moment_norm_y;
+    AP_Float _moment_norm_z;
+};
 
 // Integration adapter between geometric outputs (f, M) and ArduPilot's
 // normalized actuator-intent vector u_geo. This is not a rotor-force

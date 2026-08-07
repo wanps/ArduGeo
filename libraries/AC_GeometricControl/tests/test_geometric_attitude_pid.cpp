@@ -49,6 +49,23 @@ Vector3f rotate_target_body_to_current_body(const Quaternion& attitude_body_to_n
 
 }
 
+TEST(AC_Geometric_Attitude_PID, ParameterDefaultsMatchRuntimeBaseline)
+{
+    AC_Geometric_Attitude_PID_Params params;
+    const AC_Geometric_Attitude_Gains gains = params.gains();
+    const AC_Geometric_Attitude_Model model = params.model();
+    const AC_Geometric_Attitude_Filter_Hz filters = params.filter_hz();
+    const AC_Geometric_Attitude_Integral_Limits limits = params.integral_limits();
+
+    EXPECT_EQ(gains.attitude_p, Vector3f(4.0f, 4.0f, 2.0f));
+    EXPECT_EQ(gains.omega_p, Vector3f(0.2f, 0.2f, 0.4f));
+    EXPECT_EQ(gains.attitude_i, Vector3f(0.0f, 0.0f, 0.1f));
+    EXPECT_EQ(gains.integral_error_p, Vector3f(0.5f, 0.5f, 0.5f));
+    EXPECT_EQ(model.inertia, Vector3f(0.010f, 0.020f, 0.020f));
+    EXPECT_EQ(limits.integral_error, Vector3f(0.0f, 0.0f, 1.0f));
+    EXPECT_FLOAT_EQ(filters.omega_error, 0.0f);
+}
+
 TEST(AC_Geometric_Attitude_PID, DefaultModelUsesGaoReferenceInertia)
 {
     AC_Geometric_Attitude_PID controller;

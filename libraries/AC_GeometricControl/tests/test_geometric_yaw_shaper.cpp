@@ -39,6 +39,17 @@ AC_Geometric_Target empty_position_target()
 
 }
 
+TEST(AC_Geometric_YawShaper, ParameterDefaultsMatchRuntimeBaseline)
+{
+    AC_Geometric_YawShaper_Params params;
+    const AC_Geometric_Yaw_Shaper_Limits limits = params.limits(0.05f);
+
+    EXPECT_TRUE(limits.explicit_yaw_enabled);
+    EXPECT_FLOAT_EQ(limits.yaw_rate_max_rads, 1.0f);
+    EXPECT_FLOAT_EQ(limits.yaw_accel_max_radss, 1.0f);
+    EXPECT_FLOAT_EQ(limits.trajectory_min_speed_ms, 0.05f);
+}
+
 TEST(AC_Geometric_YawShaper, ExplicitYawIsRateAndAccelerationLimited)
 {
     AC_Geometric_YawShaper shaper;

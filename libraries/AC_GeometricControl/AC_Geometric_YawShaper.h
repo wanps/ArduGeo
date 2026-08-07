@@ -1,6 +1,28 @@
 #pragma once
 
+#include <AP_Param/AP_Param.h>
+
 #include "AC_Geometric_Types.h"
+
+// Persistent limits for the Guided yaw reference shaper.
+class AC_Geometric_YawShaper_Params {
+public:
+    AC_Geometric_YawShaper_Params();
+
+    static const AP_Param::GroupInfo var_info[];
+
+    AC_Geometric_Yaw_Shaper_Limits limits(float trajectory_min_speed_ms) const;
+    void convert_legacy_params(uint16_t old_key);
+
+private:
+    // Frozen migration table. Do not change mapped member types or add future
+    // parameters here.
+    static const AP_Param::GroupInfo legacy_var_info[];
+
+    AP_Int8 _explicit_yaw_enabled;
+    AP_Float _yaw_rate_max_rads;
+    AP_Float _yaw_accel_max_radss;
+};
 
 // Guided front-end yaw reference shaper. It follows ArduPilot's
 // angle/velocity/acceleration helper but owns yaw_d and the yaw-rate reference

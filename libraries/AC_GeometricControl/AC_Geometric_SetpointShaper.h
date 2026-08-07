@@ -1,6 +1,33 @@
 #pragma once
 
+#include <AP_Param/AP_Param.h>
+
 #include "AC_Geometric_Types.h"
+
+// Persistent limits for the Guided translational reference shaper. SHAPE_EN
+// is the shared gate for both translational and yaw shaping.
+class AC_Geometric_SetpointShaper_Params {
+public:
+    AC_Geometric_SetpointShaper_Params();
+
+    static const AP_Param::GroupInfo var_info[];
+
+    bool enabled() const { return _enabled.get() != 0; }
+    AC_Geometric_Setpoint_Shaper_Limits limits() const;
+    void convert_legacy_params(uint16_t old_key);
+
+private:
+    // Frozen migration table. Do not change mapped member types or add future
+    // parameters here.
+    static const AP_Param::GroupInfo legacy_var_info[];
+
+    AP_Int8 _enabled;
+    AP_Float _vel_xy_max_ms;
+    AP_Float _accel_xy_max_mss;
+    AP_Float _vel_up_max_ms;
+    AP_Float _vel_down_max_ms;
+    AP_Float _accel_z_max_mss;
+};
 
 // Guided reference shaper. It keeps an internal x_d, v_d and a_d state, then
 // advances it toward the raw Guided target with ArduPilot's jerk-limited

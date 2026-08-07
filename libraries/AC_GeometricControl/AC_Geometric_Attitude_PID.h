@@ -1,6 +1,45 @@
 #pragma once
 
+#include <AP_Param/AP_Param.h>
+
 #include "AC_Geometric_Types.h"
+
+// Persistent configuration for the Lee SO(3) PID attitude channel.
+class AC_Geometric_Attitude_PID_Params {
+public:
+    AC_Geometric_Attitude_PID_Params();
+
+    static const AP_Param::GroupInfo var_info[];
+
+    AC_Geometric_Attitude_Gains gains() const;
+    AC_Geometric_Attitude_Model model() const;
+    AC_Geometric_Attitude_Filter_Hz filter_hz() const;
+    AC_Geometric_Attitude_Integral_Limits integral_limits() const;
+    void convert_legacy_params(uint16_t old_key);
+
+private:
+    // Frozen migration table. Do not change mapped member types or add future
+    // parameters here.
+    static const AP_Param::GroupInfo legacy_var_info[];
+
+    AP_Float _kr_x;
+    AP_Float _kr_y;
+    AP_Float _kr_z;
+    AP_Float _ko_x;
+    AP_Float _ko_y;
+    AP_Float _ko_z;
+    AP_Float _ki_x;
+    AP_Float _ki_y;
+    AP_Float _ki_z;
+    AP_Float _imax_x;
+    AP_Float _imax_y;
+    AP_Float _imax_z;
+    AP_Float _integral_error_p;
+    AP_Float _inertia_x;
+    AP_Float _inertia_y;
+    AP_Float _inertia_z;
+    AP_Float _omega_error_filt_hz;
+};
 
 // Lee SO(3) attitude and angular-rate channel. It tracks either a direct
 // attitude target R_d or the position-generated R_c and produces the
