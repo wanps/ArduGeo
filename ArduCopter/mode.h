@@ -567,6 +567,8 @@ public:
     bool allows_inverted() const override { return true; };
 #endif
     bool move_vehicle_on_ekf_reset() const override;
+    bool allows_geometric_motor_output() const override;
+    void handle_geometric_motor_output_fallback() override;
 
 #if AP_COPTER_ADVANCED_FAILSAFE_ENABLED
     // Return the type of this mode for use by advanced failsafe
@@ -673,8 +675,10 @@ private:
         AllowTakeOffWithoutRaisingThrottle = (1 << 1U),
         IgnorePilotYaw                     = (1 << 2U),
         AllowWeatherVaning                 = (1 << 7U),
+        GeometricMotorOutput               = (1 << 8U),
     };
     bool option_is_enabled(Option option) const;
+    bool geometric_wp_reference_supported(const AC_AttitudeControl::HeadingCommand& heading) const;
 
     // Enter auto rtl pseudo mode
     bool enter_auto_rtl(ModeReason reason);
@@ -706,6 +710,10 @@ private:
     bool get_loc_from_cmd(const AP_Mission::Mission_Command& cmd, const Location& default_loc, Location& loc) const WARN_IF_UNUSED;
 
     SubMode _mode = SubMode::TAKEOFF;   // controls which auto controller is run
+    bool _geometric_wp_reference_supported = false;
+    bool _geometric_wp_motor_output_prepared = false;
+    bool _geometric_wp_motor_output_active = false;
+    bool _geometric_wp_motor_output_rejected = false;
 #if HAL_LOGGING_ENABLED
     uint8_t _geometric_wp_log_counter = 0;
     uint32_t _geometric_wp_observer_frames = 0;
