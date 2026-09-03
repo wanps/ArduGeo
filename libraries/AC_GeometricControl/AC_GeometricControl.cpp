@@ -101,6 +101,50 @@ bool AC_GeometricControl::output_is_fresh(uint32_t now_ms, uint32_t max_age_ms) 
     return output_age_ms(now_ms) <= max_age_ms;
 }
 
+bool AC_GeometricControl::reference_to_target(const AC_TrajectoryReference& reference,
+                                              AC_Geometric_Target& target)
+{
+    if (!reference.is_valid() ||
+        reference.heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only) {
+        return false;
+    }
+
+    AC_Geometric_Target converted {};
+    converted.position_ned_m = reference.position_ned_m.tofloat();
+    if (converted.position_ned_m.is_nan() || converted.position_ned_m.is_inf()) {
+        return false;
+    }
+    converted.velocity_ned_ms = reference.velocity_ned_ms;
+    converted.accel_ned_mss = reference.acceleration_ned_mss;
+    converted.build_attitude_from_position = true;
+    converted.shape_position_target = false;
+    converted.shape_yaw_target = false;
+    converted.yaw_rad = reference.heading.yaw_angle_rad;
+    if (reference.heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate) {
+        converted.yaw_rate_rads = reference.heading.yaw_rate_rads;
+        converted.omega_body_rads.z = reference.heading.yaw_rate_rads;
+    }
+    target = converted;
+    return true;
+}
+
+bool AC_GeometricControl::reference_to_target(const AC_AttitudeReference& reference,
+                                              AC_Geometric_Target& target)
+{
+    if (!reference.is_valid()) {
+        return false;
+    }
+
+    AC_Geometric_Target converted {};
+    converted.attitude_body_to_ned = reference.attitude_body_to_ned;
+    converted.omega_body_rads = reference.angular_velocity_body_rads;
+    converted.omega_dot_body_radss = reference.angular_acceleration_body_radss;
+    converted.shape_position_target = false;
+    converted.shape_yaw_target = false;
+    target = converted;
+    return true;
+}
+
 void AC_GeometricControl::update_gains_from_params()
 {
     // Refreshing AP_Param-backed configuration here keeps QGC/MAVProxy
