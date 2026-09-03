@@ -1,12 +1,14 @@
-# ArduGeo Codex Project Rules v1.2
+# ArduGeo Codex Project Rules v1.3
 
 本文件是仓库现有根目录 `AGENTS.md` 的 ArduGeo 项目补充规则，不替代 ArduPilot 通用贡献规范。任何 AI Agent、Codex 或人工开发者在修改 ArduGeo 相关代码前，都必须同时阅读：
 
 - 根目录 `AGENTS.md`
-- `docs/ARDUGEO_ARCHITECTURE_V1_2.md`
+- `docs/ARDUGEO_ARCHITECTURE_V1_2.md`（稳定路径，内容版本 v1.3）
+- `docs/ARDUGEO_FLIGHT_MODE_CAPABILITY_TAXONOMY.md`
+- `docs/ARDUGEO_IMPLEMENTATION_STATUS.md`
 - 本文件
 
-本项目不是“把几何控制器尽快塞进更多 Mode”的功能堆叠任务，而是把 ArduGeo 逐步迁移成一套**可扩展、可验证、可回退、默认安全**的 ArduPilot 内部控制架构。
+本项目不是“所有 Mode 都必须 Full SE(3)”的覆盖率任务，而是把 ArduGeo 逐步迁移成一套**capability-based、可扩展、可验证、可回退、默认安全**的 ArduPilot 内部控制架构。
 
 ---
 
@@ -366,15 +368,19 @@ git diff --stat
 严格按架构文档中的阶段推进。默认顺序：
 
 ```text
-C0  v1.2.0 baseline freeze / remotes / 参数迁移事实核验
-C1  Safe-default audit（如需改变默认，独立实施）
-C2  controller-neutral reference types
-C3  state sampling / Geo integration bridge 从 Mode 移到 Copter
-C4  Guided/Loiter 迁移到新 adapter，行为必须等价
-C5  AUTO-WP observer-only
-Later  compatibility publication 泛化
-Later  selection/handoff helper 收敛，仍保留在 vehicle-level
-Later  AUTO-WP active ownership（需单独批准）
+C0  ✅ v1.2.0 baseline freeze
+C1  ✅ Safe defaults
+C2  ✅ controller-neutral reference types
+C3  ✅ state sampling / Geo integration bridge 移到 Copter
+C4  ✅ Guided/Loiter neutral reference migration
+C5  ✅ AUTO-WP observer-only
+C6  ✅ AUTO-WP active ownership
+C7  ✅ RTL supported WPNav phases observer-only
+C8  ✅ RTL supported WPNav phases active ownership
+C9  ✅ capability taxonomy + consolidation audit（只读，无代码）
+C10 ⏭ AUTO/RTL Full-Trajectory authorization minimal consolidation
+H1  ⏭ target MCU / timing / bench hardware gate
+C11+ Circle / SmartRTL / Follow 按 observer-first 继续扩展
 ```
 
 不得跳过 observer-only，直接给新 Mode 电机 ownership。
@@ -413,3 +419,150 @@ AUTO、RTL 等必须按 SubMode/Control Primitive 声明支持范围，禁止只
 5. 核对架构文档中列出的关键类、函数和文件是否存在，记录名称差异。
 6. 输出下一阶段 controller-neutral reference types 的精确实施计划和风险。
 7. 证明没有修改文件，然后停止等待批准。
+---
+
+## v1.3 Normative Addendum — Capability-Based Rules
+
+若本文件较早段落与本节冲突，以本节为准。
+
+### R-20：不得以“所有 Flight Mode 全覆盖”为设计目标
+
+必须先判断 control capability：
+
+```text
+FULL_TRAJECTORY
+POSITION_HYBRID
+ATTITUDE
+RATE
+DIRECT/SPECIAL
+```
+
+只有 reference semantics 与 ownership contract 都匹配时才能进入相应 Geo path。
+
+### R-21：Full SE(3) 与 SO(3) 不得强制共用同一 ownership contract
+
+当前 Full SE(3) 已验证的是 full-axis R/P/Y/T ownership。
+
+未来 SO(3) path 可能需要：
+
+```text
+Geo attitude/moment
++
+Native collective/vertical control
+```
+
+未经独立架构和安全评审，禁止引入 partial-axis ownership。
+
+### R-22：C10 只能做 Minimal Consolidation
+
+C10 只允许 AUTO 与 RTL 共用已证明同构的 Full-Trajectory authorization state。
+
+可以共享：
+
+```text
+prepared
+active
+rejected
+explicit opt-in acknowledge/reset
+```
+
+不得共享/抽走：
+
+```text
+Mode structural support
+reference generation
+AUTO_OPTIONS / RTL_OPTIONS bit semantics
+Mode lifecycle
+phase-specific cleanup
+```
+
+禁止在 C10：
+
+```text
+创建 ControllerManager
+修改 Attitude.cpp 执行顺序
+改变 same-frame handoff
+把 Guided/Loiter 强行迁入
+添加 Circle/SmartRTL/Follow 支持
+增加 SO(3)/Rate capability
+```
+
+### R-23：Observer-first 是所有新 Full-Trajectory path 的强制 Gate
+
+任何新的 active path 必须先有独立 observer 阶段，证明：
+
+```text
+reference source correctness
+frame correctness
+heading semantics
+finite/fresh
+no double shaping
+unsupported boundary
+Geo writes = 0
+Native frames = Main frames
+```
+
+之后才能单独批准 active ownership。
+
+### R-24：Flight Mode taxonomy 不能自动授权
+
+`FULL_TRAJECTORY` 只是审计标签。
+
+Circle、SmartRTL、Follow 等必须逐 Mode / phase 完成 observer 和 active review。
+
+### R-25：特殊模式保持 Native 是正确结果
+
+以下模式当前为 Native-only / excluded，不属于“欠覆盖”：
+
+```text
+Acro
+Flip
+AutoTune
+Throw
+SystemID
+Autorotate
+Turtle
+```
+
+### R-26：Hardware Gate H1
+
+C10 后继续大量扩 Mode 前，至少执行：
+
+```text
+target board build
+flash/RAM budget
+main-loop CPU timing
+watchdog/scheduler margin
+bench arm/disarm
+no-prop motor output
+Native↔Geo switch
+fault fallback
+```
+
+SITL PASS 不能替代 H1。
+
+### R-27：高风险阶段必须 patch review 后再 commit
+
+对以下任务默认使用：
+
+```text
+Codex implementation
+→ no commit
+→ export git diff patch
+→ human/architecture code review
+→ requested changes
+→ tests
+→ PASS
+→ commit / PR / Squash merge
+```
+
+至少适用于：
+
+```text
+active actuator ownership
+handoff/selection refactor
+arming/safety
+partial-axis ownership
+hardware-facing changes
+new controller capability
+```

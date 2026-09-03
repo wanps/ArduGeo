@@ -1,8 +1,11 @@
-# ArduGeo Architecture v1.2
+# ArduGeo Architecture v1.3
 
-**状态：** 架构与源码手术基线，供 Codex 规划、实施和代码审查使用
+**状态：** v1.3 规范架构基线，供 Codex 规划、实施和代码审查使用
+
+**文件路径说明：** 为避免现有 `AGENTS.md` 与施工脚本失效，仓库路径继续保留为 `docs/ARDUGEO_ARCHITECTURE_V1_2.md`；本文内容版本已升级为 **v1.3**。
+
 **目标车辆：** ArduPilot Copter / Multicopter
-**目标：** Native controller 与 Full Geometric Controller 安全并存，并逐步扩展到更多控制 primitive；为后续 L1、自适应和抗扰增强提供稳定基础。
+**目标：** Native controller 与几何控制器安全并存；按 control capability 覆盖所有适合几何控制的 Multicopter control paths，而不是追求所有 Flight Mode 机械式全覆盖；为后续 SO(3)、L1、自适应和抗扰增强提供稳定基础。
 
 > 本文中的接口签名属于设计草案。Codex 必须先核对冻结源码中的真实类型和 API，再按责任边界实施；不得把伪代码机械复制进仓库。
 
@@ -1047,12 +1050,10 @@ arming behavior
 新增：
 
 ```text
-libraries/AC_AttitudeControl/AC_ControlReference.h
+AC_ControlReference.h
 reference validity/finite/frame tests
 legacy AC_Geometric_Target adapter
 ```
-
-`AC_ControlReference.h` 不得放在 `libraries/AC_GeometricControl/` 下。
 
 验收：
 
@@ -1063,7 +1064,7 @@ legacy AC_Geometric_Target adapter
 无日志语义变化
 ```
 
-### Later — Compatibility publication generalization
+### Deferred — Compatibility publication generalization
 
 目标：
 
@@ -1086,7 +1087,7 @@ Geo cached output时序不变
 motor ownership不变
 ```
 
-### Later — Selection/handoff helper extraction
+### Deferred — Selection/handoff helper extraction
 
 收敛：
 
@@ -1144,9 +1145,9 @@ Geo output-write frames = 0
 Native rate frames = main frames
 ```
 
-### Later — AUTO-WP active ownership
+### C6 — AUTO-WP active ownership
 
-只有 C5 证据通过并单独批准后才能实施。
+只有 C5 observer 证据通过并单独批准后才能实施。
 
 必须覆盖：
 
@@ -1176,6 +1177,161 @@ land
 每个 phase 重复 observer-first 流程。
 
 ---
+
+
+### C7 — RTL WPNav observer-only
+
+已完成。
+
+范围按 RTL phase 与 reference capability 判断，而不是按整个 RTL Mode 判断：
+
+```text
+Initial Climb       Native-only（真实 HeadingCommand 为 Rate_Only）
+Return Home         Geo observer supported
+Loiter At Home      Geo observer supported
+Final Descent       Native-only
+Land                Native-only
+Terrain RTL         Native-only
+```
+
+要求：
+
+```text
+Geo calculated frames > 0 on supported phases
+Geo actuator-write frames = 0
+Native rate frames = main-rate frames
+unsupported phases fail closed
+```
+
+### C8 — RTL supported WPNav active ownership
+
+已完成。
+
+显式授权使用现有 `RTL_OPTIONS bit 8`，默认值保持 `0`；仍同时要求 `GEO_OUT_EN=1`。
+
+已验证：
+
+```text
+Initial Climb                        Native-only
+Return Home                          Geo-exclusive
+Return Home → Loiter At Home         continuous Geo ownership
+Final Descent / Land / Terrain       Native-only
+stale / nonfinite / disable          same-frame Native handoff
+hard fault                            rejected latch
+clear bit 8                           explicit acknowledge
+```
+
+### C9 — Capability taxonomy + selection/handoff consolidation audit
+
+已完成，只读审计，无生产代码变更。
+
+C9 的正式结论：
+
+```text
+C9 Recommendation: MINIMAL CONSOLIDATION
+```
+
+原因：
+
+- AUTO-WP 与 RTL Return/Loiter 已证明拥有同构的 Full-Trajectory authorization state；
+- Guided/Loiter 有更复杂且不同的 mode-specific lifecycle，暂不迁移；
+- ATTITUDE、RATE、DIRECT/SPECIAL 类 Mode 需要不同 reference 与 ownership contract；
+- 当前不应建立 Full ControllerManager。
+
+C9 同时正式修正项目目标：
+
+> 不再以“所有 Flight Mode 25/25 覆盖”为成功标准。
+> 成功标准是：**覆盖所有适合几何控制的 control path，并对不同 capability 使用正确的 reference 与 ownership contract。**
+
+详细分类见：
+
+```text
+docs/ARDUGEO_FLIGHT_MODE_CAPABILITY_TAXONOMY.md
+```
+
+### C10 — Full-Trajectory Authorization Minimal Consolidation
+
+下一施工阶段。
+
+只允许整合 AUTO 与 RTL 已经证明完全同构的状态：
+
+```text
+reference_supported
+prepared
+active
+rejected
+explicit opt-in acknowledge/reset
+```
+
+建议轻量类型：
+
+```text
+Mode::GeometricTrajectoryAuthorizationState
+```
+
+该类型只能服务：
+
+```text
+FULL_TRAJECTORY
++
+full-axis R/P/Y/T geometric ownership
+```
+
+明确不承诺适用于：
+
+```text
+Guided / Loiter lifecycle
+SO(3) attitude-only path
+Rate modes
+partial-axis ownership
+DIRECT/SPECIAL modes
+```
+
+C10 必须是纯重构：
+
+```text
+no new Mode support
+no new controller capability
+no change to Attitude.cpp execution semantics
+no change to same-frame handoff
+no change to AP_Param
+no change to WPNav/AutoYaw
+no change to Guided/Loiter
+```
+
+### Hardware Gate H1 — target MCU bring-up gate
+
+C10 后、继续大量扩 Mode 前应进入硬件 Gate。
+
+至少完成：
+
+```text
+target board firmware compile
+flash / RAM budget
+main-loop CPU timing
+watchdog / scheduler margin
+bench arm/disarm
+no-prop motor output
+Native ↔ Geo switching
+fault-triggered Native fallback
+```
+
+H1 不是物理飞行批准；HIL、真实 hover 与飞行测试仍是后续独立 gate。
+
+### C11+ — Full-Trajectory expansion track
+
+当前推荐顺序：
+
+```text
+C11  Circle observer-only
+C12  Circle active ownership（仅 observer 证据通过后）
+C13  SmartRTL WPNav phases observer-only
+Later Follow observer
+Later landing/final-descent lifecycle专题
+```
+
+不得因为 taxonomy 将某 Mode 标为 `FULL_TRAJECTORY` 就自动赋予 actuator ownership。
+
 
 ## 17. Validation matrix
 
@@ -1335,7 +1491,7 @@ Terrain reference正式表示
 上游提交拆分与命名
 ```
 
-这些开放项不得阻塞 C0–C5 的小步迁移，但也不得被 Codex 擅自“顺便决定”。
+这些开放项不得阻塞已经批准的小步迁移，但也不得被 Codex 擅自“顺便决定”。
 
 ---
 
@@ -1357,3 +1513,277 @@ Terrain reference正式表示
 ```
 
 达到这些条件后，才进入 AUTO-WP active ownership、RTL phase-by-phase 和 L1/adaptive augmentation 的后续开发。
+---
+
+## 20. v1.3 Normative Capability-Based Architecture
+
+> 本节是 v1.3 的规范性更新。若本文更早的 v1.2 设计描述与本节冲突，以本节为准。
+
+### 20.1 最终目标
+
+项目最终目标正式定义为：
+
+> 在 ArduPilot Copter 内建立一套**安全、可扩展、可回退的几何控制框架**，使所有适合几何控制的 control path 能按 capability 选择 Full SE(3) 或 SO(3) geometric control，同时保留 Native controller 作为安全基线，并为未来 L1 / adaptive / disturbance-rejection / learning augmentation 提供稳定平台。
+
+不再采用：
+
+```text
+“所有 Flight Mode 都必须经过 Full SE(3)”
+```
+
+作为目标。
+
+### 20.2 Controller capability family
+
+```text
+                         Flight Mode / Phase
+                    command semantics + lifecycle
+                              │
+                              ▼
+                    Capability-specific Reference
+                              │
+             ┌────────────────┼────────────────┐
+             │                │                │
+ AC_TrajectoryReference  AC_AttitudeReference Future RateReference
+             │                │                │
+             ▼                ▼                ▼
+      Full SE(3) Geo       SO(3) Geo       Future rate path
+             │                │
+             └───────┬────────┘
+                     │
+          capability-specific authorization
+                     │
+                     ▼
+             Vehicle-level Arbiter
+             ArduCopter/Attitude.cpp
+                     │
+             one frame = one writer
+                     │
+                     ▼
+                  AP_Motors
+                     │
+                  Mixer/HAL
+```
+
+### 20.3 Capability definitions
+
+```text
+FULL_TRAJECTORY
+    有语义完整、finite、fresh 的 P/V/A + heading
+    → Full SE(3) 候选
+
+POSITION_HYBRID
+    仅部分轴使用 position/velocity，其余来自 pilot、landing 或其他状态机
+    → 逐 phase 评审；不能默认 Full SE(3)
+
+ATTITUDE
+    上游提供 attitude/rate 与独立 collective/climb/thrust
+    → SO(3) 候选，需要新的 ownership contract
+
+RATE
+    主要输入是 angular-rate + collective
+    → 当前 Full SE(3)/legacy adapter 不适用
+
+DIRECT/SPECIAL
+    直接 actuator、系统辨识、AutoTune、特殊安全生命周期
+    → 保持 Native / 专用实现
+```
+
+这些标签只用于设计审计，**不能成为运行时自动授权**。
+
+### 20.4 Current verified Full-Trajectory coverage
+
+截至 C8：
+
+```text
+Guided
+    existing ArduGeo supported submodes
+    observer + active
+
+Loiter
+    dedicated geometric PVA reference
+    observer + full-lifecycle active within supported boundary
+
+AUTO
+    WP / Spline
+    Native WPNav + AutoYaw reference
+    observer + active ownership
+
+RTL
+    Return Home / Loiter At Home
+    Native WPNav + AutoYaw reference
+    observer + active ownership
+
+RTL Initial Climb
+    Rate_Only heading
+    Native-only
+
+RTL Final Descent / Land / Terrain
+    different lifecycle/reference semantics
+    Native-only
+```
+
+### 20.5 Full SE(3) 与 SO(3) 路线必须分开
+
+Full SE(3) 典型 ownership：
+
+```text
+Geo owns R/P/Y/T actuator intent
+```
+
+未来 Stabilize / Guided_NoGPS / AltHold 等 SO(3) 候选很可能需要：
+
+```text
+Geo owns attitude/moment channels
+Native retains collective / vertical-control semantics
+```
+
+因此两者**不是同一个 ownership contract**。
+
+当前禁止为了“统一”提前实现 partial-axis ownership 或万能 ControllerManager。
+
+### 20.6 Stabilize 的正式定位
+
+`STABILIZE` 属于 `ATTITUDE` capability：
+
+```text
+pilot roll/pitch
+      ↓
+attitude target
+
+pilot yaw
+      ↓
+yaw-rate target
+
+pilot throttle
+      ↓
+manual collective
+```
+
+因此：
+
+```text
+STABILIZE → Full SE(3): NO
+STABILIZE → Future SO(3): possible
+```
+
+Stabilize 不属于当前 Full-Trajectory 主线，不应为了覆盖率伪造 P/V/A reference。
+
+### 20.7 Native-only / excluded set
+
+以下模式当前不进入常规 Full SE(3) 迁移路线：
+
+```text
+Acro
+Flip
+AutoTune
+Throw
+SystemID
+Autorotate
+Turtle
+```
+
+原因不是“尚未实现”，而是它们的控制语义并不适合当前 Full-Trajectory contract。
+
+### 20.8 Minimal consolidation boundary
+
+C9 之后只批准：
+
+```text
+AUTO + RTL
+    ↓
+GeometricTrajectoryAuthorizationState
+```
+
+共享：
+
+```text
+prepared
+active
+rejected
+opt-in acknowledge/reset
+```
+
+仍由各 Mode 自己负责：
+
+```text
+structural support
+reference generation
+parameter bit
+Mode lifecycle
+phase-specific cleanup
+```
+
+Guided / Loiter 暂不迁移。
+
+`Attitude.cpp` 继续保持最终 actuator ownership boundary。
+
+### 20.9 Compatibility publication
+
+Compatibility publication 仍是必要的架构能力，但目前继续标记为 Deferred。
+
+当未来开始：
+
+```text
+Native reference generation continues
+Native feedback is intentionally stopped
+Geo exclusively owns feedback
+```
+
+或 SO(3) path 需要 Native public state 保持新鲜时，再正式泛化。
+
+### 20.10 Short / medium / long horizon
+
+Short horizon：
+
+```text
+C10 minimal consolidation
+Hardware Gate H1
+Circle observer
+Circle active
+SmartRTL observer
+```
+
+Medium horizon：
+
+```text
+SmartRTL active
+Follow observer / active
+landing / final-descent lifecycle专题
+HIL
+bench + tethered hover
+mode-transition flight tests
+fault-injection flight tests
+```
+
+Long horizon：
+
+```text
+SO(3) contract design
+Guided_NoGPS
+Stabilize
+AltHold
+
+then:
+
+Nominal Geo
+  +
+L1 adaptive
+disturbance observer
+robust/adaptive augmentation
+learning augmentation
+```
+
+### 20.11 Success criteria
+
+最终成功不以 Mode 数量计算，而以以下标准计算：
+
+1. 每个被支持 control path 都有语义正确的 capability-specific reference；
+2. observer-first 证明 reference equivalence；
+3. Active path 有 explicit opt-in；
+4. 一个 rate frame 只有一个有效 writer（除非未来单独批准 partial-axis contract）；
+5. fault 可同帧回 Native；
+6. hard fault 不自动重新接管；
+7. Native safety / estimator / AP_Motors 基础设施保持；
+8. target MCU、HIL、bench、真实飞行均通过阶段性 gate；
+9. advanced controller augmentation 不需要重新侵入 Flight Mode。
