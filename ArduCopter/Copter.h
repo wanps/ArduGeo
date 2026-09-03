@@ -758,7 +758,9 @@ private:
     void geometric_motor_output_to_motors();
 
     // geometric_control.cpp
-    bool update_geometric_controller(const AC_Geometric_Target& target,
+    bool update_geometric_controller(const AC_TrajectoryReference& trajectory_reference,
+                                     const AC_AttitudeReference* attitude_reference,
+                                     const AC_GeometricReferencePolicy& policy,
                                      bool enabled,
                                      AC_Geometric_State& state);
 

@@ -145,6 +145,38 @@ bool AC_GeometricControl::reference_to_target(const AC_AttitudeReference& refere
     return true;
 }
 
+bool AC_GeometricControl::references_to_target(
+    const AC_TrajectoryReference& trajectory_reference,
+    const AC_AttitudeReference* attitude_reference,
+    const AC_GeometricReferencePolicy& policy,
+    AC_Geometric_Target& target)
+{
+    AC_Geometric_Target converted {};
+    if (!reference_to_target(trajectory_reference, converted) ||
+        (!policy.build_attitude_from_position && attitude_reference == nullptr)) {
+        return false;
+    }
+
+    if (attitude_reference != nullptr) {
+        AC_Geometric_Target attitude_target {};
+        if (!reference_to_target(*attitude_reference, attitude_target)) {
+            return false;
+        }
+        if (!policy.build_attitude_from_position) {
+            converted.attitude_body_to_ned = attitude_target.attitude_body_to_ned;
+        }
+        converted.omega_body_rads = attitude_target.omega_body_rads;
+        converted.omega_dot_body_radss = attitude_target.omega_dot_body_radss;
+    }
+
+    converted.build_attitude_from_position = policy.build_attitude_from_position;
+    converted.shape_position_target = policy.shape_position_target;
+    converted.shape_yaw_target = policy.shape_yaw_target;
+    converted.yaw_from_trajectory = policy.yaw_from_trajectory;
+    target = converted;
+    return true;
+}
+
 void AC_GeometricControl::update_gains_from_params()
 {
     // Refreshing AP_Param-backed configuration here keeps QGC/MAVProxy

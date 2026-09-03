@@ -36,11 +36,28 @@ void Mode::handle_geometric_motor_output_fallback()
     copter.geometric_control.set_enabled(false);
 }
 
-bool Mode::run_geometric_observer(const AC_Geometric_Target& target,
+bool Mode::run_geometric_observer(const AC_TrajectoryReference& trajectory_reference,
+                                  const AC_AttitudeReference* attitude_reference,
+                                  const AC_GeometricReferencePolicy& policy,
                                   bool enabled,
                                   AC_Geometric_State& state)
 {
-    return copter.update_geometric_controller(target, enabled, state);
+    return copter.update_geometric_controller(trajectory_reference,
+                                              attitude_reference,
+                                              policy,
+                                              enabled,
+                                              state);
+}
+
+AC_ControlReferenceMeta Mode::make_control_reference_meta(
+    AC_ControlReferenceCapability capability) const
+{
+    AC_ControlReferenceMeta meta {};
+    meta.capability = capability;
+    meta.timestamp_ms = AP_HAL::millis();
+    meta.sequence = copter.main_rate_controller_frames();
+    meta.valid = true;
+    return meta;
 }
 
 #if AC_PAYLOAD_PLACE_ENABLED

@@ -216,6 +216,98 @@ TEST(AC_ControlReference, AttitudeAdapterPreservesFields)
     EXPECT_FALSE(target.shape_yaw_target);
 }
 
+TEST(AC_ControlReference, CompositeAdapterPreservesTrajectoryPolicy)
+{
+    const AC_TrajectoryReference trajectory = valid_trajectory_reference();
+    const AC_AttitudeReference attitude = valid_attitude_reference();
+    const AC_GeometricReferencePolicy policy {
+        true,
+        true,
+        true,
+        true
+    };
+    AC_Geometric_Target target {};
+
+    ASSERT_TRUE(AC_GeometricControl::references_to_target(trajectory,
+                                                          &attitude,
+                                                          policy,
+                                                          target));
+    EXPECT_EQ(target.position_ned_m, trajectory.position_ned_m.tofloat());
+    EXPECT_EQ(target.velocity_ned_ms, trajectory.velocity_ned_ms);
+    EXPECT_EQ(target.accel_ned_mss, trajectory.acceleration_ned_mss);
+    EXPECT_EQ(target.omega_body_rads, attitude.angular_velocity_body_rads);
+    EXPECT_EQ(target.omega_dot_body_radss, attitude.angular_acceleration_body_radss);
+    EXPECT_TRUE(target.build_attitude_from_position);
+    EXPECT_TRUE(target.shape_position_target);
+    EXPECT_TRUE(target.shape_yaw_target);
+    EXPECT_TRUE(target.yaw_from_trajectory);
+    EXPECT_FLOAT_EQ(target.yaw_rad, trajectory.heading.yaw_angle_rad);
+    EXPECT_FLOAT_EQ(target.yaw_rate_rads, trajectory.heading.yaw_rate_rads);
+}
+
+TEST(AC_ControlReference, CompositeAdapterPreservesDirectAttitude)
+{
+    const AC_TrajectoryReference trajectory = valid_trajectory_reference();
+    const AC_AttitudeReference attitude = valid_attitude_reference();
+    const AC_GeometricReferencePolicy policy {
+        false,
+        false,
+        false,
+        false
+    };
+    AC_Geometric_Target target {};
+
+    ASSERT_TRUE(AC_GeometricControl::references_to_target(trajectory,
+                                                          &attitude,
+                                                          policy,
+                                                          target));
+    EXPECT_EQ(target.position_ned_m, trajectory.position_ned_m.tofloat());
+    EXPECT_EQ(target.velocity_ned_ms, trajectory.velocity_ned_ms);
+    EXPECT_EQ(target.accel_ned_mss, trajectory.acceleration_ned_mss);
+    expect_quaternion_equal(target.attitude_body_to_ned,
+                            attitude.attitude_body_to_ned);
+    EXPECT_EQ(target.omega_body_rads, attitude.angular_velocity_body_rads);
+    EXPECT_EQ(target.omega_dot_body_radss, attitude.angular_acceleration_body_radss);
+    EXPECT_FALSE(target.build_attitude_from_position);
+}
+
+TEST(AC_ControlReference, CompositeAdapterFailsAtomically)
+{
+    AC_Geometric_Target target {};
+    target.position_ned_m = Vector3f{1.0f, 2.0f, 3.0f};
+    target.yaw_rad = 1.0f;
+    const AC_Geometric_Target expected = target;
+    AC_TrajectoryReference trajectory = valid_trajectory_reference();
+    AC_AttitudeReference attitude = valid_attitude_reference();
+    const AC_GeometricReferencePolicy direct_attitude_policy {
+        false,
+        false,
+        false,
+        false
+    };
+
+    trajectory.heading.heading_mode = AC_AttitudeControl::HeadingMode::Rate_Only;
+    EXPECT_FALSE(AC_GeometricControl::references_to_target(trajectory,
+                                                           &attitude,
+                                                           direct_attitude_policy,
+                                                           target));
+    expect_target_equal(target, expected);
+
+    trajectory = valid_trajectory_reference();
+    EXPECT_FALSE(AC_GeometricControl::references_to_target(trajectory,
+                                                           nullptr,
+                                                           direct_attitude_policy,
+                                                           target));
+    expect_target_equal(target, expected);
+
+    attitude.angular_velocity_body_rads.x = std::numeric_limits<float>::infinity();
+    EXPECT_FALSE(AC_GeometricControl::references_to_target(trajectory,
+                                                           &attitude,
+                                                           direct_attitude_policy,
+                                                           target));
+    expect_target_equal(target, expected);
+}
+
 TEST(AC_ControlReference, AdapterFailureDoesNotModifyTarget)
 {
     AC_Geometric_Target target {};

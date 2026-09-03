@@ -56,6 +56,10 @@ public:
                                     AC_Geometric_Target& target);
     static bool reference_to_target(const AC_AttitudeReference& reference,
                                     AC_Geometric_Target& target);
+    static bool references_to_target(const AC_TrajectoryReference& trajectory_reference,
+                                     const AC_AttitudeReference* attitude_reference,
+                                     const AC_GeometricReferencePolicy& policy,
+                                     AC_Geometric_Target& target);
 
     const AC_Geometric_Output& get_output() const { return _output; }
     const AC_Geometric_Target& get_raw_target() const { return _raw_target; }

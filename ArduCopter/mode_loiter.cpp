@@ -494,26 +494,34 @@ AC_Geometric_LoiterReference_Limits ModeLoiter::geometric_reference_limits() con
     return limits;
 }
 
-void ModeLoiter::build_geometric_ground_safe_target(AC_Geometric_Target& target) const
+void ModeLoiter::build_geometric_ground_safe_reference(
+    AC_TrajectoryReference& trajectory_reference,
+    AC_AttitudeReference& attitude_reference) const
 {
     // Ground-safe boundary: measured state plus a_d=(0,0,g) cancels
     // gravity in NED and yields nominally zero collective. AP_Motors still
     // owns arming, interlock, idle and spool enforcement.
-    target = {};
-    target.position_ned_m = pos_control->get_pos_estimate_NED_m().tofloat();
+    trajectory_reference = {};
+    trajectory_reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
+    trajectory_reference.position_ned_m = pos_control->get_pos_estimate_NED_m();
     // Match the measured velocity as well as position so estimator noise does
     // not create a synthetic -Kv*v command during pre-arm or touchdown
     // spool-down.  This makes the +g target a true zero-collective pass-through.
-    target.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
+    trajectory_reference.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
     // +g NED cancels gravity in the geometric position channel, producing a
     // finite zero-collective command while AP_Motors owns spool/idle state.
-    target.accel_ned_mss = Vector3f{0.0f, 0.0f, GRAVITY_MSS};
-    ahrs.get_quat_body_to_ned(target.attitude_body_to_ned);
-    target.omega_body_rads = ahrs.get_gyro_latest();
-    target.build_attitude_from_position = false;
-    target.shape_position_target = false;
-    target.shape_yaw_target = false;
-    target.yaw_rad = ahrs.get_yaw_rad();
+    trajectory_reference.acceleration_ned_mss = Vector3f{0.0f, 0.0f, GRAVITY_MSS};
+    trajectory_reference.heading = {
+        ahrs.get_yaw_rad(),
+        0.0f,
+        AC_AttitudeControl::HeadingMode::Angle_Only
+    };
+
+    attitude_reference = {};
+    attitude_reference.meta = trajectory_reference.meta;
+    attitude_reference.meta.capability = AC_ControlReferenceCapability::ATTITUDE;
+    ahrs.get_quat_body_to_ned(attitude_reference.attitude_body_to_ned);
+    attitude_reference.angular_velocity_body_rads = ahrs.get_gyro_latest();
 }
 
 bool ModeLoiter::run_geometric_loiter_reference(AltHoldModeState loiter_state,
@@ -540,11 +548,22 @@ bool ModeLoiter::run_geometric_loiter_reference(AltHoldModeState loiter_state,
             return false;
         }
         _geometric_reference_status = {};
-        build_geometric_ground_safe_target(target);
+        AC_TrajectoryReference trajectory_reference {};
+        AC_AttitudeReference attitude_reference {};
+        build_geometric_ground_safe_reference(trajectory_reference, attitude_reference);
         copter.geometric_control.reset();
         ground_safe_prepared = true;
         _geometric_reference_frames++;
-        return update_geometric_observer(loiter_state, &target) &&
+        const AC_GeometricReferencePolicy policy {
+            false,
+            false,
+            false,
+            false
+        };
+        return update_geometric_observer(loiter_state,
+                                         &trajectory_reference,
+                                         &attitude_reference,
+                                         policy) &&
                _geometric_motor_output_active;
     }
 
@@ -587,12 +606,22 @@ bool ModeLoiter::run_geometric_loiter_reference(AltHoldModeState loiter_state,
                     return false;
                 }
                 _geometric_reference_status = {};
-                build_geometric_ground_safe_target(target);
+                AC_TrajectoryReference trajectory_reference {};
+                AC_AttitudeReference attitude_reference {};
+                build_geometric_ground_safe_reference(trajectory_reference, attitude_reference);
                 copter.geometric_control.reset();
                 ground_safe_prepared = true;
                 _geometric_reference_frames++;
+                const AC_GeometricReferencePolicy policy {
+                    false,
+                    false,
+                    false,
+                    false
+                };
                 return update_geometric_observer(AltHoldModeState::Landed_Pre_Takeoff,
-                                                  &target) &&
+                                                  &trajectory_reference,
+                                                  &attitude_reference,
+                                                  policy) &&
                        _geometric_motor_output_active;
             }
         }
@@ -687,7 +716,25 @@ bool ModeLoiter::run_geometric_loiter_reference(AltHoldModeState loiter_state,
     }
 
     _geometric_reference_frames++;
-    return update_geometric_observer(loiter_state, &target) &&
+    AC_TrajectoryReference trajectory_reference {};
+    trajectory_reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
+    trajectory_reference.position_ned_m = target.position_ned_m.topostype();
+    trajectory_reference.velocity_ned_ms = target.velocity_ned_ms;
+    trajectory_reference.acceleration_ned_mss = target.accel_ned_mss;
+    trajectory_reference.heading = {
+        target.yaw_rad,
+        target.yaw_rate_rads,
+        AC_AttitudeControl::HeadingMode::Angle_And_Rate
+    };
+    AC_AttitudeReference attitude_reference {};
+    attitude_reference.meta = trajectory_reference.meta;
+    attitude_reference.meta.capability = AC_ControlReferenceCapability::ATTITUDE;
+    ahrs.get_quat_body_to_ned(attitude_reference.attitude_body_to_ned);
+    attitude_reference.angular_velocity_body_rads = target.omega_body_rads;
+    attitude_reference.angular_acceleration_body_radss = target.omega_dot_body_radss;
+    return update_geometric_observer(loiter_state,
+                                     &trajectory_reference,
+                                     &attitude_reference) &&
            _geometric_motor_output_active;
 }
 
@@ -906,13 +953,16 @@ void ModeLoiter::write_geometric_lifecycle_frame(uint8_t phase) const
 #endif
 }
 
-bool ModeLoiter::update_geometric_observer(AltHoldModeState loiter_state,
-                                           const AC_Geometric_Target* reference_target)
+bool ModeLoiter::update_geometric_observer(
+    AltHoldModeState loiter_state,
+    const AC_TrajectoryReference* trajectory_reference,
+    const AC_AttitudeReference* attitude_reference,
+    AC_GeometricReferencePolicy policy)
 {
-    // A non-null target is the dedicated full-geometric Loiter reference. A
-    // null target is the native-reference comparison/observer path and must
+    // A non-null trajectory is the dedicated full-geometric Loiter reference.
+    // A null trajectory is the native-reference comparison/observer path and must
     // not publish externally owned compatibility references.
-    const bool dedicated_reference = reference_target != nullptr;
+    const bool dedicated_reference = trajectory_reference != nullptr;
     const bool motor_output_option_requested = loiter_nav->geometric_motor_output_enabled();
     const bool motor_output_requested = geometric_motor_output_requested();
     if (!motor_output_option_requested) {
@@ -948,10 +998,11 @@ bool ModeLoiter::update_geometric_observer(AltHoldModeState loiter_state,
         return false;
     }
 
-    AC_Geometric_Target target = dedicated_reference ? *reference_target : AC_Geometric_Target{};
     const bool ground_safe = loiter_state == AltHoldModeState::MotorStopped ||
                              loiter_state == AltHoldModeState::Landed_Ground_Idle ||
                              loiter_state == AltHoldModeState::Landed_Pre_Takeoff;
+    AC_TrajectoryReference native_trajectory_reference {};
+    AC_AttitudeReference native_attitude_reference {};
     if (!dedicated_reference && ground_safe) {
         // A position hold target with zero acceleration would request hover
         // thrust even before takeoff.  Direct SO(3) pass-through plus +g NED
@@ -960,38 +1011,42 @@ bool ModeLoiter::update_geometric_observer(AltHoldModeState loiter_state,
         // Rigid-body transport feed-forward may retain a bounded moment at a
         // non-zero measured body rate.  AP_Motors owns arming, interlock, idle
         // and spool constraints.
-        const Vector3p& position_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
-        target.position_ned_m = Vector3f{float(position_estimate_ned_m.x),
-                                        float(position_estimate_ned_m.y),
-                                        float(position_estimate_ned_m.z)};
-        target.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
-        target.accel_ned_mss = Vector3f{0.0f, 0.0f, GRAVITY_MSS};
-        ahrs.get_quat_body_to_ned(target.attitude_body_to_ned);
-        target.omega_body_rads = ahrs.get_gyro_latest();
-        target.build_attitude_from_position = false;
+        build_geometric_ground_safe_reference(native_trajectory_reference,
+                                              native_attitude_reference);
+        trajectory_reference = &native_trajectory_reference;
+        attitude_reference = &native_attitude_reference;
+        policy.build_attitude_from_position = false;
         copter.geometric_control.reset();
     } else if (!dedicated_reference) {
-        const Vector3p& position_target_ned_m = pos_control->get_pos_target_NED_m();
-        target.position_ned_m = Vector3f{float(position_target_ned_m.x),
-                                        float(position_target_ned_m.y),
-                                        float(position_target_ned_m.z)};
-        target.velocity_ned_ms = pos_control->get_vel_desired_NED_ms();
-        target.accel_ned_mss = pos_control->get_accel_desired_NED_mss();
-        target.omega_body_rads = attitude_control->get_attitude_target_ang_vel();
-        target.build_attitude_from_position = true;
-        target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
-        target.yaw_rate_rads = attitude_control->get_rate_ef_target_rads().z;
+        native_trajectory_reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
+        native_trajectory_reference.position_ned_m = pos_control->get_pos_target_NED_m();
+        native_trajectory_reference.velocity_ned_ms = pos_control->get_vel_desired_NED_ms();
+        native_trajectory_reference.acceleration_ned_mss = pos_control->get_accel_desired_NED_mss();
+        native_trajectory_reference.heading = {
+            attitude_control->get_att_target_euler_rad().z,
+            attitude_control->get_rate_ef_target_rads().z,
+            AC_AttitudeControl::HeadingMode::Angle_And_Rate
+        };
+        native_attitude_reference.meta = native_trajectory_reference.meta;
+        native_attitude_reference.meta.capability = AC_ControlReferenceCapability::ATTITUDE;
+        native_attitude_reference.attitude_body_to_ned = attitude_control->get_attitude_target_quat();
+        native_attitude_reference.angular_velocity_body_rads = attitude_control->get_attitude_target_ang_vel();
+        trajectory_reference = &native_trajectory_reference;
+        attitude_reference = &native_attitude_reference;
     }
-    target.shape_position_target = false;
-    target.shape_yaw_target = false;
 
     AC_Geometric_State state {};
-    if (!run_geometric_observer(target, true, state)) {
+    if (!run_geometric_observer(*trajectory_reference,
+                                attitude_reference,
+                                policy,
+                                true,
+                                state)) {
         if (dedicated_reference) {
             pos_control->clear_external_reference();
         }
         return false;
     }
+    const AC_Geometric_Target& target = copter.geometric_control.get_raw_target();
 
     if (dedicated_reference) {
         // Several vehicle-level safety and telemetry consumers read these
