@@ -85,6 +85,11 @@ bool ModeRTL::init(bool ignore_checks)
             return false;
         }
     }
+    stop_geometric_wpnav_observer();
+#if HAL_LOGGING_ENABLED
+    _geometric_wpnav_log_counter = 0;
+    _geometric_wpnav_observer_frames = 0;
+#endif
     // initialise waypoint and spline controller
     wp_nav->wp_and_spline_init_m(speed_ms.get());
     _state = SubMode::STARTING;
@@ -104,9 +109,15 @@ bool ModeRTL::init(bool ignore_checks)
     return true;
 }
 
+void ModeRTL::exit()
+{
+    stop_geometric_wpnav_observer();
+}
+
 // re-start RTL with terrain following disabled
 void ModeRTL::restart_without_terrain()
 {
+    stop_geometric_wpnav_observer();
 #if HAL_LOGGING_ENABLED
     LOGGER_WRITE_ERROR(LogErrorSubsystem::NAVIGATION, LogErrorCode::RESTARTED_RTL);
 #endif
@@ -132,6 +143,7 @@ ModeRTL::RTLAltType ModeRTL::get_alt_type() const
 void ModeRTL::run(bool disarm_on_land)
 {
     if (!motors->armed()) {
+        stop_geometric_wpnav_observer();
         return;
     }
 
@@ -245,8 +257,11 @@ void ModeRTL::climb_return_run()
     // run the vertical position controller and set output throttle
     pos_control->D_update_controller();
 
-    // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    // Use the same final AutoYaw command for the native controller and the
+    // geometric observer so observation cannot reinterpret RTL yaw semantics.
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_wpnav_observer(heading);
 
     // check if we've completed this stage of RTL
     _state_complete = wp_nav->reached_wp_destination();
@@ -287,8 +302,11 @@ void ModeRTL::loiterathome_run()
     // run the vertical position controller and set output throttle
     pos_control->D_update_controller();
 
-    // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    // Use the same final AutoYaw command for the native controller and the
+    // geometric observer so observation cannot reinterpret RTL yaw semantics.
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_wpnav_observer(heading);
 
     // check if we've completed this stage of RTL
     if ((millis() - _loiter_start_time) >= (uint32_t)g.rtl_loiter_time.get()) {
@@ -310,6 +328,7 @@ void ModeRTL::descent_start()
 {
     _state = SubMode::FINAL_DESCENT;
     _state_complete = false;
+    stop_geometric_wpnav_observer();
 
     // initialise altitude target to stopping point
     pos_control->D_init_controller_stopping_point();
@@ -375,7 +394,9 @@ void ModeRTL::descent_run()
     pos_control->D_update_controller();
 
     // roll & pitch from waypoint controller, yaw rate from pilot
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_wpnav_observer(heading);
 
     // check if we've reached within 20cm of final altitude
     _state_complete = fabsf(rtl_path.descent_target.alt * 0.01 - pos_control->get_pos_estimate_U_m()) < 0.2;
@@ -386,6 +407,7 @@ void ModeRTL::land_start()
 {
     _state = SubMode::LAND;
     _state_complete = false;
+    stop_geometric_wpnav_observer();
 
     // set horizontal speed and acceleration limits
     pos_control->NE_set_max_speed_accel_m(wp_nav->get_default_speed_NE_ms(), wp_nav->get_wp_acceleration_mss());
@@ -438,7 +460,157 @@ void ModeRTL::land_run(bool disarm_on_land)
 
     // run normal landing or precision landing (if enabled)
     land_run_normal_or_precland();
+    stop_geometric_wpnav_observer(true);
 }
+
+bool ModeRTL::geometric_wpnav_reference_supported(const AC_AttitudeControl::HeadingCommand& heading) const
+{
+    const bool wpnav_phase = _state == SubMode::INITIAL_CLIMB ||
+                             _state == SubMode::RETURN_HOME ||
+                             _state == SubMode::LOITER_AT_HOME;
+    return copter.flightmode == this &&
+           wpnav_phase &&
+           !wp_nav->origin_and_destination_are_terrain_alt() &&
+           !copter.is_tradheli() &&
+           !copter.geometric_motor_output_blocked_by_rate_thread() &&
+           (heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_Only ||
+            heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate);
+}
+
+void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingCommand& heading)
+{
+    const bool reference_supported = geometric_wpnav_reference_supported(heading);
+    if (!reference_supported || !copter.geometric_control.output_enabled()) {
+        stop_geometric_wpnav_observer();
+#if HAL_LOGGING_ENABLED
+        if (_geometric_wpnav_log_counter++ % 5 == 0) {
+            log_geometric_wpnav_observer_status(reference_supported, heading.heading_mode);
+            copter.Log_Write_Geometric_Frame_Counters();
+        }
+#endif
+        return;
+    }
+
+    AC_TrajectoryReference reference;
+    reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
+    reference.position_ned_m = pos_control->get_pos_desired_NED_m();
+    reference.velocity_ned_ms = pos_control->get_vel_desired_NED_ms();
+    reference.acceleration_ned_mss = pos_control->get_accel_desired_NED_mss();
+    reference.heading = heading;
+
+    const AC_GeometricReferencePolicy policy {
+        true,
+        false,
+        false,
+        false
+    };
+    AC_Geometric_State geometric_state {};
+    if (!run_geometric_observer(reference, nullptr, policy, true, geometric_state)) {
+#if HAL_LOGGING_ENABLED
+        if (_geometric_wpnav_log_counter++ % 5 == 0) {
+            log_geometric_wpnav_observer_status(reference_supported, heading.heading_mode);
+            copter.Log_Write_Geometric_Frame_Counters();
+        }
+#endif
+        return;
+    }
+
+#if HAL_LOGGING_ENABLED
+    _geometric_wpnav_observer_frames++;
+    if (_geometric_wpnav_log_counter++ % 5 == 0) {
+        const uint32_t now_ms = AP_HAL::millis();
+        const AC_Geometric_Output& output = copter.geometric_control.get_output();
+
+        // @LoggerMessage: GERW
+        // @Description: RTL WPNav neutral reference accepted by the geometric observer
+        // @Field: TimeUS: Time since system startup
+        // @Field: Phs: RTL phase
+        // @Field: PX: Native desired local NED position, X-Axis
+        // @Field: PY: Native desired local NED position, Y-Axis
+        // @Field: PZ: Native desired local NED position, Z-Axis
+        // @Field: VX: Native desired local NED velocity, X-Axis
+        // @Field: VY: Native desired local NED velocity, Y-Axis
+        // @Field: VZ: Native desired local NED velocity, Z-Axis
+        // @Field: AX: Native desired local NED acceleration, X-Axis
+        // @Field: AY: Native desired local NED acceleration, Y-Axis
+        // @Field: AZ: Native desired local NED acceleration, Z-Axis
+        // @Field: Yaw: Final Native AutoYaw angle reference
+        // @Field: YR: Final Native AutoYaw rate reference
+        // @Field: Frm: Neutral reference frame
+        // @Field: HMode: Heading command semantic mode
+        // @Field: Age: Neutral reference age
+        AP::logger().WriteStreaming("GERW", "TimeUS,Phs,PX,PY,PZ,VX,VY,VZ,AX,AY,AZ,Yaw,YR,Frm,HMode,Age", "QBfffffffffffBBI",
+                                    AP_HAL::micros64(),
+                                    (uint8_t)_state,
+                                    (double)reference.position_ned_m.x,
+                                    (double)reference.position_ned_m.y,
+                                    (double)reference.position_ned_m.z,
+                                    (double)reference.velocity_ned_ms.x,
+                                    (double)reference.velocity_ned_ms.y,
+                                    (double)reference.velocity_ned_ms.z,
+                                    (double)reference.acceleration_ned_mss.x,
+                                    (double)reference.acceleration_ned_mss.y,
+                                    (double)reference.acceleration_ned_mss.z,
+                                    (double)reference.heading.yaw_angle_rad,
+                                    (double)reference.heading.yaw_rate_rads,
+                                    (uint8_t)reference.meta.frame,
+                                    (uint8_t)reference.heading.heading_mode,
+                                    now_ms - reference.meta.timestamp_ms);
+        log_geometric_wpnav_observer_status(true, heading.heading_mode);
+        copter.Log_Write_Geometric_Attitude_Error(output.attitude);
+        copter.Log_Write_Geometric_Output_State(false,
+                                                copter.geometric_control.output_enabled(),
+                                                copter.geometric_motor_output_blocked_by_rate_thread(),
+                                                false,
+                                                copter.geometric_control.output_age_ms(now_ms),
+                                                copter.geometric_motor_output_age_ms(now_ms),
+                                                output.mapped);
+        copter.Log_Write_Geometric_Frame_Counters();
+    }
+#endif
+}
+
+void ModeRTL::stop_geometric_wpnav_observer(bool log_unsupported)
+{
+    copter.geometric_control.set_enabled(false);
+#if HAL_LOGGING_ENABLED
+    if (log_unsupported && _geometric_wpnav_log_counter++ % 5 == 0) {
+        log_geometric_wpnav_observer_status(false,
+                                             static_cast<AC_AttitudeControl::HeadingMode>(UINT8_MAX));
+        copter.Log_Write_Geometric_Frame_Counters();
+    }
+#else
+    (void)log_unsupported;
+#endif
+}
+
+#if HAL_LOGGING_ENABLED
+void ModeRTL::log_geometric_wpnav_observer_status(bool reference_supported,
+                                                  AC_AttitudeControl::HeadingMode heading_mode)
+{
+    // @LoggerMessage: GERS
+    // @Description: RTL WPNav geometric observer support and cache status
+    // @Field: TimeUS: Time since system startup
+    // @Field: Phs: RTL phase
+    // @Field: Run: True if the geometric controller is enabled
+    // @Field: Sup: True if the current RTL reference is structurally supported
+    // @Field: AutoY: Native AutoYaw mode
+    // @Field: HMode: Heading command semantic mode
+    // @Field: Shp: True if the geometric controller reshaped the Native reference
+    // @Field: Age: Geometric controller output age
+    // @Field: CFrm: Cumulative RTL WPNav geometric calculation frames
+    AP::logger().WriteStreaming("GERS", "TimeUS,Phs,Run,Sup,AutoY,HMode,Shp,Age,CFrm", "QBBBBBBII",
+                                AP_HAL::micros64(),
+                                (uint8_t)_state,
+                                (uint8_t)copter.geometric_control.enabled(),
+                                (uint8_t)reference_supported,
+                                (uint8_t)auto_yaw.mode(),
+                                (uint8_t)heading_mode,
+                                (uint8_t)copter.geometric_control.shaper_active(),
+                                copter.geometric_control.output_age_ms(AP_HAL::millis()),
+                                _geometric_wpnav_observer_frames);
+}
+#endif
 
 void ModeRTL::build_path()
 {
