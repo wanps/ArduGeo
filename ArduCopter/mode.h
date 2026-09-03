@@ -687,6 +687,12 @@ private:
 
     void takeoff_run();
     void wp_run();
+    void update_geometric_wp_observer(const AC_AttitudeControl::HeadingCommand& heading);
+    void stop_geometric_wp_observer();
+#if HAL_LOGGING_ENABLED
+    void log_geometric_wp_observer_status(bool reference_supported,
+                                          AC_AttitudeControl::HeadingMode heading_mode);
+#endif
     void land_run();
     void rtl_run();
     void circle_run();
@@ -700,6 +706,10 @@ private:
     bool get_loc_from_cmd(const AP_Mission::Mission_Command& cmd, const Location& default_loc, Location& loc) const WARN_IF_UNUSED;
 
     SubMode _mode = SubMode::TAKEOFF;   // controls which auto controller is run
+#if HAL_LOGGING_ENABLED
+    uint8_t _geometric_wp_log_counter = 0;
+    uint32_t _geometric_wp_observer_frames = 0;
+#endif
 
     // subtract position controller offsets from target location
     // should be used when the location will be used as a target for the position controller

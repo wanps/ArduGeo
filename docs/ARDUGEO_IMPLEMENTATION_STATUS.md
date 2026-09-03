@@ -5,4 +5,4 @@
 - C2 ✅
 - C3 ✅
 - C4 ✅ Guided/Loiter neutral reference migration
-- C5 ⏭ AUTO-WP observer
+- C5 ✅ AUTO-WP observer
