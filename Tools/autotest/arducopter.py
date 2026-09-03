@@ -15867,6 +15867,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException("PID-only build exposes SANM parameters")
         self.assert_parameter_values(expected_defaults, epsilon=1.0e-6)
         self.assert_parameter_values({
+            'AUTO_OPTIONS': 0,
             'GUID_OPTIONS': 0,
             'LOIT_OPTIONS': 1,
         })
@@ -15922,6 +15923,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         try:
             self.set_parameters(persisted_values)
             stored_mode_options = {
+                'AUTO_OPTIONS': 259,
                 'GUID_OPTIONS': 258,
                 'LOIT_OPTIONS': 7,
             }
@@ -16125,6 +16127,290 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "AUTO-WP observer frames=%u ownership delta main=%u geo=%u native=%u" %
             (max(message.CFrm for message in calculated),
              delta_main, delta_geometric, delta_native))
+
+        self.do_RTL()
+
+    def GeometricAutoWPMotorOutput(self):
+        '''test AUTO waypoint geometric ownership and native handoff'''
+        def log_window(label, duration_s, settle_s=0.2):
+            self.delay_sim_time(settle_s, reason="settle before %s" % label)
+            start_us = int(self.get_sim_time() * 1000000)
+            self.delay_sim_time(duration_s, reason=label)
+            self.assert_mode("AUTO")
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return start_us, int(self.get_sim_time() * 1000000)
+
+        observer_options = 3
+        active_options = observer_options | (1 << 8)
+        self.set_parameters({
+            "AUTO_OPTIONS": active_options,
+            "FSTRATE_ENABLE": 0,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 1,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_ATT_KR_X": 4.0,
+            "GEO_ATT_KR_Y": 4.0,
+            "GEO_ATT_KR_Z": 2.0,
+            "GEO_ATT_KO_X": 0.2,
+            "GEO_ATT_KO_Y": 0.2,
+            "GEO_ATT_KO_Z": 0.4,
+            "GEO_HOV_THR": 0.0,
+            "GEO_MOM_NORM_X": 4.0,
+            "GEO_MOM_NORM_Y": 4.0,
+            "GEO_MOM_NORM_Z": 2.0,
+            "SIM_FLOAT_EXCEPT": 0,
+        })
+        self.reboot_sitl()
+        self.upload_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 120, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_SPLINE_WAYPOINT, 120, 400, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 0, 400, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM, 0, 400, 10),
+        ])
+        self.change_mode("AUTO")
+        self.wait_ready_to_arm()
+        takeoff_start_us = int(self.get_sim_time() * 1000000)
+        self.arm_vehicle()
+        self.send_cmd(mavutil.mavlink.MAV_CMD_MISSION_START)
+        self.wait_current_waypoint(2, timeout=120)
+        takeoff_end_us = int(self.get_sim_time() * 1000000)
+
+        windows = {}
+        transitions = {}
+        windows["initial-active-waypoint"] = log_window("AUTO initial active waypoint", 0.8)
+
+        self.set_parameter("AUTO_OPTIONS", observer_options)
+        windows["observer-only"] = log_window("AUTO observer-only", 0.8)
+
+        self.set_parameter("AUTO_OPTIONS", active_options)
+        windows["active-waypoint"] = log_window("AUTO active waypoint", 0.8)
+
+        transition_start_us = windows["active-waypoint"][1]
+        self.wait_current_waypoint(3, timeout=120)
+        self.delay_sim_time(0.4, reason="AUTO WP-to-spline continuous ownership")
+        windows["wp-to-spline"] = (
+            transition_start_us,
+            int(self.get_sim_time() * 1000000),
+        )
+        windows["active-spline"] = log_window("AUTO active spline", 0.8)
+
+        transitions["bit-clear"] = int(self.get_sim_time() * 1000000)
+        self.set_parameter("AUTO_OPTIONS", observer_options)
+        windows["bit-clear-native"] = log_window("AUTO bit-clear native handoff", 0.6)
+
+        self.set_parameter("AUTO_OPTIONS", active_options)
+        windows["explicit-reenable"] = log_window("AUTO explicit geometric re-enable", 0.8)
+
+        transitions["output-disable"] = int(self.get_sim_time() * 1000000)
+        self.set_parameter("GEO_OUT_EN", 0)
+        windows["output-disabled"] = log_window("AUTO output-disabled native handoff", 0.6)
+        self.set_parameter("GEO_OUT_EN", 1)
+        windows["output-fault-latched"] = log_window("AUTO output fault latched", 0.6)
+        self.set_parameter("AUTO_OPTIONS", observer_options)
+        windows["output-fault-clear"] = log_window("AUTO output fault clear", 0.4)
+        self.set_parameter("AUTO_OPTIONS", active_options)
+        windows["output-fault-recovered"] = log_window("AUTO output fault recovered", 0.8)
+
+        yaw_channel = int(self.get_parameter("RCMAP_YAW"))
+        yaw_trim = int(self.get_parameter("RC%u_TRIM" % yaw_channel))
+        transitions["rate-only"] = int(self.get_sim_time() * 1000000)
+        self.set_rc(yaw_channel, min(2000, yaw_trim + 200))
+        windows["rate-only-native"] = log_window("AUTO Rate_Only native handoff", 0.6)
+        self.set_rc(yaw_channel, yaw_trim)
+        self.wait_current_waypoint(4, timeout=180)
+        windows["after-rate-only"] = log_window("AUTO geometric recovery after Rate_Only", 0.8)
+
+        transitions["invalid"] = int(self.get_sim_time() * 1000000)
+        try:
+            self.set_parameter("GEO_POS_KX_XY", 3.4e38)
+            self.delay_sim_time(0.2, reason="produce invalid AUTO geometric output")
+        finally:
+            self.set_parameter("GEO_POS_KX_XY", 1.0)
+            self.set_parameter("GEO_OUT_EN", 0)
+            self.set_parameter("GEO_OUT_EN", 1)
+        windows["invalid-fault-latched"] = log_window("AUTO invalid fault latched", 0.6)
+        self.set_parameter("AUTO_OPTIONS", observer_options)
+        windows["invalid-fault-clear"] = log_window("AUTO invalid fault clear", 0.4)
+        self.set_parameter("AUTO_OPTIONS", active_options)
+        windows["invalid-fault-recovered"] = log_window("AUTO invalid fault recovered", 0.8)
+
+        transitions["unsupported"] = windows["invalid-fault-recovered"][1]
+        self.set_current_waypoint(5)
+        windows["unsupported-loiter"] = log_window("AUTO unsupported Loiter native", 0.8)
+
+        self.set_current_waypoint(2)
+        windows["after-unsupported"] = log_window("AUTO recovery after unsupported Loiter", 0.8)
+
+        transitions["stale"] = int(self.get_sim_time() * 1000000)
+        # Existing MAVLink failure injection blocks the main loop for 250ms.
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            p1=42,
+            p2=24,
+            p3=71,
+            p4=97,
+        )
+        windows["stale-fault-latched"] = log_window("AUTO stale fault latched", 0.6)
+
+        self.set_current_waypoint(5)
+        windows["unsupported-latched"] = log_window("AUTO unsupported Loiter with latch", 0.6)
+        self.set_parameter("AUTO_OPTIONS", observer_options)
+        self.delay_sim_time(0.4, reason="acknowledge AUTO latch outside WP")
+        self.set_parameter("AUTO_OPTIONS", active_options)
+        self.set_current_waypoint(2)
+        windows["unsupported-latch-recovered"] = log_window(
+            "AUTO geometric recovery after latch acknowledge",
+            0.8,
+        )
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        messages = {name: [] for name in ("GEAS", "GEOH", "GEFR")}
+        while True:
+            message = dfreader.recv_match(type=list(messages.keys()))
+            if message is None:
+                break
+            messages[message.get_type()].append(message)
+
+        def in_window(message_type, window):
+            return [m for m in messages[message_type]
+                    if window[0] <= m.TimeUS <= window[1]]
+
+        def check_frame_window(label, expect_geometric):
+            frame_messages = sorted(in_window("GEFR", windows[label]),
+                                    key=lambda m: m.TimeUS)
+            if len(frame_messages) < 2:
+                raise NotAchievedException("Too few GEFR samples during %s" % label)
+            first = frame_messages[0]
+            last = frame_messages[-1]
+            delta_main = int(last.MFrm) - int(first.MFrm)
+            delta_geometric = int(last.GFrm) - int(first.GFrm)
+            delta_native = int(last.NFrm) - int(first.NFrm)
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException("Invalid AUTO ownership accounting during %s" % label)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException(
+                        "%s was not Geo-exclusive: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException(
+                    "%s was not Native-exclusive: main=%u geo=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+            self.progress(
+                "AUTO %s frames main=%u geo=%u native=%u" %
+                (label, delta_main, delta_geometric, delta_native))
+
+        takeoff_status = sorted(
+            [m for m in messages["GEAS"]
+             if takeoff_start_us <= m.TimeUS <= takeoff_end_us and
+             m.Sub == 0 and
+             m.Nav == mavutil.mavlink.MAV_CMD_NAV_TAKEOFF],
+            key=lambda m: m.TimeUS,
+        )
+        if len(takeoff_status) < 2 or any(m.Run or m.Sup or not m.Req or
+                                          m.Prep or m.Act or m.Rej
+                                          for m in takeoff_status):
+            raise NotAchievedException("AUTO takeoff geometric state is invalid")
+        takeoff_frames = []
+        for status in takeoff_status:
+            frame = min((m for m in messages["GEFR"] if m.TimeUS >= status.TimeUS),
+                        key=lambda m: m.TimeUS,
+                        default=None)
+            if frame is None:
+                raise NotAchievedException("AUTO takeoff frame evidence is incomplete")
+            takeoff_frames.append(frame)
+        windows["takeoff-native"] = (takeoff_frames[0].TimeUS,
+                                     takeoff_frames[-1].TimeUS)
+
+        active_windows = (
+            "initial-active-waypoint",
+            "active-waypoint",
+            "wp-to-spline",
+            "active-spline",
+            "explicit-reenable",
+            "output-fault-recovered",
+            "after-rate-only",
+            "invalid-fault-recovered",
+            "after-unsupported",
+            "unsupported-latch-recovered",
+        )
+        native_windows = (
+            "takeoff-native",
+            "observer-only",
+            "bit-clear-native",
+            "output-disabled",
+            "output-fault-latched",
+            "output-fault-clear",
+            "rate-only-native",
+            "invalid-fault-latched",
+            "invalid-fault-clear",
+            "unsupported-loiter",
+            "stale-fault-latched",
+            "unsupported-latched",
+        )
+        for label in active_windows:
+            check_frame_window(label, True)
+        for label in native_windows:
+            check_frame_window(label, False)
+
+        for label in active_windows:
+            status = in_window("GEAS", windows[label])
+            if not status or any(not m.Run or not m.Sup or not m.Req or
+                                 not m.Prep or not m.Act or m.Rej
+                                 for m in status):
+                raise NotAchievedException("AUTO active state is invalid during %s" % label)
+
+        observer_status = in_window("GEAS", windows["observer-only"])
+        if not observer_status or any(not m.Run or not m.Sup or m.Req or
+                                      not m.Prep or m.Act or m.Rej
+                                      for m in observer_status):
+            raise NotAchievedException("AUTO observer-only state is invalid")
+
+        for label in ("output-fault-latched", "invalid-fault-latched", "stale-fault-latched"):
+            status = in_window("GEAS", windows[label])
+            if not status or any(not m.Run or not m.Sup or not m.Req or
+                                 not m.Prep or m.Act or not m.Rej
+                                 for m in status):
+                raise NotAchievedException("AUTO hard-fault latch is invalid during %s" % label)
+
+        rate_only_status = in_window("GEAS", windows["rate-only-native"])
+        if not rate_only_status or any(m.Sup or m.Act or m.Rej
+                                       for m in rate_only_status):
+            raise NotAchievedException("AUTO Rate_Only was not a non-latched Native boundary")
+        unsupported_status = in_window("GEAS", windows["unsupported-loiter"])
+        if not unsupported_status or any(m.Sup or m.Run or m.Prep or m.Act or m.Rej
+                                          for m in unsupported_status):
+            raise NotAchievedException("AUTO unsupported Loiter retained geometric state")
+        unsupported_latched_status = in_window("GEAS", windows["unsupported-latched"])
+        if not unsupported_latched_status or any(m.Sup or m.Run or m.Prep or m.Act or not m.Rej
+                                                  for m in unsupported_latched_status):
+            raise NotAchievedException("AUTO unsupported Loiter did not preserve the fault latch")
+
+        def check_handoff(label, end_us, failure_mask):
+            handoffs = [m for m in messages["GEOH"]
+                        if transitions[label] <= m.TimeUS <= end_us]
+            if len(handoffs) != 1:
+                raise NotAchievedException(
+                    "Expected one AUTO %s handoff, got %u" % (label, len(handoffs)))
+            handoff = handoffs[0]
+            if (int(handoff.Mode) != 3 or
+                    (int(handoff.Fail) & failure_mask) == 0 or
+                    not handoff.Prev or handoff.Act or
+                    not handoff.Hand or handoff.RT):
+                raise NotAchievedException("AUTO %s GEOH fields are invalid" % label)
+
+        check_handoff("bit-clear", windows["bit-clear-native"][1], 1 << 0)
+        check_handoff("output-disable", windows["output-disabled"][1], 1 << 1)
+        check_handoff("rate-only", windows["rate-only-native"][1], 1 << 0)
+        check_handoff("invalid", windows["invalid-fault-latched"][1], 1 << 6)
+        check_handoff("unsupported", windows["unsupported-loiter"][1], 1 << 0)
+        check_handoff("stale", windows["stale-fault-latched"][1], 1 << 5)
+        if [m for m in messages["GEOH"]
+                if windows["wp-to-spline"][0] <= m.TimeUS <= windows["wp-to-spline"][1]]:
+            raise NotAchievedException("AUTO WP-to-spline transition inserted a Native bridge")
 
         self.do_RTL()
 
@@ -21998,6 +22284,7 @@ return update, 1000
             self.GuidedModeThrust,
             self.GeometricParameterModules,
             self.GeometricAutoWPObserver,
+            self.GeometricAutoWPMotorOutput,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricLoiterObserver,

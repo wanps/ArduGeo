@@ -2,9 +2,7 @@
 
 #if MODE_AUTO_ENABLED
 
-#if HAL_LOGGING_ENABLED
 static constexpr uint32_t auto_wp_geometric_output_recent_ms = 100;
-#endif
 
 /*
  * Init and run calls for auto flight mode
@@ -35,6 +33,7 @@ bool ModeAuto::init(bool ignore_checks)
         }
 
         _mode = SubMode::LOITER;
+        _geometric_wp_motor_output_rejected = false;
 #if HAL_LOGGING_ENABLED
         _geometric_wp_log_counter = 0;
         _geometric_wp_observer_frames = 0;
@@ -80,6 +79,7 @@ bool ModeAuto::init(bool ignore_checks)
 void ModeAuto::exit()
 {
     stop_geometric_wp_observer();
+    _geometric_wp_motor_output_rejected = false;
 
     if (copter.mode_auto.mission.state() == AP_Mission::MISSION_RUNNING) {
         copter.mode_auto.mission.stop();
@@ -95,6 +95,10 @@ void ModeAuto::exit()
 //      should be called at 100hz or more
 void ModeAuto::run()
 {
+    if (!option_is_enabled(Option::GeometricMotorOutput)) {
+        _geometric_wp_motor_output_rejected = false;
+    }
+
     // start or update mission
     if (waiting_to_start) {
         // don't start the mission until we have an origin
@@ -183,6 +187,16 @@ void ModeAuto::run()
         copter.logger.Write_Mode((uint8_t)copter.flightmode->mode_number(), ModeReason::AUTO_RTL_EXIT);
 #endif
     }
+
+#if HAL_LOGGING_ENABLED
+    if (_mode != SubMode::WP &&
+        option_is_enabled(Option::GeometricMotorOutput) &&
+        _geometric_wp_log_counter++ % 5 == 0) {
+        log_geometric_wp_observer_status(false,
+                                         static_cast<AC_AttitudeControl::HeadingMode>(UINT8_MAX));
+        copter.Log_Write_Geometric_Frame_Counters();
+    }
+#endif
 }
 
 // return true if a position estimate is required
@@ -223,6 +237,46 @@ void ModeAuto::set_submode(SubMode new_submode)
 bool ModeAuto::option_is_enabled(Option option) const
 {
     return ((copter.g2.auto_options & (uint32_t)option) != 0);
+}
+
+bool ModeAuto::allows_geometric_motor_output() const
+{
+    return option_is_enabled(Option::GeometricMotorOutput) &&
+           _geometric_wp_reference_supported &&
+           _geometric_wp_motor_output_prepared &&
+           _geometric_wp_motor_output_active &&
+           !_geometric_wp_motor_output_rejected;
+}
+
+void ModeAuto::handle_geometric_motor_output_fallback()
+{
+    if (_geometric_wp_motor_output_active &&
+        motors->armed() &&
+        option_is_enabled(Option::GeometricMotorOutput) &&
+        _geometric_wp_reference_supported &&
+        !copter.geometric_motor_output_blocked_by_rate_thread()) {
+        _geometric_wp_motor_output_rejected = true;
+    }
+    if (!option_is_enabled(Option::GeometricMotorOutput)) {
+        _geometric_wp_motor_output_rejected = false;
+    }
+    _geometric_wp_motor_output_active = false;
+    _geometric_wp_motor_output_prepared = false;
+    Mode::handle_geometric_motor_output_fallback();
+}
+
+bool ModeAuto::geometric_wp_reference_supported(const AC_AttitudeControl::HeadingCommand& heading) const
+{
+    const uint16_t nav_cmd_id = mission.get_current_nav_id();
+    return (nav_cmd_id == MAV_CMD_NAV_WAYPOINT ||
+            nav_cmd_id == MAV_CMD_NAV_SPLINE_WAYPOINT) &&
+           !auto_RTL &&
+           _mode == SubMode::WP &&
+           !wp_nav->origin_and_destination_are_terrain_alt() &&
+           !copter.is_tradheli() &&
+           !copter.geometric_motor_output_blocked_by_rate_thread() &&
+           (heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_Only ||
+            heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate);
 }
 
 bool ModeAuto::allows_arming(AP_Arming::Method method) const
@@ -1130,23 +1184,21 @@ void ModeAuto::wp_run()
 
 void ModeAuto::update_geometric_wp_observer(const AC_AttitudeControl::HeadingCommand& heading)
 {
-    const uint16_t nav_cmd_id = mission.get_current_nav_id();
-    const bool supported_nav_cmd = nav_cmd_id == MAV_CMD_NAV_WAYPOINT ||
-                                   nav_cmd_id == MAV_CMD_NAV_SPLINE_WAYPOINT;
-    const bool reference_supported = supported_nav_cmd &&
-                                     !auto_RTL &&
-                                     _mode == SubMode::WP &&
-                                     !wp_nav->origin_and_destination_are_terrain_alt() &&
-                                     !copter.is_tradheli() &&
-                                     !copter.geometric_motor_output_blocked_by_rate_thread() &&
-                                     (heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_Only ||
-                                      heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate);
+    const bool reference_supported = geometric_wp_reference_supported(heading);
+    _geometric_wp_reference_supported = reference_supported;
+    const bool motor_output_requested = option_is_enabled(Option::GeometricMotorOutput);
     const bool observer_requested = copter.geometric_control.output_enabled();
     if (!reference_supported || !observer_requested) {
+        if (_geometric_wp_motor_output_active &&
+            motor_output_requested &&
+            reference_supported) {
+            _geometric_wp_motor_output_rejected = true;
+        }
         stop_geometric_wp_observer();
 #if HAL_LOGGING_ENABLED
         if (_geometric_wp_log_counter++ % 5 == 0) {
             log_geometric_wp_observer_status(reference_supported, heading.heading_mode);
+            copter.Log_Write_Geometric_Frame_Counters();
         }
 #endif
         return;
@@ -1167,12 +1219,31 @@ void ModeAuto::update_geometric_wp_observer(const AC_AttitudeControl::HeadingCom
     };
     AC_Geometric_State geometric_state {};
     if (!run_geometric_observer(reference, nullptr, policy, true, geometric_state)) {
+        if (_geometric_wp_motor_output_active && motor_output_requested) {
+            _geometric_wp_motor_output_rejected = true;
+        }
+        _geometric_wp_motor_output_active = false;
+        _geometric_wp_motor_output_prepared = false;
 #if HAL_LOGGING_ENABLED
         if (_geometric_wp_log_counter++ % 5 == 0) {
             log_geometric_wp_observer_status(reference_supported, heading.heading_mode);
+            copter.Log_Write_Geometric_Frame_Counters();
         }
 #endif
         return;
+    }
+
+    _geometric_wp_motor_output_prepared =
+        copter.geometric_control.output_is_fresh(AP_HAL::millis(), auto_wp_geometric_output_recent_ms) &&
+        copter.geometric_motor_output_is_valid();
+    if (!_geometric_wp_motor_output_prepared) {
+        if (_geometric_wp_motor_output_active && motor_output_requested) {
+            _geometric_wp_motor_output_rejected = true;
+        }
+        _geometric_wp_motor_output_active = false;
+    } else {
+        _geometric_wp_motor_output_active = motor_output_requested &&
+                                            !_geometric_wp_motor_output_rejected;
     }
 
 #if HAL_LOGGING_ENABLED
@@ -1237,6 +1308,9 @@ void ModeAuto::update_geometric_wp_observer(const AC_AttitudeControl::HeadingCom
 
 void ModeAuto::stop_geometric_wp_observer()
 {
+    _geometric_wp_reference_supported = false;
+    _geometric_wp_motor_output_prepared = false;
+    _geometric_wp_motor_output_active = false;
     copter.geometric_control.set_enabled(false);
 }
 
@@ -1253,17 +1327,25 @@ void ModeAuto::log_geometric_wp_observer_status(bool reference_supported,
     // @Field: Nav: Current mission navigation command
     // @Field: Run: True if the geometric controller is enabled
     // @Field: Sup: True if the current AUTO reference is structurally supported
+    // @Field: Req: True if AUTO_OPTIONS requests geometric motor output
+    // @Field: Prep: True if a fresh finite geometric output is prepared
+    // @Field: Act: True if the mode authorizes geometric motor output
+    // @Field: Rej: True if a hard-fault latch blocks geometric motor output
     // @Field: AutoY: Native AutoYaw mode
     // @Field: HMode: Heading command semantic mode
     // @Field: Shp: True if the geometric controller reshaped the Native reference
     // @Field: Age: Geometric controller output age
     // @Field: CFrm: Cumulative AUTO waypoint geometric calculation frames
-    AP::logger().WriteStreaming("GEAS", "TimeUS,Sub,Nav,Run,Sup,AutoY,HMode,Shp,Age,CFrm", "QBHBBBBBII",
+    AP::logger().WriteStreaming("GEAS", "TimeUS,Sub,Nav,Run,Sup,Req,Prep,Act,Rej,AutoY,HMode,Shp,Age,CFrm", "QBHBBBBBBBBBII",
                                 AP_HAL::micros64(),
                                 (uint8_t)_mode,
                                 mission.get_current_nav_id(),
                                 (uint8_t)copter.geometric_control.enabled(),
                                 (uint8_t)reference_supported,
+                                (uint8_t)option_is_enabled(Option::GeometricMotorOutput),
+                                (uint8_t)_geometric_wp_motor_output_prepared,
+                                (uint8_t)allows_geometric_motor_output(),
+                                (uint8_t)_geometric_wp_motor_output_rejected,
                                 (uint8_t)auto_yaw.mode(),
                                 (uint8_t)heading_mode,
                                 (uint8_t)copter.geometric_control.shaper_active(),
