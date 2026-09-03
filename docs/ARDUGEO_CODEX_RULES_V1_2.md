@@ -369,12 +369,12 @@ git diff --stat
 C0  v1.2.0 baseline freeze / remotes / 参数迁移事实核验
 C1  Safe-default audit（如需改变默认，独立实施）
 C2  controller-neutral reference types
-C3  compatibility publication 泛化
-C4  state sampling / Geo integration bridge 从 Mode 移到 Copter
-C5  selection/handoff helper 收敛，仍保留在 vehicle-level
-C6  Guided/Loiter 迁移到新 adapter，行为必须等价
-C7  AUTO-WP observer-only
-C8  AUTO-WP active ownership（需单独批准）
+C3  state sampling / Geo integration bridge 从 Mode 移到 Copter
+C4  Guided/Loiter 迁移到新 adapter，行为必须等价
+C5  AUTO-WP observer-only
+Later  compatibility publication 泛化
+Later  selection/handoff helper 收敛，仍保留在 vehicle-level
+Later  AUTO-WP active ownership（需单独批准）
 ```
 
 不得跳过 observer-only，直接给新 Mode 电机 ownership。

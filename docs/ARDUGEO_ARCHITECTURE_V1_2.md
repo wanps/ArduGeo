@@ -1063,7 +1063,7 @@ legacy AC_Geometric_Target adapter
 无日志语义变化
 ```
 
-### C3 — Compatibility publication generalization
+### Later — Compatibility publication generalization
 
 目标：
 
@@ -1074,7 +1074,7 @@ old API delegates to new API
 Native active 与 external reference active 明确分离
 ```
 
-### C4 — Geometric integration bridge
+### C3 — Geometric integration bridge
 
 将通用 state sampling 与 Geo execution 从 Mode 移到 Copter helper。
 
@@ -1086,7 +1086,7 @@ Geo cached output时序不变
 motor ownership不变
 ```
 
-### C5 — Selection/handoff helper extraction
+### Later — Selection/handoff helper extraction
 
 收敛：
 
@@ -1100,7 +1100,7 @@ Geo motor write helper
 
 最终二选一位置仍在 `run_rate_controller_main()`。
 
-### C6 — Guided/Loiter migrate through adapter
+### C4 — Guided/Loiter migrate through adapter
 
 只改接口，不改生命周期：
 
@@ -1116,7 +1116,7 @@ arming preparation
 
 现有 tests/log evidence 必须继续通过。
 
-### C7 — AUTO-WP observer-only
+### C5 — AUTO-WP observer-only
 
 初始范围严格限制：
 
@@ -1144,9 +1144,9 @@ Geo output-write frames = 0
 Native rate frames = main frames
 ```
 
-### C8 — AUTO-WP active ownership
+### Later — AUTO-WP active ownership
 
-只有 C7 证据通过并单独批准后才能实施。
+只有 C5 证据通过并单独批准后才能实施。
 
 必须覆盖：
 
@@ -1335,7 +1335,7 @@ Terrain reference正式表示
 上游提交拆分与命名
 ```
 
-这些开放项不得阻塞 C0–C7 的小步迁移，但也不得被 Codex 擅自“顺便决定”。
+这些开放项不得阻塞 C0–C5 的小步迁移，但也不得被 Codex 擅自“顺便决定”。
 
 ---
 

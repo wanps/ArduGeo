@@ -2,6 +2,10 @@
 
 #if MODE_AUTO_ENABLED
 
+#if HAL_LOGGING_ENABLED
+static constexpr uint32_t auto_wp_geometric_output_recent_ms = 100;
+#endif
+
 /*
  * Init and run calls for auto flight mode
  *
@@ -31,6 +35,11 @@ bool ModeAuto::init(bool ignore_checks)
         }
 
         _mode = SubMode::LOITER;
+#if HAL_LOGGING_ENABLED
+        _geometric_wp_log_counter = 0;
+        _geometric_wp_observer_frames = 0;
+#endif
+        stop_geometric_wp_observer();
 
         // stop ROI from carrying over from previous runs of the mission
         // To-Do: reset the yaw as part of auto_wp_start when the previous command was not a wp command to remove the need for this special ROI check
@@ -70,6 +79,8 @@ bool ModeAuto::init(bool ignore_checks)
 // stop mission when we leave auto mode
 void ModeAuto::exit()
 {
+    stop_geometric_wp_observer();
+
     if (copter.mode_auto.mission.state() == AP_Mission::MISSION_RUNNING) {
         copter.mode_auto.mission.stop();
     }
@@ -189,11 +200,18 @@ void ModeAuto::set_submode(SubMode new_submode)
         return;
     }
 
+    stop_geometric_wp_observer();
+
     // backup old mode
     SubMode old_submode = _mode;
 
     // set mode
     _mode = new_submode;
+
+#if HAL_LOGGING_ENABLED
+    log_geometric_wp_observer_status(false,
+                                     static_cast<AC_AttitudeControl::HeadingMode>(UINT8_MAX));
+#endif
 
     // if changing out of the nav-attitude-time submode, recheck the EKF failsafe
     // this may trigger a flight mode change if the EKF failsafe is active
@@ -1088,6 +1106,7 @@ void ModeAuto::wp_run()
 {
     // if not armed set throttle to zero and exit immediately
     if (is_disarmed_or_landed()) {
+        stop_geometric_wp_observer();
         make_safe_ground_handling();
         return;
     }
@@ -1102,9 +1121,156 @@ void ModeAuto::wp_run()
     // run the vertical position controller and set output throttle
     pos_control->D_update_controller();
 
-    // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    // Use the same final AutoYaw command for the native controller and the
+    // geometric observer so observation cannot reinterpret AUTO yaw semantics.
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_wp_observer(heading);
 }
+
+void ModeAuto::update_geometric_wp_observer(const AC_AttitudeControl::HeadingCommand& heading)
+{
+    const uint16_t nav_cmd_id = mission.get_current_nav_id();
+    const bool supported_nav_cmd = nav_cmd_id == MAV_CMD_NAV_WAYPOINT ||
+                                   nav_cmd_id == MAV_CMD_NAV_SPLINE_WAYPOINT;
+    const bool reference_supported = supported_nav_cmd &&
+                                     !auto_RTL &&
+                                     _mode == SubMode::WP &&
+                                     !wp_nav->origin_and_destination_are_terrain_alt() &&
+                                     !copter.is_tradheli() &&
+                                     !copter.geometric_motor_output_blocked_by_rate_thread() &&
+                                     (heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_Only ||
+                                      heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate);
+    const bool observer_requested = copter.geometric_control.output_enabled();
+    if (!reference_supported || !observer_requested) {
+        stop_geometric_wp_observer();
+#if HAL_LOGGING_ENABLED
+        if (_geometric_wp_log_counter++ % 5 == 0) {
+            log_geometric_wp_observer_status(reference_supported, heading.heading_mode);
+        }
+#endif
+        return;
+    }
+
+    AC_TrajectoryReference reference;
+    reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
+    reference.position_ned_m = pos_control->get_pos_desired_NED_m();
+    reference.velocity_ned_ms = pos_control->get_vel_desired_NED_ms();
+    reference.acceleration_ned_mss = pos_control->get_accel_desired_NED_mss();
+    reference.heading = heading;
+
+    const AC_GeometricReferencePolicy policy {
+        true,
+        false,
+        false,
+        false
+    };
+    AC_Geometric_State geometric_state {};
+    if (!run_geometric_observer(reference, nullptr, policy, true, geometric_state)) {
+#if HAL_LOGGING_ENABLED
+        if (_geometric_wp_log_counter++ % 5 == 0) {
+            log_geometric_wp_observer_status(reference_supported, heading.heading_mode);
+        }
+#endif
+        return;
+    }
+
+#if HAL_LOGGING_ENABLED
+    _geometric_wp_observer_frames++;
+    if (_geometric_wp_log_counter++ % 5 == 0) {
+        const uint32_t now_ms = AP_HAL::millis();
+        const AC_Geometric_Output& output = copter.geometric_control.get_output();
+        const uint32_t geometric_age_ms = copter.geometric_control.output_age_ms(now_ms);
+        const uint32_t motor_output_age_ms = copter.geometric_motor_output_age_ms(now_ms);
+        const bool motor_output_allowed = allows_geometric_motor_output();
+        const bool rate_thread_active = copter.geometric_motor_output_blocked_by_rate_thread();
+        const bool motor_output_written_recently = motor_output_age_ms <= auto_wp_geometric_output_recent_ms;
+
+        // @LoggerMessage: GEOW
+        // @Description: AUTO waypoint neutral reference accepted by the geometric observer
+        // @Field: TimeUS: Time since system startup
+        // @Field: PX: Native desired local NED position, X-Axis
+        // @Field: PY: Native desired local NED position, Y-Axis
+        // @Field: PZ: Native desired local NED position, Z-Axis
+        // @Field: VX: Native desired local NED velocity, X-Axis
+        // @Field: VY: Native desired local NED velocity, Y-Axis
+        // @Field: VZ: Native desired local NED velocity, Z-Axis
+        // @Field: AX: Native desired local NED acceleration, X-Axis
+        // @Field: AY: Native desired local NED acceleration, Y-Axis
+        // @Field: AZ: Native desired local NED acceleration, Z-Axis
+        // @Field: Yaw: Final Native AutoYaw angle reference
+        // @Field: YR: Final Native AutoYaw rate reference
+        // @Field: Frm: Neutral reference frame
+        // @Field: Cap: Neutral reference capability
+        // @Field: HMode: Heading command semantic mode
+        // @Field: Age: Neutral reference age
+        AP::logger().WriteStreaming("GEOW", "TimeUS,PX,PY,PZ,VX,VY,VZ,AX,AY,AZ,Yaw,YR,Frm,Cap,HMode,Age", "QfffffffffffBBBI",
+                                    AP_HAL::micros64(),
+                                    (double)reference.position_ned_m.x,
+                                    (double)reference.position_ned_m.y,
+                                    (double)reference.position_ned_m.z,
+                                    (double)reference.velocity_ned_ms.x,
+                                    (double)reference.velocity_ned_ms.y,
+                                    (double)reference.velocity_ned_ms.z,
+                                    (double)reference.acceleration_ned_mss.x,
+                                    (double)reference.acceleration_ned_mss.y,
+                                    (double)reference.acceleration_ned_mss.z,
+                                    (double)reference.heading.yaw_angle_rad,
+                                    (double)reference.heading.yaw_rate_rads,
+                                    (uint8_t)reference.meta.frame,
+                                    (uint8_t)reference.meta.capability,
+                                    (uint8_t)reference.heading.heading_mode,
+                                    now_ms - reference.meta.timestamp_ms);
+        log_geometric_wp_observer_status(true, heading.heading_mode);
+        copter.Log_Write_Geometric_Attitude_Error(output.attitude);
+        copter.Log_Write_Geometric_Output_State(motor_output_allowed,
+                                                copter.geometric_control.output_enabled(),
+                                                rate_thread_active,
+                                                motor_output_written_recently,
+                                                geometric_age_ms,
+                                                motor_output_age_ms,
+                                                output.mapped);
+        copter.Log_Write_Geometric_Frame_Counters();
+    }
+#endif
+}
+
+void ModeAuto::stop_geometric_wp_observer()
+{
+    copter.geometric_control.set_enabled(false);
+}
+
+#if HAL_LOGGING_ENABLED
+void ModeAuto::log_geometric_wp_observer_status(bool reference_supported,
+                                                AC_AttitudeControl::HeadingMode heading_mode)
+{
+    const uint32_t now_ms = AP_HAL::millis();
+
+    // @LoggerMessage: GEAS
+    // @Description: AUTO waypoint geometric observer support and cache status
+    // @Field: TimeUS: Time since system startup
+    // @Field: Sub: AUTO submode
+    // @Field: Nav: Current mission navigation command
+    // @Field: Run: True if the geometric controller is enabled
+    // @Field: Sup: True if the current AUTO reference is structurally supported
+    // @Field: AutoY: Native AutoYaw mode
+    // @Field: HMode: Heading command semantic mode
+    // @Field: Shp: True if the geometric controller reshaped the Native reference
+    // @Field: Age: Geometric controller output age
+    // @Field: CFrm: Cumulative AUTO waypoint geometric calculation frames
+    AP::logger().WriteStreaming("GEAS", "TimeUS,Sub,Nav,Run,Sup,AutoY,HMode,Shp,Age,CFrm", "QBHBBBBBII",
+                                AP_HAL::micros64(),
+                                (uint8_t)_mode,
+                                mission.get_current_nav_id(),
+                                (uint8_t)copter.geometric_control.enabled(),
+                                (uint8_t)reference_supported,
+                                (uint8_t)auto_yaw.mode(),
+                                (uint8_t)heading_mode,
+                                (uint8_t)copter.geometric_control.shaper_active(),
+                                copter.geometric_control.output_age_ms(now_ms),
+                                _geometric_wp_observer_frames);
+}
+#endif
 
 // auto_land_run - lands in auto mode
 //      called by auto_run at 100hz or more

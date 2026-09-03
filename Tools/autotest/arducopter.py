@@ -15956,6 +15956,178 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             raise NotAchievedException(
                 "GEOR ERn/PsiR identity failed during %s" % context)
 
+    def GeometricAutoWPObserver(self):
+        '''test AUTO waypoint geometric observer without actuator ownership'''
+        def log_window(duration_s, reason):
+            self.delay_sim_time(0.2, reason="settle before %s" % reason)
+            start_us = int(self.get_sim_time() * 1000000)
+            self.delay_sim_time(duration_s, reason=reason)
+            return start_us, int(self.get_sim_time() * 1000000)
+
+        def in_window(messages, window):
+            return [m for m in messages if window[0] <= m.TimeUS <= window[1]]
+
+        def interpolated_field(messages, time_us, field):
+            before = max((m for m in messages if m.TimeUS <= time_us),
+                         key=lambda m: m.TimeUS,
+                         default=None)
+            after = min((m for m in messages if m.TimeUS >= time_us),
+                        key=lambda m: m.TimeUS,
+                        default=None)
+            if before is None or after is None:
+                raise NotAchievedException("Position-control source sample not found")
+            if before.TimeUS == after.TimeUS:
+                return getattr(before, field)
+            ratio = (time_us - before.TimeUS) / (after.TimeUS - before.TimeUS)
+            return getattr(before, field) + ratio * (getattr(after, field) - getattr(before, field))
+
+        self.set_parameters({
+            "AUTO_OPTIONS": 3,
+            "FSTRATE_ENABLE": 0,
+            "GEO_OUT_EN": 0,
+            "GEO_SHAPE_EN": 1,
+        })
+        self.start_flying_simple_relhome_mission([
+            (mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, 0, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_WAYPOINT, 120, 0, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_SPLINE_WAYPOINT, 120, 120, 10),
+            (mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM, 120, 120, 10),
+        ])
+
+        self.wait_current_waypoint(2, timeout=120)
+        disabled_window = log_window(1.0, "AUTO-WP observer disabled window")
+
+        # GEO_OUT_EN is the existing explicit opt-in. AUTO has no mode-level
+        # output authorization, so this can only enable shadow calculation.
+        self.set_parameter("GEO_OUT_EN", 1)
+        waypoint_window = log_window(1.5, "AUTO-WP observer waypoint window")
+
+        self.set_rc(4, 1700)
+        rate_only_window = log_window(1.0, "AUTO-WP Rate_Only rejection window")
+        self.set_rc(4, 1500)
+
+        self.wait_current_waypoint(3, timeout=120)
+        spline_window = log_window(1.5, "AUTO-WP observer spline window")
+        self.wait_current_waypoint(4, timeout=120)
+        self.delay_sim_time(1.0, reason="AUTO-WP observer unsupported submode window")
+
+        self.assert_mode("AUTO")
+        if not self.armed(cached=True):
+            raise NotAchievedException("Vehicle disarmed during AUTO-WP observer test")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        messages = {name: [] for name in (
+            "GEOW", "GEAS", "GEOX", "GEFR", "PSCN", "PSCE", "PSCD")}
+        while True:
+            message = dfreader.recv_match(type=list(messages.keys()))
+            if message is None:
+                break
+            messages[message.get_type()].append(message)
+
+        if in_window(messages["GEOW"], disabled_window):
+            raise NotAchievedException("AUTO-WP observer calculated without explicit opt-in")
+        disabled_status = in_window(messages["GEAS"], disabled_window)
+        if not disabled_status or any(message.Run or not message.Sup
+                                      for message in disabled_status):
+            raise NotAchievedException(
+                "AUTO-WP structural support depends on observer opt-in")
+
+        waypoint_references = in_window(messages["GEOW"], waypoint_window)
+        spline_references = in_window(messages["GEOW"], spline_window)
+        if not waypoint_references:
+            raise NotAchievedException("AUTO waypoint geometric observer did not calculate")
+        if not spline_references:
+            raise NotAchievedException("AUTO spline geometric observer did not calculate")
+
+        for message in waypoint_references + spline_references:
+            for field in ("PX", "PY", "PZ", "VX", "VY", "VZ",
+                          "AX", "AY", "AZ", "Yaw", "YR"):
+                if not math.isfinite(getattr(message, field)):
+                    raise NotAchievedException("GEOW.%s is not finite" % field)
+            if message.Frm != 0:
+                raise NotAchievedException("AUTO-WP reference is not LOCAL_NED")
+            if message.Cap != 1:
+                raise NotAchievedException("AUTO-WP reference is not trajectory-capable")
+            if message.HMode != 1:
+                raise NotAchievedException("AUTO-WP heading is not Angle_And_Rate")
+            if message.Age > 100:
+                raise NotAchievedException("AUTO-WP neutral reference is stale")
+            for source, fields in (
+                ("PSCN", (("PX", "DPN"), ("VX", "DVN"), ("AX", "DAN"))),
+                ("PSCE", (("PY", "DPE"), ("VY", "DVE"), ("AY", "DAE"))),
+                ("PSCD", (("PZ", "DPD"), ("VZ", "DVD"), ("AZ", "DAD"))),
+            ):
+                for reference_field, source_field in fields:
+                    source_value = interpolated_field(
+                        messages[source], message.TimeUS, source_field)
+                    if abs(getattr(message, reference_field) - source_value) > 0.1:
+                        raise NotAchievedException(
+                            "GEOW.%s does not match %s.%s" %
+                            (reference_field, source, source_field))
+
+        if in_window(messages["GEOW"], rate_only_window):
+            raise NotAchievedException("Rate_Only AUTO heading reached the legacy adapter")
+        rate_only_status = [
+            message for message in in_window(messages["GEAS"], rate_only_window)
+            if message.AutoY == 9 and message.HMode == 2
+        ]
+        if not rate_only_status:
+            raise NotAchievedException("AUTO-WP Rate_Only fail-closed status not found")
+        if any(message.Run or message.Sup or message.Age != 0xFFFFFFFF
+               for message in rate_only_status):
+            raise NotAchievedException("AUTO-WP Rate_Only rejection retained stale output")
+
+        loiter_status = [
+            message for message in messages["GEAS"]
+            if message.Nav == mavutil.mavlink.MAV_CMD_NAV_LOITER_UNLIM and
+            not message.Run and not message.Sup
+        ]
+        if not loiter_status:
+            raise NotAchievedException("AUTO-WP observer did not stop outside WP submode")
+        loiter_stop = loiter_status[-1]
+        if loiter_stop.Age != 0xFFFFFFFF:
+            raise NotAchievedException("AUTO-WP submode exit retained stale output")
+        if any(message.TimeUS > loiter_stop.TimeUS for message in messages["GEOW"]):
+            raise NotAchievedException("AUTO-WP observer calculated after leaving WP submode")
+
+        status = (in_window(messages["GEAS"], waypoint_window) +
+                  in_window(messages["GEAS"], spline_window))
+        calculated = [message for message in status if message.Run and message.Sup]
+        if not calculated or max(message.CFrm for message in calculated) == 0:
+            raise NotAchievedException("AUTO-WP calculated frame count did not advance")
+        if any(message.Shp for message in calculated):
+            raise NotAchievedException("AUTO-WP Native shaped reference was reshaped")
+
+        output_messages = in_window(messages["GEOX"], waypoint_window)
+        frame_messages = in_window(messages["GEFR"], waypoint_window)
+        if not output_messages or len(frame_messages) < 2:
+            raise NotAchievedException("AUTO-WP ownership evidence is incomplete")
+        if any(message.Allow or message.RT or message.Wrote or not message.OEn
+               for message in output_messages):
+            raise NotAchievedException("AUTO-WP observer obtained actuator authorization")
+        if any(message.GAge > 100 for message in output_messages):
+            raise NotAchievedException("AUTO-WP geometric output was stale while observing")
+
+        first_frame = frame_messages[0]
+        last_frame = frame_messages[-1]
+        delta_main = last_frame.MFrm - first_frame.MFrm
+        delta_geometric = last_frame.GFrm - first_frame.GFrm
+        delta_native = last_frame.NFrm - first_frame.NFrm
+        if delta_main <= 0:
+            raise NotAchievedException("AUTO-WP main rate frame count did not advance")
+        if delta_geometric != 0:
+            raise NotAchievedException("AUTO-WP observer wrote actuator output")
+        if delta_native != delta_main:
+            raise NotAchievedException(
+                "AUTO-WP native frames do not equal main frames (%u != %u)" %
+                (delta_native, delta_main))
+        self.progress(
+            "AUTO-WP observer frames=%u ownership delta main=%u geo=%u native=%u" %
+            (max(message.CFrm for message in calculated),
+             delta_main, delta_geometric, delta_native))
+
+        self.do_RTL()
+
     def GeometricGuidedObserver(self):
         '''test Guided geometric observer logging'''
         self.set_parameter('GUID_OPTIONS', 2)
@@ -21825,6 +21997,7 @@ return update, 1000
             self.LoiterToGuidedHomeVSOrigin,
             self.GuidedModeThrust,
             self.GeometricParameterModules,
+            self.GeometricAutoWPObserver,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricLoiterObserver,
