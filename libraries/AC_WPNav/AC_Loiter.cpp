@@ -23,7 +23,7 @@ extern const AP_HAL::HAL& hal;
 #define LOITER_POS_CORRECTION_MAX_M         2.0     // Maximum horizontal position error allowed before correction (m).
 #define LOITER_ACTIVE_TIMEOUT_MS            200     // Loiter is considered active if updated within the past 200 ms.
 #if APM_BUILD_TYPE(APM_BUILD_ArduCopter)
-#define LOITER_DEFAULT_OPTIONS              7       // Coordinated turn plus geometric observer and motor output.
+#define LOITER_DEFAULT_OPTIONS              1       // Enable Coordinated Turn by default; geometric control requires explicit opt-in.
 #else
 #define LOITER_DEFAULT_OPTIONS              1       // Enable Coordinated Turn by default.
 #endif

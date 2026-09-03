@@ -15812,7 +15812,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 4.0,
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
-            'GEO_OUT_EN': 1,
+            'GEO_OUT_EN': 0,
             'GEO_POS_FLTE': 5.0,
             'GEO_VEL_FLTE': 0.0,
             'GEO_OMG_FLTE': 0.0,
@@ -15866,6 +15866,10 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if any(name.startswith('GEO_SANM_') or name.startswith('SANM_') for name in parameters):
             raise NotAchievedException("PID-only build exposes SANM parameters")
         self.assert_parameter_values(expected_defaults, epsilon=1.0e-6)
+        self.assert_parameter_values({
+            'GUID_OPTIONS': 0,
+            'LOIT_OPTIONS': 1,
+        })
 
         persisted_values = {
             'GEO_POS_KX_XY': 0.01,
@@ -15884,7 +15888,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 0.14,
             'GEO_MOM_NORM_Y': 0.15,
             'GEO_MOM_NORM_Z': 0.16,
-            'GEO_OUT_EN': 0,
+            'GEO_OUT_EN': 1,
             'GEO_POS_FLTE': 0.18,
             'GEO_VEL_FLTE': 0.19,
             'GEO_OMG_FLTE': 0.20,
@@ -15917,8 +15921,14 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.context_push()
         try:
             self.set_parameters(persisted_values)
+            stored_mode_options = {
+                'GUID_OPTIONS': 258,
+                'LOIT_OPTIONS': 7,
+            }
+            self.set_parameters(stored_mode_options)
             self.reboot_sitl()
             self.assert_parameter_values(persisted_values, epsilon=1.0e-6)
+            self.assert_parameter_values(stored_mode_options)
         finally:
             self.context_pop()
 
@@ -16373,10 +16383,10 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.do_RTL()
 
     def GeometricLoiterTakeoffLandingMotorOutput(self):
-        '''prove default Loiter lifecycle uses dedicated geometric references and motor output'''
+        '''prove explicit Loiter opt-in uses dedicated geometric references and motor output'''
         original_loit_options = int(self.get_parameter("LOIT_OPTIONS"))
-        if original_loit_options != 7:
-            raise NotAchievedException("Copter LOIT_OPTIONS default is not 7")
+        if original_loit_options != 1:
+            raise NotAchievedException("Copter LOIT_OPTIONS default is not 1")
 
         self.set_parameters({
             "LOIT_OPTIONS": 7,
@@ -17070,8 +17080,8 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             return min(m.TimeUS for m in matches)
 
         original_loit_options = int(self.get_parameter("LOIT_OPTIONS"))
-        if original_loit_options != 7:
-            raise NotAchievedException("Copter LOIT_OPTIONS default is not 7")
+        if original_loit_options != 1:
+            raise NotAchievedException("Copter LOIT_OPTIONS default is not 1")
         dedicated_brake_defaults = {
             "GEO_LREF_BDLY": 0.2,
             "GEO_LREF_BACC": 2.5,
@@ -17760,7 +17770,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         ]
         if len(limited_geox) < 2 or not any(m.RLim for m in limited_geox):
             raise NotAchievedException(
-                "Default LOIT_OPTIONS=7 mapped-limit test did not produce RLim")
+                "Explicit LOIT_OPTIONS=7 mapped-limit test did not produce RLim")
         limit_handoffs = [
             m for m in geoh_msgs
             if limit_parameter_time_us - 10000 <= m.TimeUS <= active_after_limit[1]
@@ -18130,7 +18140,12 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                     'Guided landing %u never requested AP_Motors GROUND_IDLE' % lifecycle_index)
 
     def GeometricGuidedMotorOutputDisabled(self):
-        '''test Guided geometric motor-output hook requires GEO_OUT_EN'''
+        '''test fresh defaults keep Guided actuator output native'''
+        self.assert_parameter_values({
+            'GEO_OUT_EN': 0,
+            'GUID_OPTIONS': 0,
+            'LOIT_OPTIONS': 1,
+        })
         self.set_parameters({
             'GUID_OPTIONS': 2,
             'GEO_POS_KX_XY': 1.0,
@@ -18143,7 +18158,6 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_MOM_NORM_X': 4.0,
             'GEO_MOM_NORM_Y': 4.0,
             'GEO_MOM_NORM_Z': 2.0,
-            'GEO_OUT_EN': 0,
             'GEO_SHAPE_EN': 0,
         })
         self.takeoff(alt_min=10, mode='GUIDED')
@@ -18158,11 +18172,15 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         dfreader = self.dfreader_for_current_onboard_log()
         geox_msgs = []
+        gefr_msgs = []
         while True:
-            m = dfreader.recv_match(type="GEOX")
+            m = dfreader.recv_match(type=["GEOX", "GEFR"])
             if m is None:
                 break
             if m.TimeUS < step_start_us or m.TimeUS > step_end_us:
+                continue
+            if m.get_type() == "GEFR":
+                gefr_msgs.append(m)
                 continue
             geox_msgs.append(m)
             for field in ("Roll", "Pitch", "Yaw", "Thr"):
@@ -18192,6 +18210,17 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                        len(written_msgs)))
         if len(written_msgs) != 0:
             raise NotAchievedException("GEOX showed AP_Motors writes while GEO_OUT_EN was disabled")
+
+        if len(gefr_msgs) < 2:
+            raise NotAchievedException("Too few GEFR samples during fresh-default output test")
+        first_frame = gefr_msgs[0]
+        last_frame = gefr_msgs[-1]
+        delta_main = int(last_frame.MFrm) - int(first_frame.MFrm)
+        delta_geometric = int(last_frame.GFrm) - int(first_frame.GFrm)
+        delta_native = int(last_frame.NFrm) - int(first_frame.NFrm)
+        if delta_main <= 0 or delta_geometric != 0 or delta_native != delta_main:
+            raise NotAchievedException(
+                "Fresh defaults did not retain Native ownership on every main-loop frame")
 
         self.do_RTL()
 
