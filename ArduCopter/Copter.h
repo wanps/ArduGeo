@@ -757,6 +757,11 @@ private:
     uint32_t native_rate_controller_frames() const { return native_rate_controller_frame_count; }
     void geometric_motor_output_to_motors();
 
+    // geometric_control.cpp
+    bool update_geometric_controller(const AC_Geometric_Target& target,
+                                     bool enabled,
+                                     AC_Geometric_State& state);
+
     // if AP_INERTIALSENSOR_FAST_SAMPLE_WINDOW_ENABLED
     struct RateControllerRates {
         uint8_t fast_logging_rate;
