@@ -844,8 +844,8 @@ const AP_Param::GroupInfo ParametersG2::var_info[] = {
 #if MODE_RTL_ENABLED
     // @Param: RTL_OPTIONS
     // @DisplayName: RTL mode options
-    // @Description: Options that can be applied to change RTL mode behaviour
-    // @Bitmask: 2:Ignore pilot yaw
+    // @Description: Options that can be applied to change RTL mode behaviour. Geometric motor output requires GEO_OUT_EN and is limited to supported RTL WPNav phases.
+    // @Bitmask: 2:Ignore pilot yaw,8:Geometric motor output on supported RTL WPNav phases
     // @User: Advanced
     AP_GROUPINFO("RTL_OPTIONS", 43, ParametersG2, rtl_options, 0),
 #endif
