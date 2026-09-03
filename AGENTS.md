@@ -359,3 +359,16 @@ Open a discussion before writing code if:
 - **Do not move functions around without goal**: Keep the original code structure as possible.
 - **Do not add comment on all functions/lines**: Document only what was change and useful for future reading.
 - **Do not duplicate PRs**: If a PR was already open on a feature/bugfix/changes recently, do not duplicate it.
+
+<!-- BEGIN ARDUGEO PROJECT INSTRUCTIONS V1.2 -->
+
+## ArduGeo project-specific instructions
+
+For every task that changes ArduGeo controller integration, Copter control flow, `AC_GeometricControl`, controller references, controller ownership, handoff, parameters, or related tests, read these project documents before planning or editing:
+
+- `docs/ARDUGEO_CODEX_RULES_V1_2.md`
+- `docs/ARDUGEO_ARCHITECTURE_V1_2.md`
+
+These documents supplement the ArduPilot-wide rules above. Apply the stricter safety constraint when rules overlap. Work from the frozen ArduGeo PID v1.2.0 baseline on a dedicated feature branch. Do not directly develop on `ardugeo-pid`. Execute only one approved migration stage at a time, report actual test commands and results, and stop after the approved stage.
+
+<!-- END ARDUGEO PROJECT INSTRUCTIONS V1.2 -->
