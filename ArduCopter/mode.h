@@ -1640,6 +1640,8 @@ public:
     bool has_manual_throttle() const override { return false; }
     bool allows_arming(AP_Arming::Method method) const override { return false; };
     bool is_autopilot() const override { return true; }
+    bool allows_geometric_motor_output() const override;
+    void handle_geometric_motor_output_fallback() override;
 
     bool requires_terrain_failsafe() const override { return true; }
 
@@ -1757,6 +1759,11 @@ private:
 
     bool terrain_following_allowed;
 
+    bool _geometric_wpnav_reference_supported = false;
+    bool _geometric_wpnav_motor_output_prepared = false;
+    bool _geometric_wpnav_motor_output_active = false;
+    bool _geometric_wpnav_motor_output_rejected = false;
+
 #if HAL_LOGGING_ENABLED
     uint8_t _geometric_wpnav_log_counter = 0;
     uint32_t _geometric_wpnav_observer_frames = 0;
@@ -1766,6 +1773,7 @@ private:
     enum class Option : int32_t {
         // First pair of bits are still available, pilot yaw was mapped to bit 2 for symmetry with auto
         IgnorePilotYaw    = (1U << 2),
+        GeometricMotorOutput = (1U << 8),
     };
     bool option_is_enabled(Option option) const;
 

@@ -15870,6 +15870,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'AUTO_OPTIONS': 0,
             'GUID_OPTIONS': 0,
             'LOIT_OPTIONS': 1,
+            'RTL_OPTIONS': 0,
         })
 
         persisted_values = {
@@ -15926,6 +15927,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 'AUTO_OPTIONS': 259,
                 'GUID_OPTIONS': 258,
                 'LOIT_OPTIONS': 7,
+                'RTL_OPTIONS': 260,
             }
             self.set_parameters(stored_mode_options)
             self.reboot_sitl()
@@ -16653,6 +16655,369 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.progress(
             "RTL observer references=%u calculated_frames=%u" %
             (len(references), max(message.CFrm for message in return_home + loiter_home)))
+        self.context_pop()
+        self.reboot_sitl()
+
+    def GeometricRTLWPNavMotorOutput(self):
+        '''test RTL WPNav geometric ownership and native handoff'''
+        def timestamp_us():
+            return int(self.get_sim_time() * 1000000)
+
+        def log_window(label, duration_s, settle_s=0.2):
+            self.delay_sim_time(settle_s, reason="settle before %s" % label)
+            start_us = timestamp_us()
+            self.delay_sim_time(duration_s, reason=label)
+            self.assert_mode("RTL")
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return start_us, timestamp_us()
+
+        def fly_from_home(distance_m):
+            self.takeoff(10, mode="GUIDED")
+            self.fly_guided_move_local(distance_m, 0, 10)
+
+        observer_options = 0
+        active_options = 1 << 8
+        self.context_push()
+        self.set_parameters({
+            "AUTO_OPTIONS": 0,
+            "FSTRATE_ENABLE": 0,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 1,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_ATT_KR_X": 4.0,
+            "GEO_ATT_KR_Y": 4.0,
+            "GEO_ATT_KR_Z": 2.0,
+            "GEO_ATT_KO_X": 0.2,
+            "GEO_ATT_KO_Y": 0.2,
+            "GEO_ATT_KO_Z": 0.4,
+            "GEO_HOV_THR": 0.0,
+            "GEO_MOM_NORM_X": 4.0,
+            "GEO_MOM_NORM_Y": 4.0,
+            "GEO_MOM_NORM_Z": 2.0,
+            "GUID_OPTIONS": 0,
+            "LOIT_OPTIONS": 0,
+            "PLND_ENABLED": 0,
+            "RNGFND1_MAX": 50,
+            "RNGFND1_TYPE": 100,
+            "RTL_ALT_FINAL_M": 5,
+            "RTL_ALT_M": 25,
+            "RTL_ALT_TYPE": 0,
+            "RTL_CLIMB_MIN_M": 10,
+            "RTL_LOIT_TIME": 8000,
+            "RTL_OPTIONS": active_options,
+            "RTL_SPEED_MS": 5,
+            "SIM_FLOAT_EXCEPT": 0,
+            "SIM_TERRAIN": 0,
+            "WP_RFND_USE": 1,
+            "WP_YAW_BEHAVIOR": 1,
+        })
+        self.reboot_sitl()
+
+        windows = {}
+        transitions = {}
+        fly_from_home(200)
+        run_start_us = timestamp_us()
+        self.change_mode("RTL")
+        self.zero_throttle()
+        windows["initial-climb"] = log_window("RTL active-opt-in Initial Climb", 0.8)
+        self.wait_altitude(24, 27, relative=True, timeout=60)
+        self.wait_distance_to_home(0, 190, timeout=60)
+        windows["initial-return"] = log_window("RTL initial active Return Home", 0.8)
+
+        transitions["bit-clear"] = timestamp_us()
+        self.set_parameter("RTL_OPTIONS", observer_options)
+        windows["observer-only"] = log_window("RTL observer-only Return Home", 0.6)
+        self.set_parameter("RTL_OPTIONS", active_options)
+        windows["bit-reenabled"] = log_window("RTL explicit geometric re-enable", 0.8)
+
+        transitions["output-disable"] = timestamp_us()
+        self.set_parameter("GEO_OUT_EN", 0)
+        windows["output-disabled"] = log_window("RTL output-disabled Native handoff", 0.6)
+        self.set_parameter("GEO_OUT_EN", 1)
+        windows["output-latched"] = log_window("RTL output fault latched", 0.6)
+        self.set_parameter("RTL_OPTIONS", observer_options)
+        windows["output-latch-clear"] = log_window("RTL output latch clear", 0.4)
+        self.set_parameter("RTL_OPTIONS", active_options)
+        windows["output-recovered"] = log_window("RTL output fault recovered", 0.8)
+
+        yaw_channel = int(self.get_parameter("RCMAP_YAW"))
+        yaw_trim = int(self.get_parameter("RC%u_TRIM" % yaw_channel))
+        transitions["stale"] = timestamp_us()
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            p1=42,
+            p2=24,
+            p3=71,
+            p4=97,
+        )
+        windows["stale-latched"] = log_window("RTL stale fault latched", 0.6)
+        self.set_rc(yaw_channel, min(2000, yaw_trim + 200))
+        windows["unsupported-latched"] = log_window("RTL unsupported heading with latch", 0.6)
+        self.set_parameter("RTL_OPTIONS", observer_options)
+        windows["unsupported-cleared"] = log_window("RTL latch clear while unsupported", 0.4)
+        self.set_parameter("RTL_OPTIONS", active_options)
+        windows["unsupported-reenabled"] = log_window("RTL opt-in reset while unsupported", 0.4)
+        self.set_rc(yaw_channel, yaw_trim)
+
+        self.wait_distance_to_home(0, 3, timeout=120)
+        windows["loiter-home"] = log_window("RTL recovery in Loiter At Home", 0.8, settle_s=4.0)
+        self.wait_altitude(5, 23, relative=True, timeout=60)
+        windows["final-descent"] = log_window("RTL Final Descent Native handoff", 0.8)
+        run_final_end_us = windows["final-descent"][1]
+        self.change_mode("LAND")
+        self.wait_disarmed(timeout=120)
+
+        self.set_parameters({
+            "RTL_ALT_FINAL_M": 0,
+            "RTL_LOIT_TIME": 8000,
+        })
+        fly_from_home(60)
+        land_run_start_us = timestamp_us()
+        self.change_mode("RTL")
+        self.zero_throttle()
+        self.wait_altitude(24, 27, relative=True, timeout=60)
+        self.wait_distance_to_home(0, 50, timeout=60)
+        windows["land-run-return"] = log_window("RTL Land run active Return Home", 0.6)
+        self.wait_distance_to_home(0, 3, timeout=120)
+        windows["land-run-loiter"] = log_window(
+            "RTL Land run active Loiter At Home", 0.6, settle_s=4.0)
+        transitions["rate-only"] = timestamp_us()
+        self.set_rc(yaw_channel, min(2000, yaw_trim + 200))
+        windows["rate-only"] = log_window("RTL Rate_Only Native handoff", 0.6)
+        self.set_rc(yaw_channel, yaw_trim)
+        self.wait_disarmed(timeout=180)
+        land_run = (land_run_start_us, timestamp_us())
+
+        self.set_parameter("RTL_ALT_TYPE", 1)
+        fly_from_home(60)
+        terrain_run_start_us = timestamp_us()
+        self.change_mode("RTL")
+        self.zero_throttle()
+        self.wait_disarmed(timeout=180)
+        terrain_run = (terrain_run_start_us, timestamp_us())
+
+        self.set_parameter("RTL_ALT_TYPE", 0)
+        fly_from_home(60)
+        self.change_mode("RTL")
+        self.zero_throttle()
+        self.wait_altitude(24, 27, relative=True, timeout=60)
+        self.wait_distance_to_home(0, 50, timeout=60)
+        transitions["invalid"] = timestamp_us()
+        try:
+            self.set_parameter("GEO_POS_KX_XY", 3.4e38)
+            self.delay_sim_time(0.2, reason="produce invalid RTL geometric output")
+        finally:
+            self.set_parameter("GEO_POS_KX_XY", 1.0)
+            self.set_parameter("GEO_OUT_EN", 0)
+            self.set_parameter("GEO_OUT_EN", 1)
+        windows["invalid-latched"] = log_window("RTL invalid fault latched", 0.6)
+        self.set_parameter("RTL_OPTIONS", observer_options)
+        windows["invalid-latch-clear"] = log_window("RTL invalid latch clear", 0.4)
+        self.set_parameter("RTL_OPTIONS", active_options)
+        windows["invalid-recovered"] = log_window("RTL invalid fault recovered", 0.8)
+        self.change_mode("LAND")
+        self.wait_disarmed(timeout=120)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        messages = {name: [] for name in ("GERS", "GEOH", "GEFR")}
+        while True:
+            message = dfreader.recv_match(type=list(messages.keys()))
+            if message is None:
+                break
+            messages[message.get_type()].append(message)
+
+        def in_window(message_type, window):
+            return [message for message in messages[message_type]
+                    if window[0] <= message.TimeUS <= window[1]]
+
+        def phase_status(window, phase):
+            return sorted(
+                [message for message in in_window("GERS", window)
+                 if message.Phs == phase],
+                key=lambda message: message.TimeUS,
+            )
+
+        def check_frame_window(label, expect_geometric):
+            frame_messages = sorted(in_window("GEFR", windows[label]),
+                                    key=lambda message: message.TimeUS)
+            if len(frame_messages) < 2:
+                raise NotAchievedException("Too few RTL frame samples during %s" % label)
+            first = frame_messages[0]
+            last = frame_messages[-1]
+            delta_main = int(last.MFrm) - int(first.MFrm)
+            delta_geometric = int(last.GFrm) - int(first.GFrm)
+            delta_native = int(last.NFrm) - int(first.NFrm)
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException("Invalid RTL ownership accounting during %s" % label)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException(
+                        "%s was not Geo-exclusive: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException(
+                    "%s was not Native-exclusive: main=%u geo=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+            self.progress(
+                "RTL %s frames main=%u geo=%u native=%u" %
+                (label, delta_main, delta_geometric, delta_native))
+
+        active_windows = (
+            "initial-return",
+            "bit-reenabled",
+            "output-recovered",
+            "invalid-recovered",
+            "loiter-home",
+            "land-run-return",
+            "land-run-loiter",
+        )
+        native_windows = (
+            "initial-climb",
+            "observer-only",
+            "output-disabled",
+            "output-latched",
+            "output-latch-clear",
+            "rate-only",
+            "invalid-latched",
+            "invalid-latch-clear",
+            "stale-latched",
+            "unsupported-latched",
+            "unsupported-cleared",
+            "unsupported-reenabled",
+            "final-descent",
+        )
+        for label in active_windows:
+            check_frame_window(label, True)
+        for label in native_windows:
+            check_frame_window(label, False)
+
+        for label in active_windows:
+            status = in_window("GERS", windows[label])
+            if not status or any(not message.Run or not message.Sup or not message.Req or
+                                 not message.Prep or not message.Act or message.Rej
+                                 for message in status):
+                raise NotAchievedException("RTL active state is invalid during %s" % label)
+
+        initial_status = in_window("GERS", windows["initial-climb"])
+        if not initial_status or any(message.Run or message.Sup or not message.Req or
+                                     message.Prep or message.Act or message.Rej or
+                                     message.HMode != 2 for message in initial_status):
+            raise NotAchievedException("RTL Initial Climb was not Native-only Rate_Only")
+
+        observer_status = in_window("GERS", windows["observer-only"])
+        if not observer_status or any(not message.Run or not message.Sup or message.Req or
+                                      not message.Prep or message.Act or message.Rej
+                                      for message in observer_status):
+            raise NotAchievedException("RTL observer-only state is invalid")
+
+        for label in ("output-latched", "invalid-latched", "stale-latched"):
+            status = in_window("GERS", windows[label])
+            if not status or any(not message.Run or not message.Sup or not message.Req or
+                                 not message.Prep or message.Act or not message.Rej
+                                 for message in status):
+                raise NotAchievedException("RTL hard-fault latch is invalid during %s" % label)
+
+        rate_only_status = in_window("GERS", windows["rate-only"])
+        if not rate_only_status or any(message.Sup or message.Act or message.Rej or
+                                       message.HMode != 2 for message in rate_only_status):
+            raise NotAchievedException("RTL Rate_Only was not a non-latched Native boundary")
+        unsupported_latched = in_window("GERS", windows["unsupported-latched"])
+        if not unsupported_latched or any(message.Sup or message.Run or message.Prep or
+                                           message.Act or not message.Rej
+                                           for message in unsupported_latched):
+            raise NotAchievedException("RTL unsupported phase did not preserve the hard-fault latch")
+        unsupported_cleared = in_window("GERS", windows["unsupported-cleared"])
+        if not unsupported_cleared or any(message.Req or message.Rej or message.Act
+                                          for message in unsupported_cleared):
+            raise NotAchievedException("RTL opt-in clear did not acknowledge the latch")
+        unsupported_reenabled = in_window("GERS", windows["unsupported-reenabled"])
+        if not unsupported_reenabled or any(message.Sup or message.Run or not message.Req or
+                                             message.Prep or message.Act or message.Rej
+                                             for message in unsupported_reenabled):
+            raise NotAchievedException("RTL unsupported phase re-enable state is invalid")
+
+        def frame_after(time_us):
+            return min(
+                (message for message in messages["GEFR"] if message.TimeUS >= time_us),
+                key=lambda message: message.TimeUS,
+                default=None,
+            )
+
+        def check_native_phase(label, status):
+            if len(status) < 2:
+                raise NotAchievedException("Insufficient RTL %s phase evidence" % label)
+            first = frame_after(status[0].TimeUS)
+            last = frame_after(status[-1].TimeUS)
+            if first is None or last is None:
+                raise NotAchievedException("Missing RTL %s frame evidence" % label)
+            delta_main = int(last.MFrm) - int(first.MFrm)
+            delta_geometric = int(last.GFrm) - int(first.GFrm)
+            delta_native = int(last.NFrm) - int(first.NFrm)
+            if delta_main <= 0 or delta_geometric != 0 or delta_native != delta_main:
+                raise NotAchievedException("RTL %s phase was not Native-exclusive" % label)
+
+        run_window = (run_start_us, run_final_end_us)
+        return_status = phase_status(run_window, 2)
+        loiter_status = phase_status(run_window, 3)
+        final_status = phase_status(run_window, 4)
+        if len(return_status) < 2 or len(loiter_status) < 2 or len(final_status) < 2:
+            raise NotAchievedException("RTL active run did not exercise all expected phases")
+        land_return_status = phase_status(land_run, 2)
+        land_loiter_status = phase_status(land_run, 3)
+        if len(land_return_status) < 2 or len(land_loiter_status) < 2:
+            raise NotAchievedException("RTL clean run did not exercise Return and Loiter")
+        if any(not message.Act for message in land_return_status[-2:] + land_loiter_status[:2]):
+            raise NotAchievedException("RTL Return-to-Loiter ownership was not continuous")
+        if land_loiter_status[0].CFrm <= land_return_status[-1].CFrm:
+            raise NotAchievedException("RTL Return-to-Loiter calculation continuity was lost")
+        if [message for message in messages["GEOH"]
+                if land_return_status[-1].TimeUS <= message.TimeUS <= land_loiter_status[0].TimeUS]:
+            raise NotAchievedException("RTL Return-to-Loiter inserted a Native bridge")
+        if any(message.Run or message.Sup or message.Prep or message.Act or message.Rej
+               for message in final_status):
+            raise NotAchievedException("RTL Final Descent retained geometric ownership")
+        check_native_phase("Final Descent", final_status)
+
+        land_status = phase_status(land_run, 5)
+        if not land_status or any(message.Run or message.Sup or message.Prep or
+                                  message.Act or message.Rej or message.HMode != 0xFF
+                                  for message in land_status):
+            raise NotAchievedException("RTL Land retained geometric ownership")
+        check_native_phase("Land", land_status)
+
+        terrain_status = phase_status(terrain_run, 2) + phase_status(terrain_run, 3)
+        if not terrain_status or any(message.Run or message.Sup or not message.Req or
+                                     message.Prep or message.Act or message.Rej
+                                     for message in terrain_status):
+            raise NotAchievedException("Terrain RTL obtained geometric ownership")
+        check_native_phase("terrain Return/Loiter", sorted(terrain_status, key=lambda message: message.TimeUS))
+
+        def check_handoff(label, end_us, failure_mask):
+            handoffs = [message for message in messages["GEOH"]
+                        if transitions[label] <= message.TimeUS <= end_us]
+            if len(handoffs) != 1:
+                raise NotAchievedException(
+                    "Expected one RTL %s handoff, got %u" % (label, len(handoffs)))
+            handoff = handoffs[0]
+            if (int(handoff.Mode) != 6 or
+                    (int(handoff.Fail) & failure_mask) == 0 or
+                    not handoff.Prev or handoff.Act or
+                    not handoff.Hand or handoff.RT):
+                raise NotAchievedException("RTL %s GEOH fields are invalid" % label)
+
+        check_handoff("bit-clear", windows["observer-only"][1], 1 << 0)
+        check_handoff("output-disable", windows["output-disabled"][1], 1 << 1)
+        check_handoff("rate-only", windows["rate-only"][1], 1 << 0)
+        check_handoff("invalid", windows["invalid-latched"][1], 1 << 6)
+        check_handoff("stale", windows["stale-latched"][1], 1 << 5)
+
+        transition_handoffs = [message for message in messages["GEOH"]
+                               if loiter_status[-1].TimeUS <= message.TimeUS <= final_status[-1].TimeUS]
+        if len(transition_handoffs) != 1 or not transition_handoffs[0].Hand:
+            raise NotAchievedException("RTL Loiter-to-Final Descent same-frame handoff was not logged")
+
         self.context_pop()
         self.reboot_sitl()
 
@@ -22528,6 +22893,7 @@ return update, 1000
             self.GeometricAutoWPObserver,
             self.GeometricAutoWPMotorOutput,
             self.GeometricRTLWPNavObserver,
+            self.GeometricRTLWPNavMotorOutput,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricLoiterObserver,
