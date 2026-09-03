@@ -16414,6 +16414,248 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricRTLWPNavObserver(self):
+        '''test RTL WPNav geometric observer without actuator ownership'''
+        def timestamp_us():
+            return int(self.get_sim_time() * 1000000)
+
+        def fly_from_home():
+            self.takeoff(10, mode="GUIDED")
+            self.fly_guided_move_local(100, 0, 10)
+
+        def rtl_to_land(label):
+            start_us = timestamp_us()
+            self.change_mode("RTL")
+            self.zero_throttle()
+            self.wait_disarmed(timeout=250)
+            self.progress("Completed %s" % label)
+            return start_us, timestamp_us()
+
+        def rtl_to_final_altitude(final_alt_m):
+            start_us = timestamp_us()
+            self.change_mode("RTL")
+            self.zero_throttle()
+            deadline = self.get_sim_time() + 250
+            while self.get_sim_time_cached() < deadline:
+                position = self.assert_receive_message("GLOBAL_POSITION_INT")
+                altitude_m = position.relative_alt * 0.001
+                if (self.distance_to_home(use_cached_home=True) < 3 and
+                        abs(altitude_m - final_alt_m) < 0.8):
+                    self.delay_sim_time(2, reason="RTL final descent observer-stop window")
+                    end_us = timestamp_us()
+                    self.change_mode("LAND")
+                    self.wait_disarmed(timeout=120)
+                    return start_us, end_us
+            raise AutoTestTimeoutException("RTL did not reach final altitude")
+
+        def in_window(message_type, window):
+            return [message for message in messages[message_type]
+                    if window[0] <= message.TimeUS <= window[1]]
+
+        def phase_status(window, phase):
+            return sorted(
+                [message for message in in_window("GERS", window)
+                 if message.Phs == phase],
+                key=lambda message: message.TimeUS,
+            )
+
+        def frame_after(time_us):
+            return min(
+                (message for message in messages["GEFR"] if message.TimeUS >= time_us),
+                key=lambda message: message.TimeUS,
+                default=None,
+            )
+
+        def check_native_status_window(label, status):
+            if len(status) < 2:
+                raise NotAchievedException("Insufficient RTL status evidence during %s" % label)
+            first_frame = frame_after(status[0].TimeUS)
+            last_frame = frame_after(status[-1].TimeUS)
+            if first_frame is None or last_frame is None:
+                raise NotAchievedException("Missing RTL frame evidence during %s" % label)
+            delta_main = int(last_frame.MFrm) - int(first_frame.MFrm)
+            delta_geometric = int(last_frame.GFrm) - int(first_frame.GFrm)
+            delta_native = int(last_frame.NFrm) - int(first_frame.NFrm)
+            if delta_main <= 0 or delta_geometric != 0 or delta_native != delta_main:
+                raise NotAchievedException(
+                    "%s was not Native-exclusive: main=%u geo=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+            self.progress(
+                "RTL %s frames main=%u geo=%u native=%u" %
+                (label, delta_main, delta_geometric, delta_native))
+
+        def check_native_run(label, window):
+            check_native_status_window(label, sorted(in_window("GERS", window), key=lambda message: message.TimeUS))
+
+        def interpolated_field(source_messages, time_us, field):
+            before = max(
+                (message for message in source_messages if message.TimeUS <= time_us),
+                key=lambda message: message.TimeUS,
+                default=None,
+            )
+            after = min(
+                (message for message in source_messages if message.TimeUS >= time_us),
+                key=lambda message: message.TimeUS,
+                default=None,
+            )
+            if before is None or after is None:
+                raise NotAchievedException("RTL position-control source sample not found")
+            if before.TimeUS == after.TimeUS:
+                return getattr(before, field)
+            ratio = (time_us - before.TimeUS) / (after.TimeUS - before.TimeUS)
+            return getattr(before, field) + ratio * (getattr(after, field) - getattr(before, field))
+
+        self.context_push()
+        self.set_parameters({
+            "AUTO_OPTIONS": 0,
+            "FSTRATE_ENABLE": 0,
+            "GEO_OUT_EN": 0,
+            "GEO_SHAPE_EN": 1,
+            "GUID_OPTIONS": 0,
+            "LOIT_OPTIONS": 0,
+            "PLND_ENABLED": 0,
+            "RNGFND1_MAX": 50,
+            "RNGFND1_TYPE": 100,
+            "RTL_ALT_FINAL_M": 0,
+            "RTL_ALT_M": 25,
+            "RTL_ALT_TYPE": 0,
+            "RTL_CLIMB_MIN_M": 10,
+            "RTL_LOIT_TIME": 3000,
+            "SIM_TERRAIN": 0,
+            "WP_RFND_USE": 1,
+            "WP_YAW_BEHAVIOR": 1,
+        })
+        self.reboot_sitl()
+
+        fly_from_home()
+        runs = {"disabled": rtl_to_land("disabled RTL")}
+
+        self.set_parameter("GEO_OUT_EN", 1)
+        fly_from_home()
+        runs["enabled-land"] = rtl_to_land("observer-enabled RTL landing")
+
+        self.set_parameter("RTL_ALT_FINAL_M", 5)
+        fly_from_home()
+        runs["enabled-final"] = rtl_to_final_altitude(5)
+
+        self.set_parameters({
+            "RTL_ALT_FINAL_M": 0,
+            "RTL_ALT_TYPE": 1,
+        })
+        fly_from_home()
+        runs["terrain"] = rtl_to_land("terrain RTL")
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        messages = {name: [] for name in (
+            "GERS", "GERW", "GEOX", "GEFR", "PSCN", "PSCE", "PSCD")}
+        while True:
+            message = dfreader.recv_match(type=list(messages.keys()))
+            if message is None:
+                break
+            messages[message.get_type()].append(message)
+
+        disabled_status = in_window("GERS", runs["disabled"])
+        if not disabled_status or any(message.Run for message in disabled_status):
+            raise NotAchievedException("RTL observer ran without GEO_OUT_EN opt-in")
+        if in_window("GERW", runs["disabled"]):
+            raise NotAchievedException("RTL emitted neutral references with GEO_OUT_EN disabled")
+        for phase in (1, 2, 3, 5):
+            status = phase_status(runs["disabled"], phase)
+            if not status:
+                raise NotAchievedException("Disabled RTL did not exercise phase %u" % phase)
+            expected_support = phase in (2, 3)
+            if any(bool(message.Sup) != expected_support for message in status):
+                raise NotAchievedException("RTL structural support depends on observer opt-in")
+        check_native_run("disabled full run", runs["disabled"])
+
+        enabled_land = runs["enabled-land"]
+        initial_climb = phase_status(enabled_land, 1)
+        return_home = phase_status(enabled_land, 2)
+        loiter_home = phase_status(enabled_land, 3)
+        land = phase_status(enabled_land, 5)
+        for label, status in (
+                ("Initial Climb", initial_climb),
+                ("Return Home", return_home),
+                ("Loiter At Home", loiter_home),
+                ("Land", land)):
+            if not status:
+                raise NotAchievedException("Observer-enabled RTL did not exercise %s" % label)
+
+        if any(message.Run or message.Sup or message.HMode != 2 or
+               message.Age != 0xFFFFFFFF for message in initial_climb):
+            raise NotAchievedException("RTL Initial Climb did not fail closed on Rate_Only heading")
+        if [message for message in in_window("GERW", enabled_land) if message.Phs == 1]:
+            raise NotAchievedException("RTL Rate_Only heading reached the legacy adapter")
+
+        for label, status, auto_yaw_mode in (
+                ("Return Home", return_home, 1),
+                ("Loiter At Home", loiter_home, 5)):
+            if any(not message.Run or not message.Sup or message.AutoY != auto_yaw_mode or
+                   message.HMode != 1 or message.Shp or message.Age > 100 for message in status):
+                raise NotAchievedException("RTL %s observer status is invalid" % label)
+            check_native_status_window(label, status)
+
+        if return_home[-1].CFrm == 0 or loiter_home[0].CFrm <= return_home[-1].CFrm:
+            raise NotAchievedException("RTL Return Home to Loiter At Home observer continuity was lost")
+        if any(message.Run or message.Sup or message.HMode != 0xFF or
+               message.Age != 0xFFFFFFFF for message in land):
+            raise NotAchievedException("RTL Land retained geometric observer output")
+        if [message for message in in_window("GERW", enabled_land) if message.Phs == 5]:
+            raise NotAchievedException("RTL Land emitted a geometric reference")
+        check_native_status_window("Land", land)
+        check_native_run("observer-enabled full run", enabled_land)
+
+        final_descent = phase_status(runs["enabled-final"], 4)
+        if not final_descent or any(message.Run or message.Sup or
+                                    message.Age != 0xFFFFFFFF for message in final_descent):
+            raise NotAchievedException("RTL Final Descent retained geometric observer output")
+        if [message for message in in_window("GERW", runs["enabled-final"]) if message.Phs == 4]:
+            raise NotAchievedException("RTL Final Descent emitted a geometric reference")
+        check_native_status_window("Final Descent", final_descent)
+        check_native_run("final-descent full run", runs["enabled-final"])
+
+        terrain_status = phase_status(runs["terrain"], 2) + phase_status(runs["terrain"], 3)
+        if not terrain_status or any(message.Run or message.Sup or message.HMode != 1 or
+                                     message.Age != 0xFFFFFFFF for message in terrain_status):
+            raise NotAchievedException("Terrain RTL did not fail closed with compatible heading")
+        if in_window("GERW", runs["terrain"]):
+            raise NotAchievedException("Terrain RTL emitted a geometric reference")
+        check_native_run("terrain full run", runs["terrain"])
+
+        references = in_window("GERW", enabled_land) + in_window("GERW", runs["enabled-final"])
+        if not references:
+            raise NotAchievedException("RTL WPNav observer did not calculate")
+        for message in references:
+            if message.Phs not in (2, 3):
+                raise NotAchievedException("Unsupported RTL phase reached the legacy adapter")
+            for field in ("PX", "PY", "PZ", "VX", "VY", "VZ",
+                          "AX", "AY", "AZ", "Yaw", "YR"):
+                if not math.isfinite(getattr(message, field)):
+                    raise NotAchievedException("GERW.%s is not finite" % field)
+            if message.Frm != 0 or message.HMode != 1 or message.Age > 100:
+                raise NotAchievedException("RTL neutral reference metadata is invalid")
+            for source, fields in (
+                    ("PSCN", (("PX", "DPN"), ("VX", "DVN"), ("AX", "DAN"))),
+                    ("PSCE", (("PY", "DPE"), ("VY", "DVE"), ("AY", "DAE"))),
+                    ("PSCD", (("PZ", "DPD"), ("VZ", "DVD"), ("AZ", "DAD")))):
+                for reference_field, source_field in fields:
+                    source_value = interpolated_field(messages[source], message.TimeUS, source_field)
+                    if abs(getattr(message, reference_field) - source_value) > 0.1:
+                        raise NotAchievedException(
+                            "GERW.%s does not match %s.%s" %
+                            (reference_field, source, source_field))
+
+        output_messages = in_window("GEOX", enabled_land) + in_window("GEOX", runs["enabled-final"])
+        if not output_messages or any(message.Allow or message.Wrote or not message.OEn or
+                                      message.RT or message.GAge > 100 for message in output_messages):
+            raise NotAchievedException("RTL observer obtained actuator authorization")
+
+        self.progress(
+            "RTL observer references=%u calculated_frames=%u" %
+            (len(references), max(message.CFrm for message in return_home + loiter_home)))
+        self.context_pop()
+        self.reboot_sitl()
+
     def GeometricGuidedObserver(self):
         '''test Guided geometric observer logging'''
         self.set_parameter('GUID_OPTIONS', 2)
@@ -22285,6 +22527,7 @@ return update, 1000
             self.GeometricParameterModules,
             self.GeometricAutoWPObserver,
             self.GeometricAutoWPMotorOutput,
+            self.GeometricRTLWPNavObserver,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricLoiterObserver,

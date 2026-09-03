@@ -1630,6 +1630,7 @@ public:
     Number mode_number() const override { return Number::RTL; }
 
     bool init(bool ignore_checks) override;
+    void exit() override;
     void run() override {
         return run(true);
     }
@@ -1719,6 +1720,13 @@ private:
     void loiterathome_run();
     void build_path();
     void compute_return_target();
+    bool geometric_wpnav_reference_supported(const AC_AttitudeControl::HeadingCommand& heading) const;
+    void update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingCommand& heading);
+    void stop_geometric_wpnav_observer(bool log_unsupported = false);
+#if HAL_LOGGING_ENABLED
+    void log_geometric_wpnav_observer_status(bool reference_supported,
+                                             AC_AttitudeControl::HeadingMode heading_mode);
+#endif
 
     // RTL parameters
     AP_Float altitude_m;
@@ -1748,6 +1756,11 @@ private:
     uint32_t _loiter_start_time;
 
     bool terrain_following_allowed;
+
+#if HAL_LOGGING_ENABLED
+    uint8_t _geometric_wpnav_log_counter = 0;
+    uint32_t _geometric_wpnav_observer_frames = 0;
+#endif
 
     // enum for RTL_OPTIONS parameter
     enum class Option : int32_t {

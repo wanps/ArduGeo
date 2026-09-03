@@ -495,7 +495,7 @@ void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Outp
                           (double)attitude.attitude_error_angle_rad);
 }
 
-// GEOR, GEOX and GEFR are emitted by Guided, Loiter and AUTO-WP. Keep each dynamic
+// GEOR, GEOX and GEFR are emitted by Guided, Loiter, AUTO-WP and RTL-WPNav. Keep each dynamic
 // message registration in this single translation unit so the logger cannot
 // allocate separate FMT IDs for identical names from different mode files.
 void Copter::Log_Write_Geometric_Output_State(bool motor_output_allowed,
