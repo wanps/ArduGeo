@@ -2,6 +2,7 @@
 
 #include <AP_Common/AP_Common.h>
 #include <AP_Param/AP_Param.h>
+#include <AC_AttitudeControl/AC_ControlReference.h>
 
 #include "AC_Geometric_Attitude_PID.h"
 #include "AC_Geometric_LoiterReference.h"
@@ -50,6 +51,11 @@ public:
     void update(const AC_Geometric_State& state,
                 const AC_Geometric_Target& target,
                 float dt);
+
+    static bool reference_to_target(const AC_TrajectoryReference& reference,
+                                    AC_Geometric_Target& target);
+    static bool reference_to_target(const AC_AttitudeReference& reference,
+                                    AC_Geometric_Target& target);
 
     const AC_Geometric_Output& get_output() const { return _output; }
     const AC_Geometric_Target& get_raw_target() const { return _raw_target; }
