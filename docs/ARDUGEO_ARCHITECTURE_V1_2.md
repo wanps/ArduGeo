@@ -1047,10 +1047,12 @@ arming behavior
 新增：
 
 ```text
-AC_ControlReference.h
+libraries/AC_AttitudeControl/AC_ControlReference.h
 reference validity/finite/frame tests
 legacy AC_Geometric_Target adapter
 ```
+
+`AC_ControlReference.h` 不得放在 `libraries/AC_GeometricControl/` 下。
 
 验收：
 

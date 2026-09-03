@@ -2,7 +2,7 @@
 
 #include <AP_HAL/AP_HAL.h>
 
-#define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 1
+#define AC_GEOMETRIC_OUTPUT_ENABLED_DEFAULT 0
 
 const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // The empty subgroup prefixes preserve every public GEO_* parameter name
