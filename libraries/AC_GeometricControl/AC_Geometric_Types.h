@@ -55,6 +55,25 @@ struct AC_Geometric_Target {
     bool yaw_from_trajectory = false;
 };
 
+// Geometric frontend policy remains separate from controller-neutral
+// reference data while the legacy target path is retained.
+struct AC_GeometricReferencePolicy {
+    constexpr AC_GeometricReferencePolicy(bool build_attitude = true,
+                                          bool shape_position = false,
+                                          bool shape_yaw = false,
+                                          bool trajectory_yaw = false) :
+        build_attitude_from_position(build_attitude),
+        shape_position_target(shape_position),
+        shape_yaw_target(shape_yaw),
+        yaw_from_trajectory(trajectory_yaw)
+    {}
+
+    bool build_attitude_from_position = true;
+    bool shape_position_target = false;
+    bool shape_yaw_target = false;
+    bool yaw_from_trajectory = false;
+};
+
 // Limits for the optional geometric reference shaper. The shaper converts raw
 // Guided targets into smooth position, velocity and acceleration references
 // using ArduPilot's jerk-limited square-root shaping helpers.

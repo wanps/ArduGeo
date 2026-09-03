@@ -1,6 +1,14 @@
 #include "Copter.h"
 
-bool Copter::update_geometric_controller(const AC_Geometric_Target& target,
+namespace {
+
+constexpr uint32_t GEOMETRIC_REFERENCE_MAX_AGE_MS = 100;
+
+}
+
+bool Copter::update_geometric_controller(const AC_TrajectoryReference& trajectory_reference,
+                                         const AC_AttitudeReference* attitude_reference,
+                                         const AC_GeometricReferencePolicy& policy,
                                          bool enabled,
                                          AC_Geometric_State& state)
 {
@@ -9,6 +17,19 @@ bool Copter::update_geometric_controller(const AC_Geometric_Target& target,
     // ownership is decided later in the rate-control phase.
     geometric_control.set_enabled(enabled);
     if (!enabled) {
+        return false;
+    }
+
+    const uint32_t now_ms = AP_HAL::millis();
+    AC_Geometric_Target target {};
+    if (!trajectory_reference.meta.is_fresh(now_ms, GEOMETRIC_REFERENCE_MAX_AGE_MS) ||
+        (attitude_reference != nullptr &&
+         !attitude_reference->meta.is_fresh(now_ms, GEOMETRIC_REFERENCE_MAX_AGE_MS)) ||
+        !AC_GeometricControl::references_to_target(trajectory_reference,
+                                                   attitude_reference,
+                                                   policy,
+                                                   target)) {
+        geometric_control.set_enabled(false);
         return false;
     }
 

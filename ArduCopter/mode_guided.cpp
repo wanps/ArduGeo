@@ -1814,20 +1814,25 @@ void ModeGuided::angle_control_run()
     }
 }
 
-bool ModeGuided::update_geometric_observer(const AC_Geometric_Target& target)
+bool ModeGuided::update_geometric_observer(
+    const AC_TrajectoryReference& trajectory_reference,
+    const AC_AttitudeReference* attitude_reference,
+    const AC_GeometricReferencePolicy& policy)
 {
     // Historical name: this routine evaluates the shared geometric cascade.
     // In observer-only configurations its result is diagnostic; when full
     // output is prepared, the same mapped result becomes actuator intent after
     // the frame-exclusive ownership gate authorizes it.
     AC_Geometric_State geometric_state {};
-    if (!run_geometric_observer(target,
+    if (!run_geometric_observer(trajectory_reference,
+                                attitude_reference,
+                                policy,
                                 option_is_enabled(Option::GeometricObserver),
                                 geometric_state)) {
         return false;
     }
-
 #if HAL_LOGGING_ENABLED
+    const AC_Geometric_Target& target = copter.geometric_control.get_raw_target();
     // @LoggerMessage: GEOA
     // @Description: Geometric guided attitude observer
     // @Field: TimeUS: Time since system startup
@@ -2236,19 +2241,29 @@ void ModeGuided::write_geometric_prearm_frame_if_needed()
 
 void ModeGuided::update_geometric_ground_safe_observer()
 {
-    AC_Geometric_Target geometric_target {};
+    AC_TrajectoryReference trajectory_reference {};
+    trajectory_reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
     const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
-    geometric_target.position_ned_m = Vector3f{float(pos_estimate_ned_m.x),
-                                               float(pos_estimate_ned_m.y),
-                                               float(pos_estimate_ned_m.z)};
-    geometric_target.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
-    geometric_target.accel_ned_mss = Vector3f{0.0f, 0.0f, GRAVITY_MSS};
-    ahrs.get_quat_body_to_ned(geometric_target.attitude_body_to_ned);
-    geometric_target.omega_body_rads = ahrs.get_gyro_latest();
-    geometric_target.yaw_rad = ahrs.get_yaw_rad();
-    geometric_target.build_attitude_from_position = false;
-    geometric_target.shape_position_target = false;
-    geometric_target.shape_yaw_target = false;
+    trajectory_reference.position_ned_m = pos_estimate_ned_m;
+    trajectory_reference.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
+    trajectory_reference.acceleration_ned_mss = Vector3f{0.0f, 0.0f, GRAVITY_MSS};
+    trajectory_reference.heading = {
+        ahrs.get_yaw_rad(),
+        0.0f,
+        AC_AttitudeControl::HeadingMode::Angle_Only
+    };
+
+    AC_AttitudeReference attitude_reference {};
+    attitude_reference.meta = trajectory_reference.meta;
+    attitude_reference.meta.capability = AC_ControlReferenceCapability::ATTITUDE;
+    ahrs.get_quat_body_to_ned(attitude_reference.attitude_body_to_ned);
+    attitude_reference.angular_velocity_body_rads = ahrs.get_gyro_latest();
+    const AC_GeometricReferencePolicy policy {
+        false,
+        false,
+        false,
+        false
+    };
     guided_geometric_heading_mode = 0;
     guided_geometric_trajectory_yaw_allowed = false;
 
@@ -2259,7 +2274,9 @@ void ModeGuided::update_geometric_ground_safe_observer()
     // for arm/interlock/idle/spool constraints, but is never asked to clamp a
     // nominal hover command during ground pre-warm or touchdown spool-down.
     copter.geometric_control.reset();
-    const bool observer_updated = update_geometric_observer(geometric_target);
+    const bool observer_updated = update_geometric_observer(trajectory_reference,
+                                                            &attitude_reference,
+                                                            policy);
     _geometric_motor_output_prepared = observer_updated &&
                                         geometric_submode_supported() &&
                                         publish_geometric_position_reference();
@@ -2272,18 +2289,33 @@ void ModeGuided::update_geometric_angle_observer()
 {
     _geometric_motor_output_prepared = false;
     pos_control->clear_external_reference();
-    AC_Geometric_Target geometric_target {};
+    AC_TrajectoryReference trajectory_reference {};
+    trajectory_reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
     const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
-    geometric_target.position_ned_m = Vector3f{float(pos_estimate_ned_m.x), float(pos_estimate_ned_m.y), float(pos_estimate_ned_m.z)};
-    geometric_target.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
-    geometric_target.attitude_body_to_ned = attitude_control->get_attitude_target_quat();
-    geometric_target.omega_body_rads = attitude_control->get_attitude_target_ang_vel();
-    geometric_target.yaw_rad = attitude_control->get_att_target_euler_rad().z;
-    geometric_target.yaw_rate_rads = geometric_target.omega_body_rads.z;
+    trajectory_reference.position_ned_m = pos_estimate_ned_m;
+    trajectory_reference.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
+    const Vector3f angular_velocity_body_rads = attitude_control->get_attitude_target_ang_vel();
+    trajectory_reference.heading = {
+        attitude_control->get_att_target_euler_rad().z,
+        angular_velocity_body_rads.z,
+        AC_AttitudeControl::HeadingMode::Angle_And_Rate
+    };
+
+    AC_AttitudeReference attitude_reference {};
+    attitude_reference.meta = trajectory_reference.meta;
+    attitude_reference.meta.capability = AC_ControlReferenceCapability::ATTITUDE;
+    attitude_reference.attitude_body_to_ned = attitude_control->get_attitude_target_quat();
+    attitude_reference.angular_velocity_body_rads = angular_velocity_body_rads;
+    const AC_GeometricReferencePolicy policy {
+        false,
+        true,
+        true,
+        false
+    };
     guided_geometric_heading_mode = 0;
     guided_geometric_trajectory_yaw_allowed = false;
 
-    update_geometric_observer(geometric_target);
+    update_geometric_observer(trajectory_reference, &attitude_reference, policy);
 }
 
 bool ModeGuided::publish_geometric_position_reference()
@@ -2336,47 +2368,45 @@ void ModeGuided::update_geometric_position_observer(const Vector3p* position_tar
     // Convert Guided command meaning into the common geometric PVA/yaw
     // contract. Optional shaping belongs to the Guided front end; the
     // downstream feedback cascade is independent of command source.
-    AC_Geometric_Target geometric_target {};
+    AC_TrajectoryReference trajectory_reference {};
+    trajectory_reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
     if (position_target_ned_m != nullptr) {
-        geometric_target.position_ned_m = Vector3f{float(position_target_ned_m->x),
-                                                  float(position_target_ned_m->y),
-                                                  float(position_target_ned_m->z)};
+        trajectory_reference.position_ned_m = *position_target_ned_m;
     } else {
-        const Vector3p& pos_estimate_ned_m = pos_control->get_pos_estimate_NED_m();
-        geometric_target.position_ned_m = Vector3f{float(pos_estimate_ned_m.x),
-                                                  float(pos_estimate_ned_m.y),
-                                                  float(pos_estimate_ned_m.z)};
+        trajectory_reference.position_ned_m = pos_control->get_pos_estimate_NED_m();
     }
-    geometric_target.velocity_ned_ms = velocity_target_ned_ms;
-    geometric_target.accel_ned_mss = accel_target_ned_mss;
-    geometric_target.build_attitude_from_position = true;
-    geometric_target.shape_position_target = shape_position_target;
+    trajectory_reference.velocity_ned_ms = velocity_target_ned_ms;
+    trajectory_reference.acceleration_ned_mss = accel_target_ned_mss;
+    trajectory_reference.heading = heading;
     guided_geometric_heading_mode = (uint8_t)heading.heading_mode;
     guided_geometric_trajectory_yaw_allowed = allow_trajectory_yaw;
     const bool auto_yaw_follows_path = (auto_yaw.mode() == AutoYaw::Mode::LOOK_AT_NEXT_WP) ||
                                        (auto_yaw.mode() == AutoYaw::Mode::LOOK_AHEAD);
-    geometric_target.yaw_from_trajectory = shape_position_target &&
-                                           allow_trajectory_yaw &&
-                                           auto_yaw_follows_path;
+    const bool yaw_from_trajectory = shape_position_target &&
+                                     allow_trajectory_yaw &&
+                                     auto_yaw_follows_path;
     // Geometric yaw-follow must not read back AC_PosControl's native yaw
     // target. When AutoYaw is in an automatic path-following mode, the
     // setpoint shaper derives yaw from its own shaped velocity/acceleration.
-    if (geometric_target.yaw_from_trajectory) {
-        geometric_target.yaw_rad = ahrs.get_yaw_rad();
-        geometric_target.yaw_rate_rads = 0.0f;
+    if (yaw_from_trajectory) {
+        trajectory_reference.heading.yaw_angle_rad = ahrs.get_yaw_rad();
+        trajectory_reference.heading.yaw_rate_rads = 0.0f;
     } else if (!allow_trajectory_yaw && auto_yaw_follows_path) {
-        geometric_target.yaw_rad = ahrs.get_yaw_rad();
-        geometric_target.yaw_rate_rads = 0.0f;
+        trajectory_reference.heading.yaw_angle_rad = ahrs.get_yaw_rad();
+        trajectory_reference.heading.yaw_rate_rads = 0.0f;
     } else if (heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only) {
-        geometric_target.yaw_rad = ahrs.get_yaw_rad();
-        geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
-    } else {
-        geometric_target.yaw_rad = heading.yaw_angle_rad;
-        geometric_target.yaw_rate_rads = heading.yaw_rate_rads;
+        trajectory_reference.heading.yaw_angle_rad = ahrs.get_yaw_rad();
     }
-    geometric_target.omega_body_rads.z = geometric_target.yaw_rate_rads;
+    const AC_GeometricReferencePolicy policy {
+        true,
+        shape_position_target,
+        true,
+        yaw_from_trajectory
+    };
 
-    const bool observer_updated = update_geometric_observer(geometric_target);
+    const bool observer_updated = update_geometric_observer(trajectory_reference,
+                                                            nullptr,
+                                                            policy);
     _geometric_motor_output_prepared = observer_updated &&
                                         geometric_submode_supported() &&
                                         publish_geometric_position_reference();

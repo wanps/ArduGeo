@@ -225,9 +225,12 @@ protected:
     void zero_throttle_and_relax_ac(bool spool_up = false);
     void zero_throttle_and_hold_attitude();
 
-    bool run_geometric_observer(const AC_Geometric_Target& target,
+    bool run_geometric_observer(const AC_TrajectoryReference& trajectory_reference,
+                                const AC_AttitudeReference* attitude_reference,
+                                const AC_GeometricReferencePolicy& policy,
                                 bool enabled,
                                 AC_Geometric_State& state);
+    AC_ControlReferenceMeta make_control_reference_meta(AC_ControlReferenceCapability capability) const;
 
     // Return stopping point as a location with above origin alt frame
     Location get_stopping_point() const;
@@ -1198,7 +1201,9 @@ public:
     bool wp_destination_reached() const;
     void restore_native_position_control_after_geometric();
     bool publish_geometric_position_reference();
-    bool update_geometric_observer(const AC_Geometric_Target& target);
+    bool update_geometric_observer(const AC_TrajectoryReference& trajectory_reference,
+                                   const AC_AttitudeReference* attitude_reference,
+                                   const AC_GeometricReferencePolicy& policy);
     void update_geometric_angle_observer();
     void update_geometric_position_observer(const Vector3p* position_target_ned_m,
                                             const Vector3f& velocity_target_ned_ms,
@@ -1466,7 +1471,8 @@ private:
     void init_geometric_ekf_reset_tracking();
     bool handle_geometric_ekf_resets();
     AC_Geometric_LoiterReference_Limits geometric_reference_limits() const;
-    void build_geometric_ground_safe_target(AC_Geometric_Target& target) const;
+    void build_geometric_ground_safe_reference(AC_TrajectoryReference& trajectory_reference,
+                                               AC_AttitudeReference& attitude_reference) const;
     bool run_geometric_loiter_reference(AltHoldModeState loiter_state,
                                         float target_roll_rad,
                                         float target_pitch_rad,
@@ -1475,7 +1481,9 @@ private:
                                         bool& takeoff_stopped_this_cycle,
                                         bool& ground_safe_prepared);
     bool update_geometric_observer(AltHoldModeState loiter_state,
-                                   const AC_Geometric_Target* reference_target = nullptr);
+                                   const AC_TrajectoryReference* trajectory_reference = nullptr,
+                                   const AC_AttitudeReference* attitude_reference = nullptr,
+                                   AC_GeometricReferencePolicy policy = {});
     void finish_geometric_lifecycle(AltHoldModeState loiter_state,
                                     bool takeoff_stopped_this_cycle,
                                     bool ground_safe_prepared);
