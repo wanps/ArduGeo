@@ -87,7 +87,7 @@ bool ModeRTL::init(bool ignore_checks)
             return false;
         }
     }
-    _geometric_wpnav_motor_output_rejected = false;
+    _geometric_wpnav_authorization.reset();
     stop_geometric_wpnav_observer();
 #if HAL_LOGGING_ENABLED
     _geometric_wpnav_log_counter = 0;
@@ -115,7 +115,7 @@ bool ModeRTL::init(bool ignore_checks)
 void ModeRTL::exit()
 {
     stop_geometric_wpnav_observer();
-    _geometric_wpnav_motor_output_rejected = false;
+    _geometric_wpnav_authorization.reset();
 }
 
 // re-start RTL with terrain following disabled
@@ -146,9 +146,8 @@ ModeRTL::RTLAltType ModeRTL::get_alt_type() const
 // should be called at 100hz or more
 void ModeRTL::run(bool disarm_on_land)
 {
-    if (!option_is_enabled(Option::GeometricMotorOutput)) {
-        _geometric_wpnav_motor_output_rejected = false;
-    }
+    _geometric_wpnav_authorization.acknowledge_if_not_requested(
+        option_is_enabled(Option::GeometricMotorOutput));
 
     if (!motors->armed()) {
         stop_geometric_wpnav_observer();
@@ -491,10 +490,8 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
     const bool motor_output_requested = option_is_enabled(Option::GeometricMotorOutput);
     const bool observer_requested = copter.geometric_control.output_enabled();
     if (!reference_supported || !observer_requested) {
-        if (_geometric_wpnav_motor_output_active &&
-            motor_output_requested &&
-            reference_supported) {
-            _geometric_wpnav_motor_output_rejected = true;
+        if (reference_supported) {
+            _geometric_wpnav_authorization.reject_if_active(motor_output_requested);
         }
         stop_geometric_wpnav_observer();
 #if HAL_LOGGING_ENABLED
@@ -521,11 +518,8 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
     };
     AC_Geometric_State geometric_state {};
     if (!run_geometric_observer(reference, nullptr, policy, true, geometric_state)) {
-        if (_geometric_wpnav_motor_output_active && motor_output_requested) {
-            _geometric_wpnav_motor_output_rejected = true;
-        }
-        _geometric_wpnav_motor_output_active = false;
-        _geometric_wpnav_motor_output_prepared = false;
+        _geometric_wpnav_authorization.reject_if_active(motor_output_requested);
+        _geometric_wpnav_authorization.stop();
 #if HAL_LOGGING_ENABLED
         if (_geometric_wpnav_log_counter++ % 5 == 0) {
             log_geometric_wpnav_observer_status(reference_supported, heading.heading_mode);
@@ -535,18 +529,10 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
         return;
     }
 
-    _geometric_wpnav_motor_output_prepared =
+    const bool motor_output_prepared =
         copter.geometric_control.output_is_fresh(AP_HAL::millis(), rtl_wpnav_geometric_output_recent_ms) &&
         copter.geometric_motor_output_is_valid();
-    if (!_geometric_wpnav_motor_output_prepared) {
-        if (_geometric_wpnav_motor_output_active && motor_output_requested) {
-            _geometric_wpnav_motor_output_rejected = true;
-        }
-        _geometric_wpnav_motor_output_active = false;
-    } else {
-        _geometric_wpnav_motor_output_active = motor_output_requested &&
-                                               !_geometric_wpnav_motor_output_rejected;
-    }
+    _geometric_wpnav_authorization.update(motor_output_prepared, motor_output_requested);
 
 #if HAL_LOGGING_ENABLED
     _geometric_wpnav_observer_frames++;
@@ -611,8 +597,7 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
 void ModeRTL::stop_geometric_wpnav_observer(bool log_unsupported)
 {
     _geometric_wpnav_reference_supported = false;
-    _geometric_wpnav_motor_output_prepared = false;
-    _geometric_wpnav_motor_output_active = false;
+    _geometric_wpnav_authorization.stop();
     copter.geometric_control.set_enabled(false);
 #if HAL_LOGGING_ENABLED
     if (log_unsupported && _geometric_wpnav_log_counter++ % 5 == 0) {
@@ -650,9 +635,9 @@ void ModeRTL::log_geometric_wpnav_observer_status(bool reference_supported,
                                 (uint8_t)copter.geometric_control.enabled(),
                                 (uint8_t)reference_supported,
                                 (uint8_t)option_is_enabled(Option::GeometricMotorOutput),
-                                (uint8_t)_geometric_wpnav_motor_output_prepared,
+                                (uint8_t)_geometric_wpnav_authorization.prepared,
                                 (uint8_t)allows_geometric_motor_output(),
-                                (uint8_t)_geometric_wpnav_motor_output_rejected,
+                                (uint8_t)_geometric_wpnav_authorization.rejected,
                                 (uint8_t)auto_yaw.mode(),
                                 (uint8_t)heading_mode,
                                 (uint8_t)copter.geometric_control.shaper_active(),
@@ -663,27 +648,21 @@ void ModeRTL::log_geometric_wpnav_observer_status(bool reference_supported,
 
 bool ModeRTL::allows_geometric_motor_output() const
 {
-    return option_is_enabled(Option::GeometricMotorOutput) &&
-           _geometric_wpnav_reference_supported &&
-           _geometric_wpnav_motor_output_prepared &&
-           _geometric_wpnav_motor_output_active &&
-           !_geometric_wpnav_motor_output_rejected;
+    return _geometric_wpnav_reference_supported &&
+           _geometric_wpnav_authorization.allows_output(
+               option_is_enabled(Option::GeometricMotorOutput));
 }
 
 void ModeRTL::handle_geometric_motor_output_fallback()
 {
-    if (_geometric_wpnav_motor_output_active &&
-        motors->armed() &&
-        option_is_enabled(Option::GeometricMotorOutput) &&
+    const bool motor_output_requested = option_is_enabled(Option::GeometricMotorOutput);
+    if (motors->armed() &&
         _geometric_wpnav_reference_supported &&
         !copter.geometric_motor_output_blocked_by_rate_thread()) {
-        _geometric_wpnav_motor_output_rejected = true;
+        _geometric_wpnav_authorization.reject_if_active(motor_output_requested);
     }
-    if (!option_is_enabled(Option::GeometricMotorOutput)) {
-        _geometric_wpnav_motor_output_rejected = false;
-    }
-    _geometric_wpnav_motor_output_active = false;
-    _geometric_wpnav_motor_output_prepared = false;
+    _geometric_wpnav_authorization.acknowledge_if_not_requested(motor_output_requested);
+    _geometric_wpnav_authorization.stop();
     Mode::handle_geometric_motor_output_fallback();
 }
 

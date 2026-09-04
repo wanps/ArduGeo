@@ -18,6 +18,7 @@
 - C7 ✅ RTL WPNav phase observer-only
 - C8 ✅ RTL Return Home / Loiter At Home active geometric ownership
 - C9 ✅ Flight Mode capability taxonomy + selection/handoff consolidation audit (read-only)
+- C10 ✅ Full-Trajectory Authorization Minimal Consolidation
 
 ## Current verified active coverage
 
@@ -60,19 +61,6 @@ Rate/direct/special Mode family   Native unless separately designed
 - C8 RTL active: `407477c467e4a4478dddd42bab02dabab1ce6828`
 
 ## Next
-
-### C10 ⏭ Full-Trajectory Authorization Minimal Consolidation
-
-Only AUTO + RTL may share the already-proven authorization state:
-
-```text
-prepared
-active
-rejected
-explicit opt-in acknowledge/reset
-```
-
-No new capability or Mode coverage is allowed in C10.
 
 ### Hardware Gate H1 ⏭
 

@@ -232,6 +232,47 @@ protected:
                                 AC_Geometric_State& state);
     AC_ControlReferenceMeta make_control_reference_meta(AC_ControlReferenceCapability capability) const;
 
+    struct GeometricTrajectoryAuthorizationState {
+        void reset() {
+            prepared = false;
+            active = false;
+            rejected = false;
+        }
+
+        void stop() {
+            prepared = false;
+            active = false;
+        }
+
+        void acknowledge_if_not_requested(bool output_requested) {
+            if (!output_requested) {
+                rejected = false;
+            }
+        }
+
+        void reject_if_active(bool output_requested) {
+            if (active && output_requested) {
+                rejected = true;
+            }
+        }
+
+        void update(bool output_prepared, bool output_requested) {
+            prepared = output_prepared;
+            if (!prepared) {
+                reject_if_active(output_requested);
+            }
+            active = prepared && output_requested && !rejected;
+        }
+
+        bool allows_output(bool output_requested) const {
+            return output_requested && prepared && active && !rejected;
+        }
+
+        bool prepared = false;
+        bool active = false;
+        bool rejected = false;
+    };
+
     // Return stopping point as a location with above origin alt frame
     Location get_stopping_point() const;
 
@@ -711,9 +752,7 @@ private:
 
     SubMode _mode = SubMode::TAKEOFF;   // controls which auto controller is run
     bool _geometric_wp_reference_supported = false;
-    bool _geometric_wp_motor_output_prepared = false;
-    bool _geometric_wp_motor_output_active = false;
-    bool _geometric_wp_motor_output_rejected = false;
+    GeometricTrajectoryAuthorizationState _geometric_wp_authorization;
 #if HAL_LOGGING_ENABLED
     uint8_t _geometric_wp_log_counter = 0;
     uint32_t _geometric_wp_observer_frames = 0;
@@ -1760,9 +1799,7 @@ private:
     bool terrain_following_allowed;
 
     bool _geometric_wpnav_reference_supported = false;
-    bool _geometric_wpnav_motor_output_prepared = false;
-    bool _geometric_wpnav_motor_output_active = false;
-    bool _geometric_wpnav_motor_output_rejected = false;
+    GeometricTrajectoryAuthorizationState _geometric_wpnav_authorization;
 
 #if HAL_LOGGING_ENABLED
     uint8_t _geometric_wpnav_log_counter = 0;
