@@ -1335,6 +1335,7 @@ private:
     void accel_control_run();
     void velaccel_control_run();
     void pause_control_run();
+    void update_geometric_pause_observer();
     void posvelaccel_control_run();
     void set_yaw_state_rad(bool use_yaw, float yaw_rad, bool use_yaw_rate, float yaw_rate_rads, bool relative_angle);
 

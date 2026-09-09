@@ -15,9 +15,6 @@ static Vector3f guided_accel_target_ned_mss;    // acceleration target (used by 
 static uint32_t update_time_ms;                 // system time of last target update to pos_vel_accel, vel_accel or accel controller
 static bool guided_geometric_position_was_active;
 static AC_Geometric_GuidedTargetManager guided_geometric_target_manager;
-static Vector3p guided_geometric_takeoff_target_ned_m;
-static bool guided_geometric_takeoff_terrain_alt;
-static bool guided_geometric_takeoff_spool_ready;
 static Vector3p guided_geometric_land_hold_ned_m;
 static float guided_geometric_land_yaw_rad;
 static float guided_geometric_land_descent_ned_ms;
@@ -83,9 +80,6 @@ bool ModeGuided::init(bool ignore_checks)
     guided_pause_yaw_valid = false;
     guided_geometric_position_was_active = false;
     guided_geometric_target_manager.reset();
-    guided_geometric_takeoff_target_ned_m.zero();
-    guided_geometric_takeoff_terrain_alt = false;
-    guided_geometric_takeoff_spool_ready = false;
     guided_geometric_land_hold_ned_m.zero();
     guided_geometric_land_yaw_rad = 0.0f;
     guided_geometric_land_descent_ned_ms = 0.0f;
@@ -273,7 +267,9 @@ bool ModeGuided::geometric_submode_supported() const
 {
     switch (guided_mode) {
     case SubMode::TakeOff:
-        return !guided_geometric_takeoff_terrain_alt;
+        // AutoYaw HOLD is a pure rate heading command.  The full-trajectory
+        // reference contract cannot represent it without changing semantics.
+        return false;
     case SubMode::WP:
         // WPNav path/avoidance semantics are not yet reproduced by the
         // controller-independent geometric target generator.
@@ -501,21 +497,6 @@ bool ModeGuided::do_user_takeoff_start_m(float takeoff_alt_m)
 
     // initialise alt for WP_NAVALT_MIN and set completion alt
     auto_takeoff.start_m(alt_target_m, alt_target_terrain);
-
-    // Keep a controller-independent NED takeoff target.  The geometric path
-    // must not call _AutoTakeoff::run(), because that helper couples target
-    // shaping to the native position and attitude feedback controllers.
-    guided_geometric_takeoff_target_ned_m = pos_control->get_pos_estimate_NED_m();
-    guided_geometric_takeoff_target_ned_m.z = -alt_target_m;
-    guided_geometric_takeoff_terrain_alt = alt_target_terrain;
-    guided_geometric_takeoff_spool_ready = false;
-
-    // Retag the already-safe ground output for the TakeOff submode before the
-    // next rate frame.  The first unrestricted target is generated later,
-    // only after AP_Motors reports THROTTLE_UNLIMITED.
-    if (geometric_motor_output_configured()) {
-        update_geometric_ground_safe_observer();
-    }
 
     // Normally the first armed Guided::run() has already emitted phase 0.
     // Keep the command handler robust to an arm/takeoff command pair arriving
@@ -1245,84 +1226,6 @@ void ModeGuided::set_angle(const Quaternion &attitude_quat, const Vector3f &ang_
 //      called by guided_run at 100hz or more
 void ModeGuided::takeoff_run()
 {
-    if (geometric_position_control_active()) {
-        guided_geometric_position_was_active = true;
-
-        const Vector3p current_pos_ned_m = pos_control->get_pos_estimate_NED_m();
-        Vector3f zero_velocity_ned_ms {};
-        Vector3f zero_accel_ned_mss {};
-        const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
-
-        // AP_Motors still owns arm/interlock/spool safety.  While it cannot
-        // apply unrestricted thrust, keep a fresh level geometric hold output
-        // and reset the geometric integrators each cycle.  This prepares the
-        // first armed rate frame without winding up against the spool limit.
-        if (!motors->armed() || !copter.ap.auto_armed ||
-            motors->get_spool_state() != AP_Motors::SpoolState::THROTTLE_UNLIMITED) {
-            if (motors->armed() && copter.ap.auto_armed) {
-                motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
-            } else {
-                make_safe_ground_handling(copter.is_tradheli() && motors->get_interlock());
-            }
-            guided_geometric_takeoff_spool_ready = false;
-            update_geometric_ground_safe_observer();
-            return;
-        }
-
-        motors->set_desired_spool_state(AP_Motors::DesiredSpoolState::THROTTLE_UNLIMITED);
-
-        Vector3p takeoff_target_ned_m = guided_geometric_takeoff_target_ned_m;
-        if (guided_geometric_takeoff_terrain_alt) {
-            float terrain_u_m = 0.0f;
-            if (!wp_nav->get_terrain_U_m(terrain_u_m)) {
-                copter.failsafe_terrain_on_event();
-                return;
-            }
-            takeoff_target_ned_m.z -= terrain_u_m;
-        }
-
-        if (!guided_geometric_takeoff_spool_ready) {
-            // Start the jerk-limited geometric reference at the measured state
-            // exactly when AP_Motors grants full throttle authority.
-            copter.geometric_control.reset();
-            guided_geometric_target_manager.reset();
-            guided_geometric_takeoff_spool_ready = true;
-        }
-
-        update_geometric_position_observer(&takeoff_target_ned_m,
-                                           zero_velocity_ned_ms,
-                                           zero_accel_ned_mss,
-                                           heading,
-                                           true,
-                                           false);
-
-        if (copter.ap.land_complete) {
-            const AC_Geometric_Mapped_Output& mapped = copter.geometric_control.get_output().mapped;
-            if (mapped.throttle_norm >= MIN(copter.g2.takeoff_throttle_max, 0.9f) ||
-                pos_control->get_estimated_accel_U_mss() >= 0.5f * pos_control->D_get_max_accel_mss() ||
-                pos_control->get_vel_estimate_U_ms() >= 0.1f * pos_control->get_max_speed_up_ms()) {
-                set_land_complete(false);
-            }
-        }
-
-        const float vel_threshold_fraction = 0.1f;
-        const float stop_distance_m = 0.5f * sq(vel_threshold_fraction * pos_control->get_max_speed_up_ms()) /
-                                      pos_control->D_get_max_accel_mss();
-        const bool reached_altitude = fabsf(float(current_pos_ned_m.z - takeoff_target_ned_m.z)) <= MAX(stop_distance_m, 0.1f);
-        const bool reached_climb_rate = fabsf(pos_control->get_vel_estimate_U_ms()) <
-                                        pos_control->get_max_speed_up_ms() * vel_threshold_fraction;
-        if (reached_altitude && reached_climb_rate && !takeoff_complete) {
-            takeoff_complete = true;
-#if AP_FENCE_ENABLED
-            copter.fence.auto_enable_fence_after_takeoff();
-#endif
-#if AP_LANDINGGEAR_ENABLED
-            copter.landinggear.retract_after_takeoff();
-#endif
-        }
-        return;
-    }
-
     restore_native_position_control_after_geometric();
     auto_takeoff.run();
     if (auto_takeoff.complete && !takeoff_complete) {
@@ -1396,9 +1299,6 @@ void ModeGuided::geometric_land_run()
                 guided_is_terrain_alt = false;
                 update_time_ms = millis();
                 guided_geometric_target_manager.reset();
-                guided_geometric_takeoff_target_ned_m.zero();
-                guided_geometric_takeoff_terrain_alt = false;
-                guided_geometric_takeoff_spool_ready = false;
                 guided_geometric_land_descent_ned_ms = 0.0f;
                 takeoff_complete = false;
                 update_geometric_ground_safe_observer();
@@ -1624,6 +1524,26 @@ void ModeGuided::velaccel_control_run()
                                        heading);
 }
 
+void ModeGuided::update_geometric_pause_observer()
+{
+    if (!guided_pause_pos_valid) {
+        guided_pause_pos_ned_m = pos_control->get_pos_estimate_NED_m();
+        guided_pause_pos_valid = true;
+    }
+    const AC_AttitudeControl::HeadingCommand heading {
+        guided_pause_yaw_valid ? guided_pause_yaw_rad : ahrs.get_yaw_rad(),
+        0.0f,
+        AC_AttitudeControl::HeadingMode::Angle_And_Rate
+    };
+    const Vector3f zero_target {};
+    update_geometric_position_observer(&guided_pause_pos_ned_m,
+                                       zero_target,
+                                       zero_target,
+                                       heading,
+                                       false,
+                                       false);
+}
+
 // pause_control_run - runs the guided mode pause controller
 // called from guided_run
 void ModeGuided::pause_control_run()
@@ -1640,23 +1560,7 @@ void ModeGuided::pause_control_run()
 
     if (geometric_position_control_active() && !guided_is_terrain_alt) {
         guided_geometric_position_was_active = true;
-        if (!guided_pause_pos_valid) {
-            guided_pause_pos_ned_m = pos_control->get_pos_estimate_NED_m();
-            guided_pause_pos_valid = true;
-        }
-        const AC_AttitudeControl::HeadingCommand heading {
-            guided_pause_yaw_valid ? guided_pause_yaw_rad : ahrs.get_yaw_rad(),
-            0.0f,
-            AC_AttitudeControl::HeadingMode::Angle_And_Rate
-        };
-        Vector3f zero_target;
-        zero_target.zero();
-        update_geometric_position_observer(&guided_pause_pos_ned_m,
-                                           zero_target,
-                                           zero_target,
-                                           heading,
-                                           false,
-                                           false);
+        update_geometric_pause_observer();
         return;
     }
     restore_native_position_control_after_geometric();
@@ -2581,13 +2485,19 @@ uint32_t ModeGuided::get_timeout_ms() const
 // pause guide mode
 bool ModeGuided::pause()
 {
+    const bool geometric_was_active = geometric_position_control_active() &&
+                                      !guided_is_terrain_alt;
     _paused = true;
     guided_pause_pos_ned_m = pos_control->get_pos_estimate_NED_m();
     guided_pause_pos_valid = true;
     guided_pause_yaw_rad = ahrs.get_yaw_rad();
     guided_pause_yaw_valid = true;
     guided_geometric_target_manager.reset();
-    copter.geometric_control.reset();
+    if (geometric_was_active) {
+        // MAVLink command handling runs after the mode update.  Refresh the
+        // hold reference now so the next rate frame remains geometric.
+        update_geometric_pause_observer();
+    }
     return true;
 }
 

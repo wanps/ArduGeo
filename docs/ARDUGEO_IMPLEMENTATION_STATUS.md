@@ -19,11 +19,20 @@
 - C8 ✅ RTL Return Home / Loiter At Home active geometric ownership
 - C9 ✅ Flight Mode capability taxonomy + selection/handoff consolidation audit (read-only)
 - C10 ✅ Full-Trajectory Authorization Minimal Consolidation
+- C11 ✅ Guided Engineering Closure & Coverage Verification
+- C12 ✅ Guided lifecycle closure
 
-## Current verified active coverage
+## Guided Engineering v1.0 support matrix
+
+| Support class | Guided paths | Decision |
+| --- | --- | --- |
+| Geo Active Supported | Initial entry hold, Pos, PosVelAccel, Pause, Guided Land | Pause keeps continuous Geo ownership |
+| Geo Observer Only | WP | No Geo actuator ownership |
+| Native by Design | TakeOff, VelAccel, Accel, Angle, Rate, direct thrust, Terrain, Guided_NoGPS | TakeOff preserves the Native `Rate_Only` heading semantics |
+
+## Other current verified coverage
 
 ```text
-Guided supported paths            Geo active within existing ArduGeo boundary
 Loiter supported lifecycle        Geo active
 AUTO WP / Spline                  Geo observer + active
 RTL Return Home                   Geo observer + active
@@ -62,30 +71,7 @@ Rate/direct/special Mode family   Native unless separately designed
 
 ## Next
 
-### Hardware Gate H1 ⏭
-
-After C10, before broad Mode expansion:
-
-```text
-target board build
-flash/RAM
-CPU/main-loop timing
-watchdog/scheduler margin
-bench arm/disarm
-no-prop motor output
-Native↔Geo switching
-fault fallback
-```
-
-### C11+ planned
-
-```text
-C11 Circle observer-only
-C12 Circle active ownership
-C13 SmartRTL WPNav observer-only
-Later Follow
-Later landing/final-descent lifecycle
-```
+Awaiting the next approved stage. Circle has not started.
 
 ## Separate future track
 

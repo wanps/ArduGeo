@@ -18950,7 +18950,30 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.do_RTL()
 
     def GeometricGuidedFullLifecycle(self):
-        '''prove nominal Guided takeoff-through-touchdown uses geometric output on every main-loop frame'''
+        '''prove Guided TakeOff stays Native and supported lifecycle paths stay geometric'''
+        def send_posvelaccel_hold(z_up):
+            target_typemask = (MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE |
+                               MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE |
+                               MAV_POS_TARGET_TYPE_MASK.LAST_BYTE)
+            self.mav.mav.set_position_target_local_ned_send(
+                0,
+                1,
+                1,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                target_typemask,
+                0,
+                0,
+                -z_up,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+            )
+
         self.set_parameters({
             'GUID_OPTIONS': 258,
             'GEO_OUT_EN': 1,
@@ -18959,6 +18982,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'FSTRATE_ENABLE': 0,
         })
         self.context_set_message_rate_hz('LOCAL_POSITION_NED', 10)
+        ownership_windows = {}
 
         self.change_mode('GUIDED')
         self.wait_ready_to_arm()
@@ -18970,9 +18994,24 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         )
         self.wait_altitude(9, 13, relative=True, timeout=60)
         self.wait_mode('GUIDED')
-        self.delay_sim_time(3, reason='pure geometric Guided hover before landing')
+        self.delay_sim_time(0.5, reason='settle Native Guided TakeOff before supported Pos')
 
-        # QGC uses MAV_CMD_NAV_LAND.  With full geometric Guided active this
+        ownership_windows['pos'] = [int(self.get_sim_time() * 1000000), None]
+        self.send_position_target_local_ned(0, 0, 10)
+        self.delay_sim_time(1, reason='supported Guided Pos to acquire geometric output')
+        ownership_windows['pos'][1] = int(self.get_sim_time() * 1000000)
+
+        ownership_windows['pause'] = [int(self.get_sim_time() * 1000000), None]
+        self.send_pause_command()
+        self.delay_sim_time(1, reason='Guided Pause hold to remain geometric')
+        ownership_windows['pause'][1] = int(self.get_sim_time() * 1000000)
+
+        ownership_windows['continue'] = [int(self.get_sim_time() * 1000000), None]
+        self.send_resume_command()
+        self.delay_sim_time(1, reason='Guided Continue to remain geometric')
+        ownership_windows['continue'][1] = int(self.get_sim_time() * 1000000)
+
+        # QGC uses MAV_CMD_NAV_LAND.  After Pos has acquired geometric output this
         # enters Guided::Land instead of changing to native LAND mode.
         self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_LAND)
         self.wait_mode('GUIDED')
@@ -18990,13 +19029,15 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         )
         self.wait_altitude(5, 9, relative=True, timeout=60)
         self.wait_mode('GUIDED')
-        self.delay_sim_time(1, reason='second pure geometric Guided hover')
+        self.delay_sim_time(0.5, reason='settle second Native Guided TakeOff')
+        send_posvelaccel_hold(6)
+        self.delay_sim_time(1, reason='second supported Guided PosVelAccel geometric hover')
         self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_LAND)
         self.wait_mode('GUIDED')
         self.wait_landed_and_disarmed(timeout=90)
 
         dfreader = self.dfreader_for_current_onboard_log()
-        for message_name in ('GEFC', 'GEOX', 'GEFR'):
+        for message_name in ('GEFC', 'GEFB', 'GEFR', 'GEOX', 'GEOT'):
             format_ids = [
                 fmt.type for fmt in dfreader.formats.values()
                 if fmt.name == message_name
@@ -19006,19 +19047,28 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                     'Expected exactly one %s FMT ID, got %s' %
                     (message_name, format_ids))
         gefc_msgs = []
+        gefb_msgs = []
+        gefr_msgs = []
         geox_msgs = []
+        geot_msgs = []
         geoh_msgs = []
         spol_msgs = []
         mode_msgs = []
         while True:
-            m = dfreader.recv_match(type=['GEFC', 'GEOX', 'GEOH', 'SPOL', 'MODE'])
+            m = dfreader.recv_match(type=['GEFC', 'GEFB', 'GEFR', 'GEOX', 'GEOT', 'GEOH', 'SPOL', 'MODE'])
             if m is None:
                 break
             msg_type = m.get_type()
             if msg_type == 'GEFC':
                 gefc_msgs.append(m)
+            elif msg_type == 'GEFB':
+                gefb_msgs.append(m)
+            elif msg_type == 'GEFR':
+                gefr_msgs.append(m)
             elif msg_type == 'GEOX':
                 geox_msgs.append(m)
+            elif msg_type == 'GEOT':
+                geot_msgs.append(m)
             elif msg_type == 'GEOH':
                 geoh_msgs.append(m)
             elif msg_type == 'SPOL':
@@ -19056,6 +19106,21 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if len(lifecycles) != 2:
             raise NotAchievedException('Expected two complete Guided lifecycles, got %u' % len(lifecycles))
 
+        def check_exact_interval(label, start, end, expect_geometric):
+            delta_main = int(end.MFrm) - int(start.MFrm)
+            delta_geometric = int(end.GFrm) - int(start.GFrm)
+            delta_native = int(end.NFrm) - int(start.NFrm)
+            self.progress(
+                '%s exact frames main=%u geometric=%u native=%u' %
+                (label, delta_main, delta_geometric, delta_native))
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException('%s has invalid exact frame accounting' % label)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException('%s was not geometric-exclusive' % label)
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException('%s was not Native-exclusive' % label)
+
         for lifecycle_index, phase in enumerate(lifecycles, start=1):
             arm_edge = phase[0]
             takeoff_edge = phase[1]
@@ -19067,117 +19132,112 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 raise NotAchievedException(
                     'Guided lifecycle %u phases are out of order' % lifecycle_index)
 
-            armed_main = int(ground_idle_edge.MFrm) - int(arm_edge.MFrm)
-            armed_geometric = int(ground_idle_edge.GFrm) - int(arm_edge.GFrm)
-            armed_native = int(ground_idle_edge.NFrm) - int(arm_edge.NFrm)
-            pre_takeoff_main = int(takeoff_edge.MFrm) - int(arm_edge.MFrm)
-            pre_takeoff_geometric = int(takeoff_edge.GFrm) - int(arm_edge.GFrm)
-            pre_takeoff_native = int(takeoff_edge.NFrm) - int(arm_edge.NFrm)
-            self.progress(
-                'Guided lifecycle %u armed frames main=%u geometric=%u native=%u; '
-                'pre-takeoff main=%u geometric=%u native=%u' %
-                (lifecycle_index,
-                 armed_main,
-                 armed_geometric,
-                 armed_native,
-                 pre_takeoff_main,
-                 pre_takeoff_geometric,
-                 pre_takeoff_native))
-            if armed_main <= 0 or armed_geometric != armed_main or armed_native != 0:
+            boundary = sorted(
+                [m for m in gefb_msgs
+                 if takeoff_edge.TimeUS < m.TimeUS < land_edge.TimeUS],
+                key=lambda m: m.TimeUS)
+            if len(boundary) != 2:
                 raise NotAchievedException(
-                    'Guided lifecycle %u was not geometric on every armed main-loop frame' %
-                    lifecycle_index)
-            if (pre_takeoff_main <= 0 or
-                    pre_takeoff_geometric != pre_takeoff_main or
-                    pre_takeoff_native != 0):
+                    'Guided lifecycle %u expected one TakeOff-to-Pos boundary, got %u records' %
+                    (lifecycle_index, len(boundary)))
+            boundary_prepared, boundary_first_frame = boundary
+            expected_submode = 2 if lifecycle_index == 1 else 3
+            if (int(boundary_prepared.Edge) != int(boundary_first_frame.Edge) or
+                    int(boundary_prepared.Phase) != 0 or
+                    int(boundary_first_frame.Phase) != 1 or
+                    int(boundary_prepared.Sub) != expected_submode or
+                    int(boundary_first_frame.Sub) != expected_submode or
+                    not boundary_prepared.Prep or not boundary_prepared.Allow or
+                    not boundary_first_frame.Prep or not boundary_first_frame.Allow):
                 raise NotAchievedException(
-                    'Guided lifecycle %u arm-to-takeoff wait was not fully geometric' %
+                    'Guided lifecycle %u TakeOff-to-Pos GEFB fields are invalid' %
                     lifecycle_index)
 
-            spooldown_main = int(ground_idle_edge.MFrm) - int(touchdown_edge.MFrm)
-            spooldown_geometric = int(ground_idle_edge.GFrm) - int(touchdown_edge.GFrm)
-            spooldown_native = int(ground_idle_edge.NFrm) - int(touchdown_edge.NFrm)
-            if spooldown_main <= 0 or spooldown_geometric != spooldown_main or spooldown_native != 0:
+            check_exact_interval(
+                'Guided lifecycle %u armed entry hold' % lifecycle_index,
+                arm_edge,
+                takeoff_edge,
+                True)
+            check_exact_interval(
+                'Guided lifecycle %u TakeOff' % lifecycle_index,
+                takeoff_edge,
+                boundary_prepared,
+                False)
+            check_exact_interval(
+                'Guided lifecycle %u TakeOff-to-Pos first frame' % lifecycle_index,
+                boundary_prepared,
+                boundary_first_frame,
+                True)
+            if int(boundary_first_frame.MFrm) - int(boundary_prepared.MFrm) != 1:
                 raise NotAchievedException(
-                    'Guided lifecycle %u spool-down was not geometric on every main-loop frame' %
+                    'Guided lifecycle %u did not acquire Pos on the first rate frame' %
+                    lifecycle_index)
+            check_exact_interval(
+                'Guided lifecycle %u Pos/Pause/Continue' % lifecycle_index,
+                boundary_prepared,
+                land_edge,
+                True)
+            check_exact_interval(
+                'Guided lifecycle %u Land' % lifecycle_index,
+                land_edge,
+                ground_idle_edge,
+                True)
+            check_exact_interval(
+                'Guided lifecycle %u touchdown spool-down' % lifecycle_index,
+                touchdown_edge,
+                ground_idle_edge,
+                True)
+
+            takeoff_observer = [m for m in geox_msgs
+                                if takeoff_edge.TimeUS + 100000 < m.TimeUS <
+                                boundary_prepared.TimeUS - 100000]
+            if takeoff_observer:
+                raise NotAchievedException(
+                    'Guided lifecycle %u ran the geometric observer during TakeOff' %
                     lifecycle_index)
 
-            lifecycle_geox = [m for m in geox_msgs
-                              if arm_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
-            if len(lifecycle_geox) < 20:
+            lifecycle_handoffs = [m for m in geoh_msgs
+                                  if arm_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
+            if len(lifecycle_handoffs) != 1:
                 raise NotAchievedException(
-                    'Not enough GEOX samples in Guided lifecycle %u' % lifecycle_index)
-            if any(m.RT or not m.OEn for m in lifecycle_geox):
+                    'Guided lifecycle %u expected one structural TakeOff handoff, got %u' %
+                    (lifecycle_index, len(lifecycle_handoffs)))
+            handoff = lifecycle_handoffs[0]
+            if (int(handoff.Mode) != 4 or int(handoff.Fail) != 1 or
+                    not handoff.Prev or handoff.Act or not handoff.Hand or handoff.RT):
                 raise NotAchievedException(
-                    'Guided lifecycle %u did not keep output enabled with rate-thread off' %
+                    'Guided lifecycle %u TakeOff handoff was not clean and structural' %
                     lifecycle_index)
-            # The synchronous takeoff observer emits one boundary GEOX before
-            # prepared is retagged.  It consumes no rate frame; the exact GEFC
-            # counters above remain the motor-path oracle.
-            settled_lifecycle_geox = [m for m in lifecycle_geox
-                                      if m.TimeUS >= takeoff_edge.TimeUS + 100000]
-            if len(settled_lifecycle_geox) < 20:
+
+            active_geox = [m for m in geox_msgs
+                           if boundary_first_frame.TimeUS + 100000 <= m.TimeUS <= ground_idle_edge.TimeUS]
+            if len(active_geox) < 20:
                 raise NotAchievedException(
-                    'Not enough settled GEOX samples in Guided lifecycle %u' % lifecycle_index)
-            if any(not m.Allow or not m.Wrote for m in settled_lifecycle_geox):
+                    'Not enough active GEOX samples in Guided lifecycle %u' % lifecycle_index)
+            if any(not m.Allow or not m.OEn or m.RT or not m.Wrote for m in active_geox):
                 raise NotAchievedException(
-                    'Guided lifecycle %u settled GEOX did not remain Allow/Wrote' %
-                    lifecycle_index)
-            for m in lifecycle_geox:
+                    'Guided lifecycle %u supported path did not remain geometric' % lifecycle_index)
+            for m in active_geox:
                 for field in ('Roll', 'Pitch', 'Yaw', 'Thr'):
                     if not math.isfinite(getattr(m, field)):
                         raise NotAchievedException(
                             'GEOX.%s is not finite in Guided lifecycle %u' %
                             (field, lifecycle_index))
 
-            lifecycle_handoffs = [m for m in geoh_msgs
-                                  if arm_edge.TimeUS <= m.TimeUS <= ground_idle_edge.TimeUS]
-            if lifecycle_handoffs:
-                raise NotAchievedException(
-                    'Geometric output handed off during Guided lifecycle %u' % lifecycle_index)
-
             armed_ground_safe = [m for m in geox_msgs
                                  if arm_edge.TimeUS <= m.TimeUS < takeoff_edge.TimeUS and
                                  m.Allow and m.OEn and m.Wrote and not m.RT]
-            if len(armed_ground_safe) < 3:
+            if len(armed_ground_safe) < 3 or any(abs(m.Thr) > 0.05 for m in armed_ground_safe):
                 raise NotAchievedException(
-                    'Too few armed zero-collective samples before Guided takeoff %u' %
-                    lifecycle_index)
-            if any(abs(m.Thr) > 0.05 for m in armed_ground_safe):
-                raise NotAchievedException(
-                    'Guided lifecycle %u requested collective while awaiting takeoff' %
-                    lifecycle_index)
-
-            positive_takeoff_collective = [m for m in geox_msgs
-                                           if takeoff_edge.TimeUS <= m.TimeUS < land_edge.TimeUS and
-                                           m.Allow and m.OEn and m.Wrote and not m.RT and
-                                           abs(m.Thr) > 0.05]
-            if not positive_takeoff_collective:
-                raise NotAchievedException(
-                    'Guided lifecycle %u never requested takeoff collective' % lifecycle_index)
-            first_takeoff_collective_us = min(m.TimeUS for m in positive_takeoff_collective)
-            ground_safe_geox = [m for m in geox_msgs
-                                if takeoff_edge.TimeUS <= m.TimeUS < first_takeoff_collective_us and
-                                m.Allow and m.OEn and m.Wrote and not m.RT]
-            if len(ground_safe_geox) < 3:
-                raise NotAchievedException(
-                    'Too few zero-collective samples during Guided spool-up %u' %
-                    lifecycle_index)
-            if any(abs(m.Thr) > 0.05 for m in ground_safe_geox):
-                raise NotAchievedException(
-                    'Guided lifecycle %u ground-safe target requested takeoff collective early' %
+                    'Guided lifecycle %u initial geometric hold was not zero-collective' %
                     lifecycle_index)
 
             touchdown_ground_safe = [m for m in geox_msgs
                                      if touchdown_edge.TimeUS + 50000 <= m.TimeUS <= ground_idle_edge.TimeUS and
                                      m.Allow and m.OEn and m.Wrote and not m.RT]
-            if len(touchdown_ground_safe) < 3:
+            if len(touchdown_ground_safe) < 3 or any(abs(m.Thr) > 0.05 for m in touchdown_ground_safe):
                 raise NotAchievedException(
-                    'Too few geometric ground-safe samples after Guided touchdown %u' %
-                    lifecycle_index)
-            if any(abs(m.Thr) > 0.05 for m in touchdown_ground_safe):
-                raise NotAchievedException(
-                    'Guided lifecycle %u touchdown spool-down requested collective' %
+                    'Guided lifecycle %u touchdown hold was not zero-collective' %
                     lifecycle_index)
 
             lifecycle_modes = [int(m.Mode) for m in mode_msgs
@@ -19203,6 +19263,26 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             if not ground_idle_desired:
                 raise NotAchievedException(
                     'Guided landing %u never requested AP_Motors GROUND_IDLE' % lifecycle_index)
+
+        for label, (start_us, end_us) in ownership_windows.items():
+            window_frames = sorted(
+                [m for m in gefr_msgs if start_us <= m.TimeUS <= end_us],
+                key=lambda m: m.TimeUS)
+            if len(window_frames) < 2:
+                raise NotAchievedException('Too few GEFR samples during Guided %s' % label)
+            check_exact_interval('Guided %s' % label, window_frames[0], window_frames[-1], True)
+
+        pause_start_us, pause_end_us = ownership_windows['pause']
+        pause_targets = [m for m in geot_msgs
+                         if pause_start_us <= m.TimeUS <= pause_end_us and m.Pause]
+        if not pause_targets:
+            raise NotAchievedException('Guided Pause did not publish a geometric hold reference')
+        if any(int(m.HMode) != 1 or m.Shape or m.YTrj or m.Allow for m in pause_targets):
+            raise NotAchievedException('Guided Pause reference semantics are invalid')
+        pause_handoffs = [m for m in geoh_msgs
+                          if pause_start_us <= m.TimeUS <= ownership_windows['continue'][1]]
+        if pause_handoffs:
+            raise NotAchievedException('Guided Pause/Continue produced a hard-fault handoff')
 
     def GeometricGuidedMotorOutputDisabled(self):
         '''test fresh defaults keep Guided actuator output native'''
