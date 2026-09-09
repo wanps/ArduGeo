@@ -18949,6 +18949,403 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
 
         self.do_RTL()
 
+    def GeometricGuidedWPMotorOutput(self, attitude_rate_gain_xy=0.2):
+        '''test Guided WP geometric ownership and fail-closed transitions'''
+        def timestamp_us():
+            return int(self.get_sim_time() * 1000000)
+
+        def log_window(label, duration_s=0.7, settle_s=0.2):
+            self.delay_sim_time(settle_s, reason="settle before %s" % label)
+            start_us = timestamp_us()
+            self.delay_sim_time(duration_s, reason=label)
+            self.assert_mode("GUIDED")
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return start_us, timestamp_us()
+
+        def send_wp(x, y, z_up, yaw=None):
+            if yaw is None:
+                yaw = self.assert_receive_message("ATTITUDE").yaw
+            self.send_position_target_local_ned_yaw(x, y, z_up, yaw)
+
+        def send_wp_rate_only(x, y, z_up):
+            self.mav.mav.set_position_target_local_ned_send(
+                0,
+                1,
+                1,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                (MAV_POS_TARGET_TYPE_MASK.VEL_IGNORE |
+                 MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE |
+                 MAV_POS_TARGET_TYPE_MASK.YAW_IGNORE |
+                 MAV_POS_TARGET_TYPE_MASK.LAST_BYTE),
+                x,
+                y,
+                -z_up,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0.2,
+            )
+
+        def send_posvelaccel_hold(z_up, yaw=None):
+            if yaw is None:
+                yaw = self.assert_receive_message("ATTITUDE").yaw
+            self.mav.mav.set_position_target_local_ned_send(
+                0,
+                1,
+                1,
+                mavutil.mavlink.MAV_FRAME_LOCAL_NED,
+                MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE | MAV_POS_TARGET_TYPE_MASK.LAST_BYTE,
+                0,
+                0,
+                -z_up,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                yaw,
+                0,
+            )
+
+        def send_terrain_wp(z_up):
+            location = self.mav.location()
+            yaw = self.assert_receive_message("ATTITUDE").yaw
+            self.mav.mav.set_position_target_global_int_send(
+                0,
+                1,
+                1,
+                mavutil.mavlink.MAV_FRAME_GLOBAL_TERRAIN_ALT_INT,
+                (MAV_POS_TARGET_TYPE_MASK.VEL_IGNORE |
+                 MAV_POS_TARGET_TYPE_MASK.ACC_IGNORE |
+                 MAV_POS_TARGET_TYPE_MASK.YAW_RATE_IGNORE |
+                 MAV_POS_TARGET_TYPE_MASK.LAST_BYTE),
+                int(location.lat * 1.0e7),
+                int(location.lng * 1.0e7),
+                z_up,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                yaw,
+                0,
+            )
+
+        observer_options = (1 << 1) | (1 << 6)
+        active_options = observer_options | (1 << 8)
+        self.set_parameters({
+            "GUID_OPTIONS": active_options,
+            "FSTRATE_ENABLE": 0,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 1,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_ATT_KR_X": 4.0,
+            "GEO_ATT_KR_Y": 4.0,
+            "GEO_ATT_KR_Z": 2.0,
+            "GEO_ATT_KO_X": attitude_rate_gain_xy,
+            "GEO_ATT_KO_Y": attitude_rate_gain_xy,
+            "GEO_ATT_KO_Z": 0.4,
+            "GEO_HOV_THR": 0.0,
+            "GEO_MOM_NORM_X": 4.0,
+            "GEO_MOM_NORM_Y": 4.0,
+            "GEO_MOM_NORM_Z": 2.0,
+            "SIM_FLOAT_EXCEPT": 0,
+            "SIM_TERRAIN": 1,
+            "TERRAIN_ENABLE": 1,
+        })
+        self.reboot_sitl()
+        self.install_terrain_handlers_context()
+
+        self.change_mode("GUIDED")
+        self.wait_ready_to_arm()
+        self.arm_vehicle()
+        self.delay_sim_time(0.4, reason="settle armed Guided entry before TakeOff")
+        takeoff_command_us = timestamp_us()
+        self.run_cmd(mavutil.mavlink.MAV_CMD_NAV_TAKEOFF, p7=10)
+        self.wait_altitude(9, 13, relative=True, timeout=60)
+        self.delay_sim_time(0.4, reason="settle Native Guided TakeOff")
+
+        transitions = {}
+        compatible_transitions = {}
+        windows = {}
+
+        transitions["takeoff-wp"] = timestamp_us()
+        send_wp(0, 0, 10)
+        windows["wp-after-takeoff"] = log_window("Guided WP after TakeOff", 0.8)
+
+        compatible_transitions["second-wp"] = timestamp_us()
+        send_wp(3, 0, 10)
+        windows["second-wp"] = log_window("Guided second WP", 0.8, 0)
+
+        transitions["bit-clear"] = timestamp_us()
+        self.set_parameter("GUID_OPTIONS", observer_options)
+        windows["observer-only"] = log_window("Guided WP observer-only", 0.8)
+        self.set_parameter("GUID_OPTIONS", active_options)
+        windows["wp-reactivated"] = log_window("Guided WP reactivated", 0.8)
+
+        compatible_transitions["wp-pos"] = timestamp_us()
+        self.send_set_parameter_direct("GUID_OPTIONS", active_options & ~(1 << 6))
+        self.send_position_target_local_ned_yaw(3, 0, 10, self.assert_receive_message("ATTITUDE").yaw)
+        windows["wp-pos"] = log_window("Guided WP to Pos", 0.8, 0)
+
+        yaw = self.assert_receive_message("ATTITUDE").yaw
+        self.send_position_target_local_ned_yaw(3, 0, 10, yaw)
+        self.delay_sim_time(0.05, reason="refresh Pos before WP transition")
+        compatible_transitions["pos-wp"] = timestamp_us()
+        self.send_set_parameter_direct("GUID_OPTIONS", active_options)
+        send_wp(3, 0, 10, yaw)
+        windows["pos-wp"] = log_window("Guided Pos to WP", 0.8, 0)
+
+        compatible_transitions["wp-pva"] = timestamp_us()
+        send_posvelaccel_hold(10)
+        windows["wp-pva"] = log_window("Guided WP to PosVelAccel", 0.8, 0)
+
+        yaw = self.assert_receive_message("ATTITUDE").yaw
+        send_posvelaccel_hold(10, yaw)
+        self.delay_sim_time(0.05, reason="refresh PosVelAccel before WP transition")
+        compatible_transitions["pva-wp"] = timestamp_us()
+        send_wp(3, 0, 10, yaw)
+        windows["pva-wp"] = log_window("Guided PosVelAccel to WP", 0.8, 0)
+
+        transitions["angle"] = timestamp_us()
+        attitude = self.assert_receive_message("ATTITUDE")
+        self.mav.mav.set_attitude_target_send(
+            0,
+            1,
+            1,
+            0,
+            mavextra.euler_to_quat([0, 0, attitude.yaw]),
+            0,
+            0,
+            0,
+            0.5,
+        )
+        windows["angle-native"] = log_window("Guided Angle native", 0.7)
+        self.set_parameter("GUID_OPTIONS", active_options)
+        send_wp(3, 0, 10)
+        windows["after-angle"] = log_window("Guided WP after Angle", 0.8)
+
+        transitions["rate-only"] = timestamp_us()
+        send_wp_rate_only(3, 0, 10)
+        windows["rate-only-native"] = log_window("Guided WP Rate_Only native", 0.7)
+        send_wp(3, 0, 10)
+        windows["after-rate-only"] = log_window("Guided WP after Rate_Only", 0.8)
+
+        transitions["terrain"] = timestamp_us()
+        send_terrain_wp(10)
+        windows["terrain-native"] = log_window("Guided terrain WP native", 0.7)
+        send_wp(3, 0, 10)
+        windows["after-terrain"] = log_window("Guided non-terrain WP recovery", 0.8)
+
+        transitions["output-disable"] = timestamp_us()
+        self.set_parameter("GEO_OUT_EN", 0)
+        windows["output-disabled"] = log_window("Guided WP output-disabled", 0.7)
+        self.set_parameter("GEO_OUT_EN", 1)
+        windows["output-latched"] = log_window("Guided WP output fault latched", 0.7)
+        self.set_parameter("GUID_OPTIONS", observer_options)
+        self.delay_sim_time(0.3, reason="acknowledge Guided WP output fault")
+        self.set_parameter("GUID_OPTIONS", active_options)
+        send_wp(3, 0, 10)
+        windows["after-output-fault"] = log_window("Guided WP output fault recovery", 0.8)
+
+        transitions["invalid"] = timestamp_us()
+        try:
+            self.set_parameter("GEO_POS_KX_XY", 3.4e38)
+            self.delay_sim_time(0.2, reason="produce invalid Guided WP geometric output")
+        finally:
+            self.set_parameter("GEO_POS_KX_XY", 1.0)
+        windows["invalid-latched"] = log_window("Guided WP invalid fault latched", 0.7)
+        self.set_parameter("GUID_OPTIONS", observer_options)
+        self.delay_sim_time(0.3, reason="acknowledge Guided WP invalid fault")
+        self.set_parameter("GUID_OPTIONS", active_options)
+        send_wp(3, 0, 10)
+        windows["after-invalid"] = log_window("Guided WP invalid fault recovery", 0.8)
+
+        transitions["stale"] = timestamp_us()
+        self.run_cmd_int(
+            mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+            p1=42,
+            p2=24,
+            p3=71,
+            p4=97,
+        )
+        windows["stale-latched"] = log_window("Guided WP stale fault latched", 0.7)
+        self.set_parameter("GUID_OPTIONS", observer_options)
+        self.delay_sim_time(0.3, reason="acknowledge Guided WP stale fault")
+        self.set_parameter("GUID_OPTIONS", active_options)
+        send_wp(3, 0, 10)
+        windows["after-stale"] = log_window("Guided WP stale fault recovery", 0.8)
+
+        exit_start_us = timestamp_us()
+        self.change_mode("LOITER")
+        self.delay_sim_time(0.5, reason="Guided WP exit to Native Loiter")
+        self.change_mode("RTL")
+        self.wait_disarmed(timeout=180)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        messages = {name: [] for name in ("GEFC", "GEFB", "GEFR", "GEOH", "GEOX", "GEOS", "GEOT")}
+        while True:
+            message = dfreader.recv_match(type=list(messages.keys()))
+            if message is None:
+                break
+            messages[message.get_type()].append(message)
+
+        def in_window(message_type, window):
+            return [message for message in messages[message_type]
+                    if window[0] <= message.TimeUS <= window[1]]
+
+        def check_frame_window(label, expect_geometric):
+            frame_messages = sorted(in_window("GEFR", windows[label]), key=lambda message: message.TimeUS)
+            if len(frame_messages) < 2:
+                raise NotAchievedException("Too few GEFR samples during %s" % label)
+            first = frame_messages[0]
+            last = frame_messages[-1]
+            delta_main = int(last.MFrm) - int(first.MFrm)
+            delta_geometric = int(last.GFrm) - int(first.GFrm)
+            delta_native = int(last.NFrm) - int(first.NFrm)
+            self.progress(
+                "Guided WP %s frames main=%u geo=%u native=%u" %
+                (label, delta_main, delta_geometric, delta_native))
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException("Invalid Guided WP frame accounting during %s" % label)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException("%s was not Geo-exclusive" % label)
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException("%s was not Native-exclusive" % label)
+
+        active_windows = (
+            "wp-after-takeoff",
+            "second-wp",
+            "wp-reactivated",
+            "wp-pos",
+            "pos-wp",
+            "wp-pva",
+            "pva-wp",
+            "after-angle",
+            "after-rate-only",
+            "after-terrain",
+            "after-output-fault",
+            "after-invalid",
+            "after-stale",
+        )
+        native_windows = (
+            "observer-only",
+            "angle-native",
+            "rate-only-native",
+            "terrain-native",
+            "output-disabled",
+            "output-latched",
+            "invalid-latched",
+            "stale-latched",
+        )
+        for label in active_windows:
+            check_frame_window(label, True)
+        for label in native_windows:
+            check_frame_window(label, False)
+
+        observer_geox = in_window("GEOX", windows["observer-only"])
+        if not observer_geox or any(message.Allow or message.Wrote or not message.OEn or message.RT
+                                    for message in observer_geox):
+            raise NotAchievedException("Guided WP observer-only obtained actuator ownership")
+        observer_targets = in_window("GEOT", windows["observer-only"])
+        observer_shapes = in_window("GEOS", windows["observer-only"])
+        if not observer_targets or any(message.Shape or message.YTrj or message.Allow or
+                                       int(message.HMode) not in (0, 1)
+                                       for message in observer_targets):
+            raise NotAchievedException("Guided WP observer heading or shaping semantics are invalid")
+        if not observer_shapes or any(message.SAct or message.YTrj or
+                                      max(abs(message.RX - message.SX),
+                                          abs(message.RY - message.SY),
+                                          abs(message.RZ - message.SZ)) > 0.001
+                                      for message in observer_shapes):
+            raise NotAchievedException("Guided WP Native shaped PVA was shaped again")
+
+        for label in active_windows:
+            output_messages = in_window("GEOX", windows[label])
+            if not output_messages or any(not message.Allow or not message.OEn or
+                                          message.RT or not message.Wrote
+                                          for message in output_messages):
+                raise NotAchievedException("Guided WP active state is invalid during %s" % label)
+            for message in output_messages:
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    if not math.isfinite(getattr(message, field)):
+                        raise NotAchievedException("GEOX.%s is non-finite during %s" % (field, label))
+
+        for label, start_us in compatible_transitions.items():
+            end_us = windows[label][1]
+            if [message for message in messages["GEOH"]
+                    if start_us <= message.TimeUS <= end_us]:
+                raise NotAchievedException("%s inserted a Native bridge frame" % label)
+
+        def check_handoff(label, end_us, failure_mask):
+            handoffs = [message for message in messages["GEOH"]
+                        if transitions[label] <= message.TimeUS <= end_us]
+            if len(handoffs) != 1:
+                raise NotAchievedException(
+                    "Expected one Guided WP %s handoff, got %u" % (label, len(handoffs)))
+            handoff = handoffs[0]
+            if (int(handoff.Mode) != 4 or
+                    (int(handoff.Fail) & failure_mask) == 0 or
+                    not handoff.Prev or handoff.Act or
+                    not handoff.Hand or handoff.RT):
+                raise NotAchievedException("Guided WP %s GEOH fields are invalid" % label)
+            return handoff
+
+        check_handoff("bit-clear", windows["observer-only"][1], 1 << 0)
+        check_handoff("angle", windows["angle-native"][1], 1 << 0)
+        check_handoff("rate-only", windows["rate-only-native"][1], 1 << 0)
+        check_handoff("terrain", windows["terrain-native"][1], 1 << 0)
+        check_handoff("output-disable", windows["output-disabled"][1], 1 << 1)
+        check_handoff("invalid", windows["invalid-latched"][1], 1 << 6)
+        check_handoff("stale", windows["stale-latched"][1], 1 << 5)
+
+        takeoff_phase = next((message for message in messages["GEFC"]
+                              if takeoff_command_us <= message.TimeUS and int(message.Phase) == 1), None)
+        first_wp_boundary = sorted(
+            [message for message in messages["GEFB"]
+             if transitions["takeoff-wp"] <= message.TimeUS <= windows["wp-after-takeoff"][1]],
+            key=lambda message: message.TimeUS,
+        )
+        if takeoff_phase is None or len(first_wp_boundary) != 2:
+            raise NotAchievedException("Guided TakeOff-to-WP exact boundary evidence is incomplete")
+        boundary_prepared, boundary_first_frame = first_wp_boundary
+        if (int(boundary_prepared.Phase) != 0 or int(boundary_first_frame.Phase) != 1 or
+                int(boundary_prepared.Edge) != int(boundary_first_frame.Edge) or
+                int(boundary_prepared.Sub) != 1 or int(boundary_first_frame.Sub) != 1 or
+                not boundary_prepared.Prep or not boundary_prepared.Allow or
+                not boundary_first_frame.Prep or not boundary_first_frame.Allow):
+            raise NotAchievedException("Guided TakeOff-to-WP GEFB fields are invalid")
+
+        takeoff_main = int(boundary_prepared.MFrm) - int(takeoff_phase.MFrm)
+        takeoff_geo = int(boundary_prepared.GFrm) - int(takeoff_phase.GFrm)
+        takeoff_native = int(boundary_prepared.NFrm) - int(takeoff_phase.NFrm)
+        if takeoff_main <= 0 or takeoff_geo != 0 or takeoff_native != takeoff_main:
+            raise NotAchievedException("Guided TakeOff was not Native-exclusive")
+        first_main = int(boundary_first_frame.MFrm) - int(boundary_prepared.MFrm)
+        first_geo = int(boundary_first_frame.GFrm) - int(boundary_prepared.GFrm)
+        first_native = int(boundary_first_frame.NFrm) - int(boundary_prepared.NFrm)
+        if first_main != 1 or first_geo != 1 or first_native != 0:
+            raise NotAchievedException("Guided WP did not acquire the first eligible rate frame")
+
+        takeoff_handoffs = [message for message in messages["GEOH"]
+                            if takeoff_phase.TimeUS <= message.TimeUS < boundary_prepared.TimeUS]
+        if len(takeoff_handoffs) != 1 or int(takeoff_handoffs[0].Fail) != 1:
+            raise NotAchievedException("Guided TakeOff produced a hard-fault handoff")
+        exit_handoffs = [message for message in messages["GEOH"]
+                         if exit_start_us <= message.TimeUS and message.Prev]
+        if (len(exit_handoffs) != 1 or exit_handoffs[0].Act or
+                not exit_handoffs[0].Hand or exit_handoffs[0].RT):
+            raise NotAchievedException("Guided WP mode exit handoff is invalid")
+
     def GeometricGuidedFullLifecycle(self):
         '''prove Guided TakeOff stays Native and supported lifecycle paths stay geometric'''
         def send_posvelaccel_hold(z_up):
@@ -22980,6 +23377,7 @@ return update, 1000
             self.GeometricLoiterTakeoffLandingMotorOutput,
             self.GeometricLoiterAirborneEntry,
             self.GeometricLoiterMotorOutput,
+            self.GeometricGuidedWPMotorOutput,
             self.GeometricGuidedFullLifecycle,
             self.GeometricGuidedMotorOutputDisabled,
             self.GeometricGuidedMotorOutput,

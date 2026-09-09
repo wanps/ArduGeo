@@ -21,14 +21,26 @@
 - C10 ✅ Full-Trajectory Authorization Minimal Consolidation
 - C11 ✅ Guided Engineering Closure & Coverage Verification
 - C12 ✅ Guided lifecycle closure
+- Guided WP Active Closure ✅ Non-terrain WP active geometric ownership
 
 ## Guided Engineering v1.0 support matrix
 
 | Support class | Guided paths | Decision |
 | --- | --- | --- |
-| Geo Active Supported | Initial entry hold, Pos, PosVelAccel, Pause, Guided Land | Pause keeps continuous Geo ownership |
-| Geo Observer Only | WP | No Geo actuator ownership |
-| Native by Design | TakeOff, VelAccel, Accel, Angle, Rate, direct thrust, Terrain, Guided_NoGPS | TakeOff preserves the Native `Rate_Only` heading semantics |
+| Geo Active Supported | Initial entry hold, Pos, PosVelAccel, non-terrain WP, Pause, Guided Land | Pause and compatible full-trajectory transitions keep continuous Geo ownership |
+| Geo Observer Only | None in the Engineering v1.0 Guided Full-Trajectory support set | Non-terrain WP was promoted to active after ownership closure |
+| Native by Design | TakeOff, VelAccel, Accel, Angle, Rate, direct thrust, terrain WP, Guided_NoGPS, tradheli, rate-thread | TakeOff and WP `Rate_Only` preserve Native heading semantics |
+
+Guided Engineering v1.0 Full-Trajectory closure: ✅ Complete.
+
+Guided WP active ownership remains fail-closed at these Native-by-design boundaries:
+
+```text
+terrain WP
+Rate_Only heading
+traditional helicopter
+rate-thread output
+```
 
 ## Other current verified coverage
 
