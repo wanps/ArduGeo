@@ -1256,7 +1256,7 @@ public:
     void angle_control_run();
     bool geometric_position_control_active() const;
     bool wp_destination_reached() const;
-    void restore_native_position_control_after_geometric();
+    void restore_native_position_control_after_geometric(bool reset_geometric_controller = true);
     bool publish_geometric_position_reference();
     bool update_geometric_observer(const AC_TrajectoryReference& trajectory_reference,
                                    const AC_AttitudeReference* attitude_reference,
@@ -1267,7 +1267,9 @@ public:
                                             const Vector3f& accel_target_ned_mss,
                                             const AC_AttitudeControl::HeadingCommand& heading,
                                             bool shape_position_target = true,
-                                            bool allow_trajectory_yaw = true);
+                                            bool allow_trajectory_yaw = true,
+                                            bool publish_position_reference = true,
+                                            bool shape_heading_target = true);
 
     // return guided mode timeout in milliseconds. Only used for velocity, acceleration, angle control, and angular rate control
     uint32_t get_timeout_ms() const;
@@ -1323,6 +1325,9 @@ private:
     // wp controller
     void wp_control_start();
     void wp_control_run();
+    bool geometric_wp_reference_supported(const AC_AttitudeControl::HeadingCommand& heading) const;
+    void update_geometric_wp_observer(const AC_AttitudeControl::HeadingCommand& heading);
+    void stop_geometric_wp_observer();
 
     void pva_control_start();
     void pos_control_start();
