@@ -24,6 +24,7 @@
 - Guided WP Active Closure ✅ Non-terrain WP active geometric ownership
 - Circle Observer ✅ Non-terrain ordinary Circle neutral-reference observation
 - Circle Active Ownership ✅ Non-terrain ordinary Circle active geometric ownership
+- Mode Transition Hardening ✅ Cross-mode ownership, lifecycle, and cache protection
 
 ## Guided Engineering v1.0 support matrix
 
@@ -54,6 +55,8 @@ rate-thread output
 
 Circle mode exit invalidates its own authorization and reference state. A geometric-controller update generation token prevents the outgoing Mode from clearing a newer output already published by the entering Mode during ArduPilot's new-Mode-init-before-old-Mode-exit sequence. The token protects only the shared geometric-controller lifecycle: it does not grant actuator ownership, which remains determined by the current Mode authorization and the vehicle-level arbiter. This targeted generation check is not a general ControllerManager.
 
+AUTO and RTL use the same generation-aware exit pattern for their WPNav geometric observer/active paths. Their exit cleanup always clears Mode-local support and authorization state, but only disables the shared geometric controller/cache when no newer entering Mode output has already been published. This protects shared-controller lifecycle only; it does not authorize actuator ownership and does not replace current Mode authorization plus the vehicle-level arbiter.
+
 ## Other current verified coverage
 
 ```text
@@ -62,6 +65,8 @@ AUTO WP / Spline                  Geo observer + active
 RTL Return Home                   Geo observer + active
 RTL Loiter At Home                Geo observer + active
 ```
+
+Loiter structural unsupported transitions do not create the runtime hard-fault rejected latch. Existing hard-fault latches are preserved across structural unsupported periods and still require explicit mode-level acknowledge before Geo active recovery.
 
 ## Current explicit Native boundaries
 
@@ -92,6 +97,13 @@ Rate/direct/special Mode family   Native unless separately designed
 - C6 AUTO active: `96144bd0e383da2a0c9b805aafb3e8503b8c523d`
 - C7 RTL observer: `cbb5ed8a49c11f83822d8cf5caef557222e4fa6f`
 - C8 RTL active: `407477c467e4a4478dddd42bab02dabab1ce6828`
+
+## Release follow-up
+
+REL-FQ-01: Circle → Loiter transition flight-quality transient.
+Safety/ownership PASS. X400 observed acceleration-reference step 4.258 m/s²,
+max attitude error 0.433 rad, and one limited sample. Must be characterized
+before Engineering v1.0 final release.
 
 ## Next
 

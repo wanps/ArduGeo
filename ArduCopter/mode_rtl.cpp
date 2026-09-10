@@ -89,6 +89,7 @@ bool ModeRTL::init(bool ignore_checks)
     }
     _geometric_wpnav_authorization.reset();
     stop_geometric_wpnav_observer();
+    _geometric_wpnav_update_count = copter.geometric_controller_updates();
 #if HAL_LOGGING_ENABLED
     _geometric_wpnav_log_counter = 0;
     _geometric_wpnav_observer_frames = 0;
@@ -114,7 +115,15 @@ bool ModeRTL::init(bool ignore_checks)
 
 void ModeRTL::exit()
 {
-    stop_geometric_wpnav_observer();
+    // A new mode is initialised before this exit hook runs.  Invalidate the
+    // shared output only if it has not already been replaced by that mode.
+    const bool output_replaced =
+        copter.geometric_controller_updates() != _geometric_wpnav_update_count;
+    _geometric_wpnav_reference_supported = false;
+    _geometric_wpnav_authorization.stop();
+    if (!output_replaced) {
+        copter.geometric_control.set_enabled(false);
+    }
     _geometric_wpnav_authorization.reset();
 }
 
@@ -528,6 +537,7 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
 #endif
         return;
     }
+    _geometric_wpnav_update_count = copter.geometric_controller_updates();
 
     const bool motor_output_prepared =
         copter.geometric_control.output_is_fresh(AP_HAL::millis(), rtl_wpnav_geometric_output_recent_ms) &&

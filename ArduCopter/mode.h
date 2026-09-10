@@ -753,6 +753,7 @@ private:
     SubMode _mode = SubMode::TAKEOFF;   // controls which auto controller is run
     bool _geometric_wp_reference_supported = false;
     GeometricTrajectoryAuthorizationState _geometric_wp_authorization;
+    uint32_t _geometric_wp_update_count = 0;
 #if HAL_LOGGING_ENABLED
     uint8_t _geometric_wp_log_counter = 0;
     uint32_t _geometric_wp_observer_frames = 0;
@@ -1824,6 +1825,7 @@ private:
 
     bool _geometric_wpnav_reference_supported = false;
     GeometricTrajectoryAuthorizationState _geometric_wpnav_authorization;
+    uint32_t _geometric_wpnav_update_count = 0;
 
 #if HAL_LOGGING_ENABLED
     uint8_t _geometric_wpnav_log_counter = 0;

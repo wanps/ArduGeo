@@ -16865,6 +16865,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "GEO_MOM_NORM_X": 4.0,
             "GEO_MOM_NORM_Y": 4.0,
             "GEO_MOM_NORM_Z": 2.0,
+            "LOIT_OPTIONS": 7,
             "SIM_FLOAT_EXCEPT": 0,
         })
         self.reboot_sitl()
@@ -16971,8 +16972,19 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             0.8,
         )
 
+        transitions["mode-exit-loiter"] = int(self.get_sim_time() * 1000000)
+        self.change_mode("LOITER")
+        self.delay_sim_time(0.5, reason="settle AUTO WP to geometric Loiter")
+        loiter_start_us = int(self.get_sim_time() * 1000000)
+        self.delay_sim_time(0.8, reason="AUTO WP to geometric Loiter")
+        windows["mode-exit-loiter"] = (
+            loiter_start_us,
+            int(self.get_sim_time() * 1000000),
+        )
+        self.assert_mode("LOITER")
+
         dfreader = self.dfreader_for_current_onboard_log()
-        messages = {name: [] for name in ("GEAS", "GEOH", "GEFR")}
+        messages = {name: [] for name in ("GEAS", "GEOH", "GEFR", "GEOL", "GEOX")}
         while True:
             message = dfreader.recv_match(type=list(messages.keys()))
             if message is None:
@@ -17060,6 +17072,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             check_frame_window(label, True)
         for label in native_windows:
             check_frame_window(label, False)
+        check_frame_window("mode-exit-loiter", True)
 
         for label in active_windows:
             status = in_window("GEAS", windows[label])
@@ -17116,8 +17129,19 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         if [m for m in messages["GEOH"]
                 if windows["wp-to-spline"][0] <= m.TimeUS <= windows["wp-to-spline"][1]]:
             raise NotAchievedException("AUTO WP-to-spline transition inserted a Native bridge")
+        loiter_outputs = in_window("GEOX", windows["mode-exit-loiter"])
+        if (not in_window("GEOL", windows["mode-exit-loiter"]) or
+                not loiter_outputs or
+                any(not message.Allow or not message.Wrote or message.GAge > 100
+                    for message in loiter_outputs)):
+            raise NotAchievedException("AUTO exit did not preserve fresh entering Loiter output")
+        if [message for message in messages["GEOH"]
+                if transitions["mode-exit-loiter"] <= message.TimeUS <=
+                windows["mode-exit-loiter"][1]]:
+            raise NotAchievedException("AUTO exit caused a false Loiter hard-fault handoff")
 
-        self.do_RTL()
+        self.change_mode("LAND")
+        self.wait_disarmed(timeout=120)
 
     def GeometricRTLWPNavObserver(self):
         '''test RTL WPNav geometric observer without actuator ownership'''
@@ -17520,11 +17544,21 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         windows["invalid-latch-clear"] = log_window("RTL invalid latch clear", 0.4)
         self.set_parameter("RTL_OPTIONS", active_options)
         windows["invalid-recovered"] = log_window("RTL invalid fault recovered", 0.8)
+        self.set_parameter("GUID_OPTIONS", 258)
+        position = self.assert_receive_message("LOCAL_POSITION_NED")
+        transitions["mode-exit-guided"] = timestamp_us()
+        self.change_mode("GUIDED")
+        self.send_position_target_local_ned(position.x, position.y, -position.z)
+        self.delay_sim_time(0.5, reason="settle RTL Return to geometric Guided")
+        guided_start_us = timestamp_us()
+        self.delay_sim_time(0.8, reason="RTL Return to geometric Guided")
+        windows["mode-exit-guided"] = (guided_start_us, timestamp_us())
+        self.assert_mode("GUIDED")
         self.change_mode("LAND")
         self.wait_disarmed(timeout=120)
 
         dfreader = self.dfreader_for_current_onboard_log()
-        messages = {name: [] for name in ("GERS", "GEOH", "GEFR")}
+        messages = {name: [] for name in ("GERS", "GEOH", "GEFR", "GEOT", "GEOX")}
         while True:
             message = dfreader.recv_match(type=list(messages.keys()))
             if message is None:
@@ -17595,6 +17629,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             check_frame_window(label, True)
         for label in native_windows:
             check_frame_window(label, False)
+        check_frame_window("mode-exit-guided", True)
 
         for label in active_windows:
             status = in_window("GERS", windows[label])
@@ -17720,6 +17755,16 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                                if loiter_status[-1].TimeUS <= message.TimeUS <= final_status[-1].TimeUS]
         if len(transition_handoffs) != 1 or not transition_handoffs[0].Hand:
             raise NotAchievedException("RTL Loiter-to-Final Descent same-frame handoff was not logged")
+        guided_outputs = in_window("GEOX", windows["mode-exit-guided"])
+        if (not in_window("GEOT", windows["mode-exit-guided"]) or
+                not guided_outputs or
+                any(not message.Allow or not message.Wrote or message.GAge > 100
+                    for message in guided_outputs)):
+            raise NotAchievedException("RTL exit did not preserve fresh entering Guided output")
+        if [message for message in messages["GEOH"]
+                if transitions["mode-exit-guided"] <= message.TimeUS <=
+                windows["mode-exit-guided"][1]]:
+            raise NotAchievedException("RTL exit caused a false Guided hard-fault handoff")
 
         self.context_pop()
         self.reboot_sitl()
@@ -18885,6 +18930,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             "GEO_OUT_EN": 1,
             "GEO_SHAPE_EN": 0,
             "FSTRATE_ENABLE": 0,
+            "RC_OVERRIDE_TIME": -1,
         })
 
         pitch_channel = int(self.get_parameter("RCMAP_PITCH"))
@@ -19651,6 +19697,149 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             ))
 
         self.do_RTL()
+
+    def GeometricLoiterStructuralTransition(self):
+        '''test clean Loiter Geo/Native transitions at a structural boundary'''
+        def timestamp_us():
+            return int(self.get_sim_time() * 1000000)
+
+        def log_window(label):
+            self.delay_sim_time(0.3, reason="settle before %s" % label)
+            start_us = timestamp_us()
+            self.delay_sim_time(0.8, reason=label)
+            self.assert_mode("LOITER")
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return start_us, timestamp_us()
+
+        self.context_push()
+        try:
+            self.set_parameters({
+                "FSTRATE_ENABLE": 0,
+                "GEO_OUT_EN": 1,
+                "GEO_SHAPE_EN": 0,
+                "GUID_OPTIONS": 0,
+                "LOIT_OPTIONS": 7,
+                "MAV_GCS_SYSID": 250,
+                "RC9_OPTION": 39,
+                "RC_OVERRIDE_TIME": -1,
+            })
+            self.reboot_sitl()
+            self._rc_overrides_send_single(9, 1000)
+            self.wait_rc_channel_value(9, 1000)
+            self.takeoff(10, mode="GUIDED")
+            self.hover()
+            self.change_mode("LOITER")
+            active = log_window("Loiter geometric active")
+
+            handoff_start_us = timestamp_us()
+            self._rc_overrides_send_single(9, 2000)
+            self.wait_rc_channel_value(9, 2000)
+            precision_native = log_window("Precision Loiter Native boundary")
+
+            recovery_start_us = timestamp_us()
+            self._rc_overrides_send_single(9, 1000)
+            self.wait_rc_channel_value(9, 1000)
+            recovered = log_window("Loiter geometric structural recovery")
+
+            self.set_parameter("GEO_OUT_EN", 0)
+            faulted = log_window("Loiter runtime fault")
+            self.set_parameter("GEO_OUT_EN", 1)
+            fault_latched = log_window("Loiter runtime fault latched")
+            self._rc_overrides_send_single(9, 2000)
+            self.wait_rc_channel_value(9, 2000)
+            fault_structural = log_window("Precision Loiter with fault latch")
+            self._rc_overrides_send_single(9, 1000)
+            self.wait_rc_channel_value(9, 1000)
+            fault_compatible = log_window("Loiter fault latch after structural boundary")
+            self.set_parameter("LOIT_OPTIONS", 3)
+            fault_acknowledged = log_window("Loiter explicit fault acknowledgement")
+            self.set_parameter("LOIT_OPTIONS", 7)
+            fault_recovered = log_window("Loiter fault recovery")
+            self.disarm_vehicle(force=True)
+
+            reader = self.dfreader_for_current_onboard_log()
+            messages = {name: [] for name in ("GEFR", "GEOH", "GEOL", "GEOX")}
+            while True:
+                message = reader.recv_match(type=list(messages))
+                if message is None:
+                    break
+                messages[message.get_type()].append(message)
+
+            def in_window(message_type, window):
+                return [message for message in messages[message_type]
+                        if window[0] <= message.TimeUS <= window[1]]
+
+            def check_frames(label, window, owner):
+                frames = sorted(in_window("GEFR", window), key=lambda message: message.TimeUS)
+                if len(frames) < 2:
+                    raise NotAchievedException("Missing GEFR evidence during %s" % label)
+                first = frames[0]
+                last = frames[-1]
+                delta_main = int(last.MFrm) - int(first.MFrm)
+                delta_geometric = int(last.GFrm) - int(first.GFrm)
+                delta_native = int(last.NFrm) - int(first.NFrm)
+                if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                    raise NotAchievedException("Invalid frame ownership during %s" % label)
+                if owner == "Geo" and (delta_geometric != delta_main or delta_native != 0):
+                    raise NotAchievedException("%s was not Geo-exclusive" % label)
+                if owner == "Native" and (delta_native != delta_main or delta_geometric != 0):
+                    raise NotAchievedException("%s was not Native-exclusive" % label)
+                self.progress(
+                    "%s frames main=%u geometric=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+
+            check_frames("Loiter active", active, "Geo")
+            check_frames("Precision Loiter", precision_native, "Native")
+            check_frames("Loiter recovery", recovered, "Geo")
+            check_frames("Loiter runtime fault", faulted, "Native")
+            check_frames("Loiter runtime fault latched", fault_latched, "Native")
+            check_frames("Precision Loiter with fault latch", fault_structural, "Native")
+            check_frames("Loiter fault latch after structural boundary", fault_compatible, "Native")
+            check_frames("Loiter explicit fault acknowledgement", fault_acknowledged, "Native")
+            check_frames("Loiter fault recovery", fault_recovered, "Geo")
+
+            handoffs = [message for message in messages["GEOH"]
+                        if handoff_start_us <= message.TimeUS <= precision_native[1]]
+            if (len(handoffs) != 1 or
+                    int(handoffs[0].Mode) != 5 or
+                    int(handoffs[0].Fail) != 1 or
+                    not handoffs[0].Prev or handoffs[0].Act or
+                    not handoffs[0].Hand or handoffs[0].RT):
+                raise NotAchievedException(
+                    "Precision Loiter was not a clean structural handoff")
+            if any(recovery_start_us <= message.TimeUS <= recovered[1]
+                   for message in messages["GEOH"]):
+                raise NotAchievedException(
+                    "Structural recovery produced an unexpected handoff")
+
+            recovered_status = in_window("GEOL", recovered)
+            recovered_output = in_window("GEOX", recovered)
+            if (not recovered_status or
+                    any(not message.Act or not message.Wrote for message in recovered_status) or
+                    not recovered_output or
+                    any(not message.Allow or not message.Wrote or message.GAge > 100
+                        for message in recovered_output)):
+                raise NotAchievedException(
+                    "Loiter did not automatically recover fresh geometric output")
+
+            latched_output = in_window("GEOX", fault_compatible)
+            if (not latched_output or
+                    any(not message.OEn or message.Allow or message.Wrote
+                        for message in latched_output)):
+                raise NotAchievedException(
+                    "Loiter structural boundary cleared an existing hard-fault latch")
+            recovered_output = in_window("GEOX", fault_recovered)
+            if (not recovered_output or
+                    any(not message.Allow or not message.Wrote or message.GAge > 100
+                        for message in recovered_output)):
+                raise NotAchievedException(
+                    "Loiter did not recover after explicit fault acknowledgement")
+        finally:
+            if self.armed():
+                self.disarm_vehicle(force=True)
+            self.context_pop()
+            self.reboot_sitl()
 
     def GeometricGuidedWPMotorOutput(self, attitude_rate_gain_xy=0.2):
         '''test Guided WP geometric ownership and fail-closed transitions'''
@@ -24082,6 +24271,7 @@ return update, 1000
             self.GeometricLoiterTakeoffLandingMotorOutput,
             self.GeometricLoiterAirborneEntry,
             self.GeometricLoiterMotorOutput,
+            self.GeometricLoiterStructuralTransition,
             self.GeometricGuidedWPMotorOutput,
             self.GeometricGuidedFullLifecycle,
             self.GeometricGuidedMotorOutputDisabled,
