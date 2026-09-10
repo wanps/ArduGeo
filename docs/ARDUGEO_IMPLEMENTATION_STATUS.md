@@ -23,6 +23,7 @@
 - C12 ✅ Guided lifecycle closure
 - Guided WP Active Closure ✅ Non-terrain WP active geometric ownership
 - Circle Observer ✅ Non-terrain ordinary Circle neutral-reference observation
+- Circle Active Ownership ✅ Non-terrain ordinary Circle active geometric ownership
 
 ## Guided Engineering v1.0 support matrix
 
@@ -47,11 +48,11 @@ rate-thread output
 
 | Support class | Circle paths | Decision |
 | --- | --- | --- |
-| Geo Observer Supported | Non-terrain ordinary Circle | Native shaped P/V/A and compatible heading feed the neutral-reference observer; Native retains actuator ownership |
-| Geo Active Supported | None | Circle active ownership has not yet been implemented |
-| Native by Design | `Rate_Only`, terrain, surface tracking, tradheli, rate-thread | Fail closed for the current Circle scope |
+| Geo Observer Supported | Non-terrain ordinary Circle without active opt-in | Native shaped P/V/A and compatible heading feed the neutral-reference observer; Native retains actuator ownership |
+| Geo Active Supported | Non-terrain ordinary Circle with radius greater than zero | `GEO_OUT_EN` plus `CIRCLE_OPTIONS` bit 8 explicitly authorizes fresh, finite, valid main-thread output |
+| Native by Design | `Rate_Only`, radius-zero panorama, terrain, surface tracking, tradheli, rate-thread | Structural boundaries fail closed without setting the hard-fault latch |
 
-Circle mode exit explicitly disables the shared geometric controller and invalidates its cached target/output. Circle→Geo Loiter currently makes a safe Native bridge before Loiter publishes fresh mode-owned Geo output; flight-quality evaluation is deferred to Mode Transition Hardening and is not an observer blocker.
+Circle mode exit invalidates its own authorization and reference state. A geometric-controller update generation token prevents the outgoing Mode from clearing a newer output already published by the entering Mode during ArduPilot's new-Mode-init-before-old-Mode-exit sequence. The token protects only the shared geometric-controller lifecycle: it does not grant actuator ownership, which remains determined by the current Mode authorization and the vehicle-level arbiter. This targeted generation check is not a general ControllerManager.
 
 ## Other current verified coverage
 
@@ -94,7 +95,7 @@ Rate/direct/special Mode family   Native unless separately designed
 
 ## Next
 
-Awaiting the approved Circle Active task. Circle actuator ownership has not started.
+Awaiting the next separately approved stage.
 
 ## Separate future track
 

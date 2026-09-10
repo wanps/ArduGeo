@@ -984,6 +984,8 @@ public:
     bool has_manual_throttle() const override { return false; }
     bool allows_arming(AP_Arming::Method method) const override { return false; };
     bool is_autopilot() const override { return true; }
+    bool allows_geometric_motor_output() const override;
+    void handle_geometric_motor_output_fallback() override;
 
 protected:
 
@@ -1000,6 +1002,9 @@ private:
     void update_geometric_circle_observer(bool circle_updated,
                                           const AC_AttitudeControl::HeadingCommand& heading);
     void stop_geometric_circle_observer();
+    bool _geometric_circle_reference_supported = false;
+    GeometricTrajectoryAuthorizationState _geometric_circle_authorization;
+    uint32_t _geometric_circle_update_count = 0;
 #if HAL_LOGGING_ENABLED
     void log_geometric_circle_observer_status(bool reference_supported,
                                               AC_AttitudeControl::HeadingMode heading_mode);

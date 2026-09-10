@@ -43,5 +43,6 @@ bool Copter::update_geometric_controller(const AC_TrajectoryReference& trajector
 
     geometric_control.set_hover_throttle_reference(motors->get_throttle_hover());
     geometric_control.update(state, target, G_Dt);
+    geometric_controller_update_count++;
     return true;
 }
