@@ -978,6 +978,7 @@ public:
 
     bool init(bool ignore_checks) override;
     void run() override;
+    void exit() override;
 
     bool requires_position() const override { return true; }
     bool has_manual_throttle() const override { return false; }
@@ -993,6 +994,18 @@ protected:
     float wp_bearing_deg() const override;
 
 private:
+
+    bool geometric_circle_reference_supported(bool circle_updated,
+                                               const AC_AttitudeControl::HeadingCommand& heading) const;
+    void update_geometric_circle_observer(bool circle_updated,
+                                          const AC_AttitudeControl::HeadingCommand& heading);
+    void stop_geometric_circle_observer();
+#if HAL_LOGGING_ENABLED
+    void log_geometric_circle_observer_status(bool reference_supported,
+                                              AC_AttitudeControl::HeadingMode heading_mode);
+    uint8_t _geometric_circle_log_counter = 0;
+    uint32_t _geometric_circle_observer_frames = 0;
+#endif
 
     // Circle
     bool speed_changing = false;     // true when the roll stick is being held to facilitate stopping at 0 rate

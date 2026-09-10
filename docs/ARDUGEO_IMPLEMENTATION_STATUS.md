@@ -22,6 +22,7 @@
 - C11 ✅ Guided Engineering Closure & Coverage Verification
 - C12 ✅ Guided lifecycle closure
 - Guided WP Active Closure ✅ Non-terrain WP active geometric ownership
+- Circle Observer ✅ Non-terrain ordinary Circle neutral-reference observation
 
 ## Guided Engineering v1.0 support matrix
 
@@ -41,6 +42,16 @@ Rate_Only heading
 traditional helicopter
 rate-thread output
 ```
+
+## Circle current support matrix
+
+| Support class | Circle paths | Decision |
+| --- | --- | --- |
+| Geo Observer Supported | Non-terrain ordinary Circle | Native shaped P/V/A and compatible heading feed the neutral-reference observer; Native retains actuator ownership |
+| Geo Active Supported | None | Circle active ownership has not yet been implemented |
+| Native by Design | `Rate_Only`, terrain, surface tracking, tradheli, rate-thread | Fail closed for the current Circle scope |
+
+Circle mode exit explicitly disables the shared geometric controller and invalidates its cached target/output. Circle→Geo Loiter currently makes a safe Native bridge before Loiter publishes fresh mode-owned Geo output; flight-quality evaluation is deferred to Mode Transition Hardening and is not an observer blocker.
 
 ## Other current verified coverage
 
@@ -83,7 +94,7 @@ Rate/direct/special Mode family   Native unless separately designed
 
 ## Next
 
-Awaiting the next approved stage. Circle has not started.
+Awaiting the approved Circle Active task. Circle actuator ownership has not started.
 
 ## Separate future track
 
