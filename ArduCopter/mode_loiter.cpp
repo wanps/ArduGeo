@@ -242,7 +242,6 @@ void ModeLoiter::run()
         // Precision Loiter and active surface tracking are not yet represented
         // by the dedicated reference.  Hand off atomically instead of running
         // either feature against stale geometric targets.
-        _geometric_motor_output_rejected = true;
         copter.gcs().send_text(MAV_SEVERITY_WARNING,
                                "Loiter: geometric feature unsupported");
         deactivate_geometric_motor_output(true);
@@ -917,6 +916,16 @@ void ModeLoiter::deactivate_geometric_motor_output(bool reset_loiter_targets)
 void ModeLoiter::handle_geometric_motor_output_fallback()
 {
     if (!_geometric_motor_output_active) {
+        return;
+    }
+
+    // Precision Loiter, surface tracking and unsupported platforms are
+    // structural Native boundaries, not controller failures.  They may become
+    // supported again without an operator fault acknowledgement.
+    if (!geometric_reference_supported() ||
+        copter.is_tradheli() ||
+        copter.geometric_motor_output_blocked_by_rate_thread()) {
+        deactivate_geometric_motor_output(true);
         return;
     }
 

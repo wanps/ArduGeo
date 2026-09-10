@@ -39,6 +39,7 @@ bool ModeAuto::init(bool ignore_checks)
         _geometric_wp_observer_frames = 0;
 #endif
         stop_geometric_wp_observer();
+        _geometric_wp_update_count = copter.geometric_controller_updates();
 
         // stop ROI from carrying over from previous runs of the mission
         // To-Do: reset the yaw as part of auto_wp_start when the previous command was not a wp command to remove the need for this special ROI check
@@ -78,7 +79,15 @@ bool ModeAuto::init(bool ignore_checks)
 // stop mission when we leave auto mode
 void ModeAuto::exit()
 {
-    stop_geometric_wp_observer();
+    // A new mode is initialised before this exit hook runs.  Invalidate the
+    // shared output only if it has not already been replaced by that mode.
+    const bool output_replaced =
+        copter.geometric_controller_updates() != _geometric_wp_update_count;
+    _geometric_wp_reference_supported = false;
+    _geometric_wp_authorization.stop();
+    if (!output_replaced) {
+        copter.geometric_control.set_enabled(false);
+    }
     _geometric_wp_authorization.reset();
 
     if (copter.mode_auto.mission.state() == AP_Mission::MISSION_RUNNING) {
@@ -1220,6 +1229,7 @@ void ModeAuto::update_geometric_wp_observer(const AC_AttitudeControl::HeadingCom
 #endif
         return;
     }
+    _geometric_wp_update_count = copter.geometric_controller_updates();
 
     const bool motor_output_prepared =
         copter.geometric_control.output_is_fresh(AP_HAL::millis(), auto_wp_geometric_output_recent_ms) &&
