@@ -482,6 +482,7 @@ private:
     const struct AP_Param::GroupInfo *attitude_control_var_info;
     AC_PosControl *pos_control;
     AC_GeometricControl geometric_control;
+    uint32_t geometric_controller_update_count = 0;
     uint32_t geometric_motor_output_last_ms = 0;
     uint32_t main_rate_controller_frame_count = 0;
     uint32_t geometric_motor_output_frame_count = 0;
@@ -752,6 +753,7 @@ private:
     uint8_t geometric_motor_output_failure_flags() const;
     bool geometric_motor_output_blocked_by_rate_thread() const;
     uint32_t geometric_motor_output_age_ms(uint32_t now_ms) const;
+    uint32_t geometric_controller_updates() const { return geometric_controller_update_count; }
     uint32_t main_rate_controller_frames() const { return main_rate_controller_frame_count; }
     uint32_t geometric_motor_output_frames() const { return geometric_motor_output_frame_count; }
     uint32_t native_rate_controller_frames() const { return native_rate_controller_frame_count; }

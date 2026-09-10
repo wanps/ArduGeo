@@ -139,6 +139,12 @@ public:
     // See roi_at_center() for flag logic.
     bool roi_at_center() const { return (_options.get() & CircleOptions::ROI_AT_CENTER) != 0; }
 
+    // Returns true if geometric motor output is explicitly requested.
+    bool geometric_motor_output_requested() const { return (_options.get() & CircleOptions::GEOMETRIC_MOTOR_OUTPUT) != 0; }
+
+    // Returns true if Circle is rotating in place instead of flying a horizontal circle.
+    bool is_panorama() const { return !is_positive(_radius_m); }
+
     // Sets rangefinder terrain offset (in centimeters) above EKF origin.
     // See set_rangefinder_terrain_U_m() for full details.
     void set_rangefinder_terrain_U_cm(bool use, bool healthy, float terrain_u_cm) { _rangefinder_available = use; _rangefinder_healthy = healthy; _rangefinder_terrain_u_m = terrain_u_cm * 0.01;}
@@ -191,6 +197,7 @@ private:
         FACE_DIRECTION_OF_TRAVEL = 1U << 1, // Yaw aligns with direction of travel (tangent to circle path).
         INIT_AT_CENTER           = 1U << 2, // Initializes circle with center at current position (instead of radius ahead).
         ROI_AT_CENTER            = 1U << 3, // Sets camera mount ROI to circle center during circle mode.
+        GEOMETRIC_MOTOR_OUTPUT   = 1U << 8, // Allows geometric motor output on supported Circle paths.
     };
 
     // parameters

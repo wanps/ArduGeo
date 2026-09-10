@@ -15868,6 +15868,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.assert_parameter_values(expected_defaults, epsilon=1.0e-6)
         self.assert_parameter_values({
             'AUTO_OPTIONS': 0,
+            'CIRCLE_OPTIONS': 1,
             'GUID_OPTIONS': 0,
             'LOIT_OPTIONS': 1,
             'RTL_OPTIONS': 0,
@@ -15925,6 +15926,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             self.set_parameters(persisted_values)
             stored_mode_options = {
                 'AUTO_OPTIONS': 259,
+                'CIRCLE_OPTIONS': 257,
                 'GUID_OPTIONS': 258,
                 'LOIT_OPTIONS': 7,
                 'RTL_OPTIONS': 260,
@@ -16025,9 +16027,18 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             exit_status = in_window("GECE", window)
             if not exit_status:
                 raise NotAchievedException("Circle %s exit cleanup was not logged" % label)
-            if any(message.Run or message.Age != 0xFFFFFFFF for message in exit_status):
+            replacement_expected = label == "loiter-transition"
+            if any(bool(message.Repl) != replacement_expected for message in exit_status):
+                raise NotAchievedException(
+                    "Circle %s output replacement state is invalid" % label)
+            if not replacement_expected and any(message.Run or message.Age != 0xFFFFFFFF
+                                                for message in exit_status):
                 raise NotAchievedException(
                     "Circle %s exit did not disable the controller and invalidate its cache" % label)
+            if replacement_expected and any(not message.Run or message.Age > 100
+                                            for message in exit_status):
+                raise NotAchievedException(
+                    "Circle %s exit did not preserve the entering mode's fresh output" % label)
 
         self.context_push()
         try:
@@ -16238,6 +16249,414 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
                 "Circle observer references=%u calculated_frames=%u" %
                 (len(references), max(message.CFrm for message in clockwise_status +
                                       counterclockwise_status)))
+        finally:
+            if self.armed():
+                self.disarm_vehicle(force=True)
+            self.context_pop()
+            self.reboot_sitl()
+
+    def GeometricCircleMotorOutput(self):
+        '''test geometric motor-output ownership on supported Circle paths'''
+        observer_options = 1
+        active_options = observer_options | (1 << 8)
+
+        def timestamp_us():
+            return int(self.get_sim_time() * 1000000)
+
+        def log_window(label, duration_s, settle_s=0.2, mode="CIRCLE"):
+            self.delay_sim_time(settle_s, reason="settle before %s" % label)
+            start_us = timestamp_us()
+            self.delay_sim_time(duration_s, reason=label)
+            self.assert_mode(mode)
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return start_us, timestamp_us()
+
+        self.context_push()
+        try:
+            self.set_parameters({
+                "CIRCLE_OPTIONS": observer_options,
+                "CIRCLE_RADIUS_M": 10,
+                "CIRCLE_RATE": 20,
+                "FSTRATE_ENABLE": 0,
+                "GEO_OUT_EN": 1,
+                "GEO_SHAPE_EN": 1,
+                "GEO_POS_KX_XY": 1.0,
+                "GUID_OPTIONS": 0,
+                "LOIT_OPTIONS": 7,
+                "RC9_OPTION": 75,
+                "RNGFND1_MAX": 50,
+                "RNGFND1_TYPE": 100,
+                "RTL_OPTIONS": 0,
+                "SIM_FLOAT_EXCEPT": 0,
+                "SURFTRAK_MODE": 0,
+            })
+            self.reboot_sitl()
+            self.set_rc(9, 1500)
+
+            self.takeoff(10, mode="GUIDED")
+            self.hover()
+            self.change_mode("CIRCLE")
+
+            windows = {}
+            transitions = {}
+            windows["observer-only"] = log_window("Circle observer-only", 0.8, settle_s=1.0)
+
+            self.set_parameter("CIRCLE_OPTIONS", active_options)
+            windows["clockwise"] = log_window("Circle active clockwise", 1.0, settle_s=0.5)
+
+            self.set_parameter("CIRCLE_RADIUS_M", 20)
+            windows["radius-change"] = log_window("Circle active radius change", 1.0, settle_s=0.5)
+            self.set_parameter("CIRCLE_RATE", 35)
+            windows["rate-change"] = log_window("Circle active rate change", 1.0, settle_s=0.5)
+
+            self.set_rc(3, 1700)
+            windows["climb"] = log_window("Circle active climb", 1.0, settle_s=0.3)
+            self.set_rc(3, 1300)
+            windows["descent"] = log_window("Circle active descent", 1.0, settle_s=0.3)
+            self.set_rc(3, 1500)
+
+            yaw_channel = int(self.get_parameter("RCMAP_YAW"))
+            yaw_trim = int(self.get_parameter("RC%u_TRIM" % yaw_channel))
+            transitions["rate-only"] = timestamp_us()
+            self.set_rc(yaw_channel, min(2000, yaw_trim + 200))
+            windows["rate-only"] = log_window("Circle Rate_Only Native boundary", 0.8)
+            self.set_rc(yaw_channel, yaw_trim)
+            heading = self.assert_receive_message("VFR_HUD").heading
+            self.run_cmd(
+                mavutil.mavlink.MAV_CMD_CONDITION_YAW,
+                p1=heading,
+                p2=10,
+                p3=0,
+                p4=0,
+            )
+            windows["rate-recovered"] = log_window("Circle compatible heading recovery", 0.8)
+
+            transitions["panorama"] = timestamp_us()
+            self.set_parameter("CIRCLE_RADIUS_M", 0)
+            windows["panorama"] = log_window("Circle panorama Native boundary", 0.8)
+            self.set_parameter("CIRCLE_RADIUS_M", 15)
+            windows["panorama-recovered"] = log_window("Circle radius recovery", 0.8)
+
+            transitions["surface"] = timestamp_us()
+            self.set_rc(9, 1000)
+            windows["surface"] = log_window("Circle surface-tracking Native boundary", 0.8, settle_s=0.5)
+            self.set_rc(9, 1500)
+            windows["surface-recovered"] = log_window("Circle surface-tracking recovery", 0.8)
+
+            transitions["bit-clear"] = timestamp_us()
+            self.set_parameter("CIRCLE_OPTIONS", observer_options)
+            windows["bit-clear"] = log_window("Circle active-bit Native handoff", 0.8)
+            self.set_parameter("CIRCLE_OPTIONS", active_options)
+            windows["bit-reenabled"] = log_window("Circle active-bit re-enable", 0.8)
+
+            transitions["output-disable"] = timestamp_us()
+            self.set_parameter("GEO_OUT_EN", 0)
+            windows["output-disabled"] = log_window("Circle output-disabled handoff", 0.8)
+            self.set_parameter("GEO_OUT_EN", 1)
+            windows["output-latched"] = log_window("Circle output fault latched", 0.8)
+            self.set_parameter("CIRCLE_OPTIONS", observer_options)
+            windows["output-latch-clear"] = log_window("Circle output latch acknowledge", 0.5)
+            self.set_parameter("CIRCLE_OPTIONS", active_options)
+            windows["output-recovered"] = log_window("Circle output fault recovery", 0.8)
+
+            transitions["invalid"] = timestamp_us()
+            try:
+                self.set_parameter("GEO_POS_KX_XY", 3.4e38)
+                self.delay_sim_time(0.2, reason="produce invalid Circle geometric output")
+            finally:
+                self.set_parameter("GEO_POS_KX_XY", 1.0)
+                self.set_parameter("GEO_OUT_EN", 0)
+                self.set_parameter("GEO_OUT_EN", 1)
+            windows["invalid-latched"] = log_window("Circle invalid fault latched", 0.8)
+            self.set_parameter("CIRCLE_OPTIONS", observer_options)
+            windows["invalid-latch-clear"] = log_window("Circle invalid latch acknowledge", 0.5)
+            self.set_parameter("CIRCLE_OPTIONS", active_options)
+            windows["invalid-recovered"] = log_window("Circle invalid fault recovery", 0.8)
+
+            transitions["stale"] = timestamp_us()
+            self.run_cmd_int(
+                mavutil.mavlink.MAV_CMD_PREFLIGHT_REBOOT_SHUTDOWN,
+                p1=42,
+                p2=24,
+                p3=71,
+                p4=97,
+            )
+            windows["stale-latched"] = log_window("Circle stale fault latched", 0.8)
+            self.set_parameter("CIRCLE_OPTIONS", observer_options)
+            windows["stale-latch-clear"] = log_window("Circle stale latch acknowledge", 0.5)
+            self.set_parameter("CIRCLE_OPTIONS", active_options)
+            windows["stale-recovered"] = log_window("Circle stale fault recovery", 0.8)
+
+            self.change_mode("LOITER")
+            self.set_parameter("CIRCLE_RATE", -25)
+            self.change_mode("CIRCLE")
+            windows["counterclockwise"] = log_window(
+                "Circle active counter-clockwise", 1.0, settle_s=1.0)
+
+            loiter_transition_start_us = timestamp_us()
+            self.change_mode("LOITER")
+            loiter_target_start_us = timestamp_us()
+            self.delay_sim_time(1.5, reason="Circle active to geometric Loiter transition")
+            windows["loiter-transition"] = loiter_transition_start_us, timestamp_us()
+            windows["loiter-active"] = log_window(
+                "Loiter fresh output after Circle active exit", 0.8, mode="LOITER")
+            loiter_target_window = loiter_target_start_us, windows["loiter-active"][1]
+
+            self.set_parameter("CIRCLE_RATE", 20)
+            self.change_mode("CIRCLE")
+            log_window("Circle active before Stabilize exit", 0.5, settle_s=0.5)
+            stabilize_transition_start_us = timestamp_us()
+            self.change_mode("STABILIZE")
+            stabilize_target_start_us = timestamp_us()
+            self.delay_sim_time(0.8, reason="Circle active to Stabilize transition")
+            stabilize_target_end_us = timestamp_us()
+            self.set_parameter("CIRCLE_OPTIONS", observer_options)
+            self.change_mode("CIRCLE")
+            self.delay_sim_time(0.5, reason="sample Native counters after Stabilize")
+            windows["stabilize-transition"] = stabilize_transition_start_us, timestamp_us()
+            stabilize_target_window = stabilize_target_start_us, stabilize_target_end_us
+
+            self.set_parameter("CIRCLE_OPTIONS", active_options)
+            log_window("Circle active before RTL exit", 0.6, settle_s=0.5)
+            rtl_transition_start_us = timestamp_us()
+            self.change_mode("RTL")
+            rtl_target_start_us = timestamp_us()
+            windows["rtl-transition"] = log_window(
+                "Circle active to RTL transition", 0.8, mode="RTL", settle_s=0.0)
+            windows["rtl-transition"] = rtl_transition_start_us, windows["rtl-transition"][1]
+            rtl_target_window = rtl_target_start_us, windows["rtl-transition"][1]
+
+            self.set_parameter("GEO_OUT_EN", 0)
+            self.do_RTL()
+
+            dfreader = self.dfreader_for_current_onboard_log()
+            messages = {name: [] for name in (
+                "ATT", "GECA", "GECE", "GECS", "GECW", "GEOH", "GEOL", "GEOR",
+                "GEOX", "GEFR", "PSCN", "PSCE", "PSCD")}
+            while True:
+                message = dfreader.recv_match(type=list(messages.keys()))
+                if message is None:
+                    break
+                messages[message.get_type()].append(message)
+
+            def in_window(message_type, window):
+                return [message for message in messages[message_type]
+                        if window[0] <= message.TimeUS <= window[1]]
+
+            def check_frame_window(label, expected_owner=None):
+                frame_messages = sorted(in_window("GEFR", windows[label]),
+                                        key=lambda message: message.TimeUS)
+                if len(frame_messages) < 2:
+                    raise NotAchievedException(
+                        "Circle frame evidence is incomplete during %s" % label)
+                first = frame_messages[0]
+                last = frame_messages[-1]
+                delta_main = int(last.MFrm) - int(first.MFrm)
+                delta_geometric = int(last.GFrm) - int(first.GFrm)
+                delta_native = int(last.NFrm) - int(first.NFrm)
+                if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                    raise NotAchievedException(
+                        "Circle %s has invalid frame ownership: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+                if expected_owner == "Geo" and (delta_geometric != delta_main or delta_native != 0):
+                    raise NotAchievedException(
+                        "Circle %s was not Geo-exclusive: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+                if expected_owner == "Native" and (delta_native != delta_main or delta_geometric != 0):
+                    raise NotAchievedException(
+                        "Circle %s was not Native-exclusive: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+                self.progress(
+                    "Circle %s frames main=%u geo=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+
+            def check_frames_after_exit(label, expected_owner):
+                exit_status = in_window("GECE", windows[label])
+                if not exit_status:
+                    raise NotAchievedException("Circle %s exit cleanup was not logged" % label)
+                first = exit_status[-1]
+                frame_messages = sorted(
+                    (message for message in in_window("GEFR", windows[label])
+                     if message.TimeUS > first.TimeUS),
+                    key=lambda message: message.TimeUS,
+                )
+                if not frame_messages:
+                    raise NotAchievedException(
+                        "Circle %s post-exit frame evidence is incomplete" % label)
+                last = frame_messages[-1]
+                delta_main = int(last.MFrm) - int(first.MFrm)
+                delta_geometric = int(last.GFrm) - int(first.GFrm)
+                delta_native = int(last.NFrm) - int(first.NFrm)
+                if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                    raise NotAchievedException(
+                        "Circle %s has invalid post-exit ownership: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+                if expected_owner == "Geo" and (delta_geometric != delta_main or delta_native != 0):
+                    raise NotAchievedException(
+                        "Circle %s post-exit frames were not Geo-exclusive" % label)
+                if expected_owner == "Native" and (delta_native != delta_main or delta_geometric != 0):
+                    raise NotAchievedException(
+                        "Circle %s post-exit frames were not Native-exclusive" % label)
+                self.progress(
+                    "Circle %s post-exit frames main=%u geo=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+
+            active_windows = (
+                "clockwise", "radius-change", "rate-change", "climb", "descent",
+                "rate-recovered", "panorama-recovered", "surface-recovered",
+                "bit-reenabled", "output-recovered", "invalid-recovered",
+                "stale-recovered", "counterclockwise", "loiter-active",
+            )
+            native_windows = (
+                "observer-only", "rate-only", "panorama", "surface", "bit-clear",
+                "output-disabled", "output-latched", "output-latch-clear",
+                "invalid-latched", "invalid-latch-clear", "stale-latched",
+                "stale-latch-clear",
+            )
+            for label in active_windows:
+                check_frame_window(label, "Geo")
+            for label in native_windows:
+                check_frame_window(label, "Native")
+            check_frame_window("loiter-transition")
+            check_frame_window("stabilize-transition")
+            check_frame_window("rtl-transition")
+            check_frames_after_exit("loiter-transition", "Geo")
+            check_frames_after_exit("stabilize-transition", "Native")
+            check_frames_after_exit("rtl-transition", "Native")
+
+            circle_active_windows = active_windows[:-1]
+            for label in circle_active_windows:
+                status = in_window("GECS", windows[label])
+                authorization = in_window("GECA", windows[label])
+                if not status or any(not message.Run or not message.Sup or not message.Req or
+                                     message.Shp or message.Terr or message.Surf or
+                                     message.Age > 100 for message in status):
+                    raise NotAchievedException("Circle active state is invalid during %s" % label)
+                if not authorization or any(not message.Req or not message.Prep or
+                                            not message.Act or message.Rej
+                                            for message in authorization):
+                    raise NotAchievedException(
+                        "Circle authorization state is invalid during %s" % label)
+
+            observer_status = in_window("GECS", windows["observer-only"])
+            observer_authorization = in_window("GECA", windows["observer-only"])
+            if not observer_status or any(not message.Run or not message.Sup or not message.Req
+                                          for message in observer_status):
+                raise NotAchievedException("Circle observer-only state is invalid")
+            if not observer_authorization or any(message.Req or not message.Prep or
+                                                 message.Act or message.Rej
+                                                 for message in observer_authorization):
+                raise NotAchievedException("Circle observer-only authorization is invalid")
+
+            for label in ("rate-only", "panorama", "surface"):
+                status = in_window("GECS", windows[label])
+                authorization = in_window("GECA", windows[label])
+                if not status or any(message.Run or message.Sup for message in status):
+                    raise NotAchievedException(
+                        "Circle %s was not a clean structural Native boundary" % label)
+                if not authorization or any(message.Prep or message.Act or message.Rej
+                                            for message in authorization):
+                    raise NotAchievedException(
+                        "Circle %s authorization was not cleanly stopped" % label)
+                if label == "rate-only" and not any(message.HMode == 2 for message in status):
+                    raise NotAchievedException("Circle Rate_Only heading status was not recorded")
+                if label == "panorama" and not any(abs(message.Rad) < 0.01 for message in status):
+                    raise NotAchievedException("Circle panorama radius status was not recorded")
+                if label == "surface" and not any(message.Surf for message in status):
+                    raise NotAchievedException("Circle surface-tracking status was not recorded")
+                if in_window("GECW", windows[label]):
+                    raise NotAchievedException(
+                        "Circle %s reached the neutral-reference adapter" % label)
+
+            for label in ("output-latched", "invalid-latched", "stale-latched"):
+                status = in_window("GECS", windows[label])
+                authorization = in_window("GECA", windows[label])
+                if not status or any(not message.Sup for message in status):
+                    raise NotAchievedException("Circle hard-fault latch is invalid during %s" % label)
+                if not authorization or any(not message.Req or message.Act or not message.Rej
+                                            for message in authorization):
+                    raise NotAchievedException("Circle hard-fault latch is invalid during %s" % label)
+
+            for label in ("output-latch-clear", "invalid-latch-clear", "stale-latch-clear"):
+                authorization = in_window("GECA", windows[label])
+                if not authorization or any(message.Req or message.Act or message.Rej
+                                            for message in authorization):
+                    raise NotAchievedException("Circle active-bit clear did not acknowledge %s" % label)
+
+            def check_handoff(label, end_us, failure_mask):
+                handoffs = [message for message in messages["GEOH"]
+                            if transitions[label] <= message.TimeUS <= end_us]
+                if len(handoffs) != 1:
+                    raise NotAchievedException(
+                        "Expected one Circle %s handoff, got %u" % (label, len(handoffs)))
+                handoff = handoffs[0]
+                if (int(handoff.Mode) != 7 or
+                        (int(handoff.Fail) & failure_mask) == 0 or
+                        not handoff.Prev or handoff.Act or not handoff.Hand or handoff.RT):
+                    raise NotAchievedException("Circle %s GEOH fields are invalid" % label)
+
+            check_handoff("rate-only", windows["rate-only"][1], 1 << 0)
+            check_handoff("panorama", windows["panorama"][1], 1 << 0)
+            check_handoff("surface", windows["surface"][1], 1 << 0)
+            check_handoff("bit-clear", windows["bit-clear"][1], 1 << 0)
+            check_handoff("output-disable", windows["output-disabled"][1], 1 << 1)
+            check_handoff("invalid", windows["invalid-latched"][1], 1 << 6)
+            check_handoff("stale", windows["stale-latched"][1], 1 << 5)
+
+            for label in ("loiter-transition", "stabilize-transition", "rtl-transition"):
+                exit_status = in_window("GECE", windows[label])
+                if not exit_status:
+                    raise NotAchievedException("Circle %s exit cleanup was not logged" % label)
+                replacement_expected = label == "loiter-transition"
+                if any(bool(message.Repl) != replacement_expected for message in exit_status):
+                    raise NotAchievedException(
+                        "Circle %s output replacement state is invalid" % label)
+                if not replacement_expected and any(message.Run or message.Age != 0xFFFFFFFF
+                                                    for message in exit_status):
+                    raise NotAchievedException("Circle %s exit retained its cache" % label)
+                if replacement_expected and any(not message.Run or message.Age > 100
+                                                for message in exit_status):
+                    raise NotAchievedException(
+                        "Circle %s exit did not preserve the entering mode's fresh output" % label)
+
+            loiter_status = in_window("GEOL", windows["loiter-active"])
+            loiter_output = in_window("GEOX", windows["loiter-active"])
+            if (not loiter_status or any(not message.Act or not message.Wrote
+                                         for message in loiter_status) or
+                    not loiter_output or any(not message.Allow or not message.Wrote
+                                             for message in loiter_output)):
+                raise NotAchievedException("Loiter did not replace Circle with fresh active output")
+            if in_window("GECW", loiter_target_window):
+                raise NotAchievedException("Circle reference continued after transition to Loiter")
+            if in_window("GECW", stabilize_target_window):
+                raise NotAchievedException("Circle reference continued after transition to Stabilize")
+            if in_window("GECW", rtl_target_window):
+                raise NotAchievedException("Circle reference continued after transition to RTL")
+
+            circle_outputs = []
+            attitude_errors = []
+            for label in circle_active_windows:
+                circle_outputs.extend(
+                    message for message in in_window("GEOX", windows[label])
+                    if message.Allow and message.Wrote)
+                attitude_errors.extend(in_window("GEOR", windows[label]))
+            if not circle_outputs or not attitude_errors:
+                raise NotAchievedException("Circle active flight-quality evidence is incomplete")
+            for message in circle_outputs:
+                for field in ("Roll", "Pitch", "Yaw", "Thr"):
+                    if not math.isfinite(getattr(message, field)):
+                        raise NotAchievedException("Circle GEOX.%s is not finite" % field)
+                if (abs(message.Roll) > 1.0001 or abs(message.Pitch) > 1.0001 or
+                        abs(message.Yaw) > 1.0001 or not -0.0001 <= message.Thr <= 1.0001):
+                    raise NotAchievedException("Circle mapped output is outside normalized bounds")
+            for message in attitude_errors:
+                self.assert_geometric_attitude_error_message(message, "Circle active")
+            max_attitude_error = max(message.Ang for message in attitude_errors)
+            limited_outputs = sum(message.RLim or message.TLim for message in circle_outputs)
+            self.progress(
+                "Circle active quality samples=%u max_attitude_error=%.3frad limited=%u" %
+                (len(circle_outputs), max_attitude_error, limited_outputs))
         finally:
             if self.armed():
                 self.disarm_vehicle(force=True)
@@ -23652,6 +24071,7 @@ return update, 1000
             self.GuidedModeThrust,
             self.GeometricParameterModules,
             self.GeometricCircleObserver,
+            self.GeometricCircleMotorOutput,
             self.GeometricAutoWPObserver,
             self.GeometricAutoWPMotorOutput,
             self.GeometricRTLWPNavObserver,

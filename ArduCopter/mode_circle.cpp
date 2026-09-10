@@ -3,6 +3,8 @@
 
 #if MODE_CIRCLE_ENABLED
 
+static constexpr uint32_t circle_geometric_output_recent_ms = 100;
+
 /*
  * Init and run calls for circle flight mode
  */
@@ -11,11 +13,13 @@
 bool ModeCircle::init(bool ignore_checks)
 {
     speed_changing = false;
+    _geometric_circle_authorization.reset();
 #if HAL_LOGGING_ENABLED
     _geometric_circle_log_counter = 0;
     _geometric_circle_observer_frames = 0;
 #endif
     stop_geometric_circle_observer();
+    _geometric_circle_update_count = copter.geometric_controller_updates();
 
     // set speed and acceleration limits
     pos_control->NE_set_max_speed_accel_m(wp_nav->get_default_speed_NE_ms(), wp_nav->get_wp_acceleration_mss());
@@ -49,7 +53,16 @@ bool ModeCircle::init(bool ignore_checks)
 
 void ModeCircle::exit()
 {
-    stop_geometric_circle_observer();
+    // A new mode is initialised before this exit hook runs.  Invalidate the
+    // shared output only if it has not already been replaced by that mode.
+    const bool output_replaced =
+        copter.geometric_controller_updates() != _geometric_circle_update_count;
+    _geometric_circle_reference_supported = false;
+    _geometric_circle_authorization.stop();
+    if (!output_replaced) {
+        copter.geometric_control.set_enabled(false);
+    }
+    _geometric_circle_authorization.reset();
 #if HAL_LOGGING_ENABLED
     // @LoggerMessage: GECE
     // @Description: Circle geometric observer mode-exit cleanup and ownership snapshot
@@ -59,13 +72,15 @@ void ModeCircle::exit()
     // @Field: MFrm: Cumulative main-loop rate-controller frames
     // @Field: GFrm: Cumulative geometric motor-output frames
     // @Field: NFrm: Cumulative native rate-controller frames
-    AP::logger().Write("GECE", "TimeUS,Run,Age,MFrm,GFrm,NFrm", "QBIIII",
+    // @Field: Repl: True if the entering mode already replaced the Circle output
+    AP::logger().Write("GECE", "TimeUS,Run,Age,MFrm,GFrm,NFrm,Repl", "QBIIIIB",
                        AP_HAL::micros64(),
                        (uint8_t)copter.geometric_control.enabled(),
                        copter.geometric_control.output_age_ms(AP_HAL::millis()),
                        copter.main_rate_controller_frames(),
                        copter.geometric_motor_output_frames(),
-                       copter.native_rate_controller_frames());
+                       copter.native_rate_controller_frames(),
+                       (uint8_t)output_replaced);
 #endif
 }
 
@@ -73,6 +88,9 @@ void ModeCircle::exit()
 // should be called at 100hz or more
 void ModeCircle::run()
 {
+    _geometric_circle_authorization.acknowledge_if_not_requested(
+        copter.circle_nav->geometric_motor_output_requested());
+
     // set speed and acceleration limits
     pos_control->NE_set_max_speed_accel_m(wp_nav->get_default_speed_NE_ms(), wp_nav->get_wp_acceleration_mss());
     pos_control->D_set_max_speed_accel_m(get_pilot_speed_dn_ms(), get_pilot_speed_up_ms(), get_pilot_accel_D_mss());
@@ -176,6 +194,7 @@ bool ModeCircle::geometric_circle_reference_supported(
 {
     if (copter.flightmode != this ||
         !circle_updated ||
+        copter.circle_nav->is_panorama() ||
         copter.circle_nav->center_is_terrain_alt() ||
         copter.is_tradheli() ||
         copter.geometric_motor_output_blocked_by_rate_thread()) {
@@ -195,8 +214,13 @@ void ModeCircle::update_geometric_circle_observer(
     const AC_AttitudeControl::HeadingCommand& heading)
 {
     const bool reference_supported = geometric_circle_reference_supported(circle_updated, heading);
+    _geometric_circle_reference_supported = reference_supported;
+    const bool motor_output_requested = copter.circle_nav->geometric_motor_output_requested();
     const bool observer_requested = copter.geometric_control.output_enabled();
     if (!reference_supported || !observer_requested) {
+        if (reference_supported) {
+            _geometric_circle_authorization.reject_if_active(motor_output_requested);
+        }
         stop_geometric_circle_observer();
 #if HAL_LOGGING_ENABLED
         if (_geometric_circle_log_counter++ % 5 == 0) {
@@ -222,7 +246,8 @@ void ModeCircle::update_geometric_circle_observer(
     };
     AC_Geometric_State geometric_state {};
     if (!run_geometric_observer(reference, nullptr, policy, true, geometric_state)) {
-        stop_geometric_circle_observer();
+        _geometric_circle_authorization.reject_if_active(motor_output_requested);
+        _geometric_circle_authorization.stop();
 #if HAL_LOGGING_ENABLED
         if (_geometric_circle_log_counter++ % 5 == 0) {
             log_geometric_circle_observer_status(reference_supported, heading.heading_mode);
@@ -231,6 +256,12 @@ void ModeCircle::update_geometric_circle_observer(
 #endif
         return;
     }
+    _geometric_circle_update_count = copter.geometric_controller_updates();
+
+    const bool motor_output_prepared =
+        copter.geometric_control.output_is_fresh(AP_HAL::millis(), circle_geometric_output_recent_ms) &&
+        copter.geometric_motor_output_is_valid();
+    _geometric_circle_authorization.update(motor_output_prepared, motor_output_requested);
 
 #if HAL_LOGGING_ENABLED
     _geometric_circle_observer_frames++;
@@ -239,8 +270,9 @@ void ModeCircle::update_geometric_circle_observer(
         const AC_Geometric_Output& output = copter.geometric_control.get_output();
         const uint32_t geometric_age_ms = copter.geometric_control.output_age_ms(now_ms);
         const uint32_t motor_output_age_ms = copter.geometric_motor_output_age_ms(now_ms);
+        const bool motor_output_allowed = allows_geometric_motor_output();
         const bool rate_thread_active = copter.geometric_motor_output_blocked_by_rate_thread();
-        const bool motor_output_written_recently = motor_output_age_ms <= 100;
+        const bool motor_output_written_recently = motor_output_age_ms <= circle_geometric_output_recent_ms;
 
         // @LoggerMessage: GECW
         // @Description: Circle neutral reference accepted by the geometric observer
@@ -279,7 +311,7 @@ void ModeCircle::update_geometric_circle_observer(
                                     now_ms - reference.meta.timestamp_ms);
         log_geometric_circle_observer_status(true, heading.heading_mode);
         copter.Log_Write_Geometric_Attitude_Error(output.attitude);
-        copter.Log_Write_Geometric_Output_State(false,
+        copter.Log_Write_Geometric_Output_State(motor_output_allowed,
                                                 copter.geometric_control.output_enabled(),
                                                 rate_thread_active,
                                                 motor_output_written_recently,
@@ -293,6 +325,8 @@ void ModeCircle::update_geometric_circle_observer(
 
 void ModeCircle::stop_geometric_circle_observer()
 {
+    _geometric_circle_reference_supported = false;
+    _geometric_circle_authorization.stop();
     copter.geometric_control.set_enabled(false);
 }
 
@@ -336,8 +370,42 @@ void ModeCircle::log_geometric_circle_observer_status(
                                 (uint8_t)surface_tracking_active,
                                 copter.geometric_control.output_age_ms(AP_HAL::millis()),
                                 _geometric_circle_observer_frames);
+
+    // @LoggerMessage: GECA
+    // @Description: Circle geometric motor-output authorization state
+    // @Field: TimeUS: Time since system startup
+    // @Field: Req: True if CIRCLE_OPTIONS requests geometric motor output
+    // @Field: Prep: True if a fresh finite geometric output is prepared
+    // @Field: Act: True if the mode authorizes geometric motor output
+    // @Field: Rej: True if a hard-fault latch blocks geometric motor output
+    AP::logger().WriteStreaming("GECA", "TimeUS,Req,Prep,Act,Rej", "QBBBB",
+                                AP_HAL::micros64(),
+                                (uint8_t)copter.circle_nav->geometric_motor_output_requested(),
+                                (uint8_t)_geometric_circle_authorization.prepared,
+                                (uint8_t)allows_geometric_motor_output(),
+                                (uint8_t)_geometric_circle_authorization.rejected);
 }
 #endif
+
+bool ModeCircle::allows_geometric_motor_output() const
+{
+    return _geometric_circle_reference_supported &&
+           _geometric_circle_authorization.allows_output(
+               copter.circle_nav->geometric_motor_output_requested());
+}
+
+void ModeCircle::handle_geometric_motor_output_fallback()
+{
+    const bool motor_output_requested = copter.circle_nav->geometric_motor_output_requested();
+    if (motors->armed() &&
+        _geometric_circle_reference_supported &&
+        !copter.geometric_motor_output_blocked_by_rate_thread()) {
+        _geometric_circle_authorization.reject_if_active(motor_output_requested);
+    }
+    _geometric_circle_authorization.acknowledge_if_not_requested(motor_output_requested);
+    _geometric_circle_authorization.stop();
+    Mode::handle_geometric_motor_output_fallback();
+}
 
 float ModeCircle::wp_distance_m() const
 {
