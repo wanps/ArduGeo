@@ -11,6 +11,11 @@
 bool ModeCircle::init(bool ignore_checks)
 {
     speed_changing = false;
+#if HAL_LOGGING_ENABLED
+    _geometric_circle_log_counter = 0;
+    _geometric_circle_observer_frames = 0;
+#endif
+    stop_geometric_circle_observer();
 
     // set speed and acceleration limits
     pos_control->NE_set_max_speed_accel_m(wp_nav->get_default_speed_NE_ms(), wp_nav->get_wp_acceleration_mss());
@@ -40,6 +45,28 @@ bool ModeCircle::init(bool ignore_checks)
     auto_yaw.set_mode(AutoYaw::Mode::CIRCLE);
 
     return true;
+}
+
+void ModeCircle::exit()
+{
+    stop_geometric_circle_observer();
+#if HAL_LOGGING_ENABLED
+    // @LoggerMessage: GECE
+    // @Description: Circle geometric observer mode-exit cleanup and ownership snapshot
+    // @Field: TimeUS: Time since system startup
+    // @Field: Run: True if the geometric controller remains enabled
+    // @Field: Age: Geometric controller output age
+    // @Field: MFrm: Cumulative main-loop rate-controller frames
+    // @Field: GFrm: Cumulative geometric motor-output frames
+    // @Field: NFrm: Cumulative native rate-controller frames
+    AP::logger().Write("GECE", "TimeUS,Run,Age,MFrm,GFrm,NFrm", "QBIIII",
+                       AP_HAL::micros64(),
+                       (uint8_t)copter.geometric_control.enabled(),
+                       copter.geometric_control.output_age_ms(AP_HAL::millis()),
+                       copter.main_rate_controller_frames(),
+                       copter.geometric_motor_output_frames(),
+                       copter.native_rate_controller_frames());
+#endif
 }
 
 // circle_run - runs the circle flight mode
@@ -112,6 +139,15 @@ void ModeCircle::run()
     // if not armed set throttle to zero and exit immediately
     if (is_disarmed_or_landed()) {
         make_safe_ground_handling();
+        stop_geometric_circle_observer();
+#if HAL_LOGGING_ENABLED
+        if (_geometric_circle_log_counter++ % 5 == 0) {
+            log_geometric_circle_observer_status(
+                false,
+                static_cast<AC_AttitudeControl::HeadingMode>(UINT8_MAX));
+            copter.Log_Write_Geometric_Frame_Counters();
+        }
+#endif
         return;
     }
 
@@ -123,12 +159,185 @@ void ModeCircle::run()
     copter.surface_tracking.update_surface_offset();
 #endif
 
-    copter.failsafe_terrain_set_status(copter.circle_nav->update_ms(target_climb_rate_ms));
+    const bool circle_updated = copter.circle_nav->update_ms(target_climb_rate_ms);
+    copter.failsafe_terrain_set_status(circle_updated);
     pos_control->D_update_controller();
 
-    // call attitude controller with auto yaw
-    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), auto_yaw.get_heading());
+    // Use the same final AutoYaw command for the native controller and the
+    // geometric observer so observation cannot reinterpret Circle yaw semantics.
+    const AC_AttitudeControl::HeadingCommand heading = auto_yaw.get_heading();
+    attitude_control->input_thrust_vector_heading(pos_control->get_thrust_vector(), heading);
+    update_geometric_circle_observer(circle_updated, heading);
 }
+
+bool ModeCircle::geometric_circle_reference_supported(
+    bool circle_updated,
+    const AC_AttitudeControl::HeadingCommand& heading) const
+{
+    if (copter.flightmode != this ||
+        !circle_updated ||
+        copter.circle_nav->center_is_terrain_alt() ||
+        copter.is_tradheli() ||
+        copter.geometric_motor_output_blocked_by_rate_thread()) {
+        return false;
+    }
+#if AP_RANGEFINDER_ENABLED
+    if (copter.surface_tracking.active()) {
+        return false;
+    }
+#endif
+    return heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_Only ||
+           heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate;
+}
+
+void ModeCircle::update_geometric_circle_observer(
+    bool circle_updated,
+    const AC_AttitudeControl::HeadingCommand& heading)
+{
+    const bool reference_supported = geometric_circle_reference_supported(circle_updated, heading);
+    const bool observer_requested = copter.geometric_control.output_enabled();
+    if (!reference_supported || !observer_requested) {
+        stop_geometric_circle_observer();
+#if HAL_LOGGING_ENABLED
+        if (_geometric_circle_log_counter++ % 5 == 0) {
+            log_geometric_circle_observer_status(reference_supported, heading.heading_mode);
+            copter.Log_Write_Geometric_Frame_Counters();
+        }
+#endif
+        return;
+    }
+
+    AC_TrajectoryReference reference;
+    reference.meta = make_control_reference_meta(AC_ControlReferenceCapability::TRAJECTORY);
+    reference.position_ned_m = pos_control->get_pos_desired_NED_m();
+    reference.velocity_ned_ms = pos_control->get_vel_desired_NED_ms();
+    reference.acceleration_ned_mss = pos_control->get_accel_desired_NED_mss();
+    reference.heading = heading;
+
+    const AC_GeometricReferencePolicy policy {
+        true,
+        false,
+        false,
+        false
+    };
+    AC_Geometric_State geometric_state {};
+    if (!run_geometric_observer(reference, nullptr, policy, true, geometric_state)) {
+        stop_geometric_circle_observer();
+#if HAL_LOGGING_ENABLED
+        if (_geometric_circle_log_counter++ % 5 == 0) {
+            log_geometric_circle_observer_status(reference_supported, heading.heading_mode);
+            copter.Log_Write_Geometric_Frame_Counters();
+        }
+#endif
+        return;
+    }
+
+#if HAL_LOGGING_ENABLED
+    _geometric_circle_observer_frames++;
+    if (_geometric_circle_log_counter++ % 5 == 0) {
+        const uint32_t now_ms = AP_HAL::millis();
+        const AC_Geometric_Output& output = copter.geometric_control.get_output();
+        const uint32_t geometric_age_ms = copter.geometric_control.output_age_ms(now_ms);
+        const uint32_t motor_output_age_ms = copter.geometric_motor_output_age_ms(now_ms);
+        const bool rate_thread_active = copter.geometric_motor_output_blocked_by_rate_thread();
+        const bool motor_output_written_recently = motor_output_age_ms <= 100;
+
+        // @LoggerMessage: GECW
+        // @Description: Circle neutral reference accepted by the geometric observer
+        // @Field: TimeUS: Time since system startup
+        // @Field: PX: Native desired local NED position, X-Axis
+        // @Field: PY: Native desired local NED position, Y-Axis
+        // @Field: PZ: Native desired local NED position, Z-Axis
+        // @Field: VX: Native desired local NED velocity, X-Axis
+        // @Field: VY: Native desired local NED velocity, Y-Axis
+        // @Field: VZ: Native desired local NED velocity, Z-Axis
+        // @Field: AX: Native desired local NED acceleration, X-Axis
+        // @Field: AY: Native desired local NED acceleration, Y-Axis
+        // @Field: AZ: Native desired local NED acceleration, Z-Axis
+        // @Field: Yaw: Final Native AutoYaw angle reference
+        // @Field: YR: Final Native AutoYaw rate reference
+        // @Field: Frm: Neutral reference frame
+        // @Field: Cap: Neutral reference capability
+        // @Field: HMode: Heading command semantic mode
+        // @Field: Age: Neutral reference age
+        AP::logger().WriteStreaming("GECW", "TimeUS,PX,PY,PZ,VX,VY,VZ,AX,AY,AZ,Yaw,YR,Frm,Cap,HMode,Age", "QfffffffffffBBBI",
+                                    AP_HAL::micros64(),
+                                    (double)reference.position_ned_m.x,
+                                    (double)reference.position_ned_m.y,
+                                    (double)reference.position_ned_m.z,
+                                    (double)reference.velocity_ned_ms.x,
+                                    (double)reference.velocity_ned_ms.y,
+                                    (double)reference.velocity_ned_ms.z,
+                                    (double)reference.acceleration_ned_mss.x,
+                                    (double)reference.acceleration_ned_mss.y,
+                                    (double)reference.acceleration_ned_mss.z,
+                                    (double)reference.heading.yaw_angle_rad,
+                                    (double)reference.heading.yaw_rate_rads,
+                                    (uint8_t)reference.meta.frame,
+                                    (uint8_t)reference.meta.capability,
+                                    (uint8_t)reference.heading.heading_mode,
+                                    now_ms - reference.meta.timestamp_ms);
+        log_geometric_circle_observer_status(true, heading.heading_mode);
+        copter.Log_Write_Geometric_Attitude_Error(output.attitude);
+        copter.Log_Write_Geometric_Output_State(false,
+                                                copter.geometric_control.output_enabled(),
+                                                rate_thread_active,
+                                                motor_output_written_recently,
+                                                geometric_age_ms,
+                                                motor_output_age_ms,
+                                                output.mapped);
+        copter.Log_Write_Geometric_Frame_Counters();
+    }
+#endif
+}
+
+void ModeCircle::stop_geometric_circle_observer()
+{
+    copter.geometric_control.set_enabled(false);
+}
+
+#if HAL_LOGGING_ENABLED
+void ModeCircle::log_geometric_circle_observer_status(
+    bool reference_supported,
+    AC_AttitudeControl::HeadingMode heading_mode)
+{
+#if AP_RANGEFINDER_ENABLED
+    const bool surface_tracking_active = copter.surface_tracking.active();
+#else
+    const bool surface_tracking_active = false;
+#endif
+
+    // @LoggerMessage: GECS
+    // @Description: Circle geometric observer support and cache status
+    // @Field: TimeUS: Time since system startup
+    // @Field: Rad: Current Circle radius
+    // @Field: Rate: Current Circle angular rate
+    // @Field: Run: True if the geometric controller is enabled
+    // @Field: Sup: True if the current Circle reference is structurally supported
+    // @Field: Req: True if GEO_OUT_EN requests geometric observation
+    // @Field: AutoY: Native AutoYaw mode
+    // @Field: HMode: Heading command semantic mode
+    // @Field: Shp: True if the geometric controller reshaped the Native reference
+    // @Field: Terr: True if the Circle center altitude is terrain-relative
+    // @Field: Surf: True if rangefinder surface tracking is active
+    // @Field: Age: Geometric controller output age
+    // @Field: CFrm: Cumulative Circle geometric calculation frames
+    AP::logger().WriteStreaming("GECS", "TimeUS,Rad,Rate,Run,Sup,Req,AutoY,HMode,Shp,Terr,Surf,Age,CFrm", "QffBBBBBBBBII",
+                                AP_HAL::micros64(),
+                                (double)copter.circle_nav->get_radius_m(),
+                                (double)copter.circle_nav->get_rate_current(),
+                                (uint8_t)copter.geometric_control.enabled(),
+                                (uint8_t)reference_supported,
+                                (uint8_t)copter.geometric_control.output_enabled(),
+                                (uint8_t)auto_yaw.mode(),
+                                (uint8_t)heading_mode,
+                                (uint8_t)copter.geometric_control.shaper_active(),
+                                (uint8_t)copter.circle_nav->center_is_terrain_alt(),
+                                (uint8_t)surface_tracking_active,
+                                copter.geometric_control.output_age_ms(AP_HAL::millis()),
+                                _geometric_circle_observer_frames);
+}
+#endif
 
 float ModeCircle::wp_distance_m() const
 {
