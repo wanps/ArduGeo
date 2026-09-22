@@ -496,8 +496,10 @@ bool ModeRTL::geometric_wpnav_reference_supported(const AC_AttitudeControl::Head
 // RTL only ever selects AutoYaw HOLD or RESET_TO_ARMED_YAW, and only HOLD maps
 // to Rate_Only.  HOLD carries a zero rate, so the command means "hold the
 // current heading" and the mode can own an absolute yaw reference for it.  A
-// non-zero rate is a semantic this stage does not own and fails closed to
-// Native, as does any other AutoYaw mode that reaches Rate_Only.
+// non-zero rate is not an owned semantic and fails closed to Native, as does
+// any other AutoYaw mode that reaches Rate_Only.  Pilot yaw input latches
+// AutoYaw into PILOT_RATE for the remainder of the mode, so a stick touch
+// keeps the heading Native for the rest of that RTL.
 bool ModeRTL::geometric_wpnav_rate_only_heading_supported(const AC_AttitudeControl::HeadingCommand& heading) const
 {
     return heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only &&
@@ -569,14 +571,7 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
     const bool motor_output_prepared =
         copter.geometric_control.output_is_fresh(AP_HAL::millis(), rtl_wpnav_geometric_output_recent_ms) &&
         copter.geometric_motor_output_is_valid();
-    if (_geometric_wpnav_rate_only_heading) {
-        // Observer-first gate.  stop() clears prepared/active and preserves an
-        // existing hard-fault latch, which is the established treatment for a
-        // structurally unsupported period.
-        _geometric_wpnav_authorization.stop();
-    } else {
-        _geometric_wpnav_authorization.update(motor_output_prepared, motor_output_requested);
-    }
+    _geometric_wpnav_authorization.update(motor_output_prepared, motor_output_requested);
 
 #if HAL_LOGGING_ENABLED
     _geometric_wpnav_observer_frames++;
@@ -697,9 +692,6 @@ void ModeRTL::log_geometric_wpnav_observer_status(bool reference_supported,
 bool ModeRTL::allows_geometric_motor_output() const
 {
     return _geometric_wpnav_reference_supported &&
-           // Rate-only heading support is observer-only until it has its own
-           // active-ownership review.  Motor output stays Native.
-           !_geometric_wpnav_rate_only_heading &&
            _geometric_wpnav_authorization.allows_output(
                option_is_enabled(Option::GeometricMotorOutput));
 }

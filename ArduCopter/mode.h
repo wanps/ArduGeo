@@ -1840,10 +1840,10 @@ private:
     bool terrain_following_allowed;
 
     bool _geometric_wpnav_reference_supported = false;
-    // Rate-only heading observation.  RTL drives AutoYaw HOLD on its WPNav
+    // Rate-only heading ownership.  RTL drives AutoYaw HOLD on its WPNav
     // phases, so a rate-only command with a zero rate means "hold the current
-    // heading".  The mode owns that absolute yaw reference.  This path is
-    // observer-only and never authorises geometric motor output.
+    // heading".  The mode owns that absolute yaw reference and authorises
+    // geometric output from it under the usual opt-in and freshness gates.
     bool _geometric_wpnav_rate_only_heading = false;
     bool _geometric_wpnav_rate_only_yaw_valid = false;
     float _geometric_wpnav_rate_only_yaw_rad = 0.0f;
