@@ -1277,6 +1277,8 @@ public:
     bool wp_destination_reached() const;
     void restore_native_position_control_after_geometric(bool reset_geometric_controller = true);
     bool publish_geometric_position_reference();
+    void init_geometric_ekf_reset_tracking();
+    void handle_geometric_ekf_resets();
     bool update_geometric_observer(const AC_TrajectoryReference& trajectory_reference,
                                    const AC_AttitudeReference* attitude_reference,
                                    const AC_GeometricReferencePolicy& policy);
@@ -1380,6 +1382,14 @@ private:
     uint32_t _geometric_prearm_native_frames = 0;
     bool _geometric_prearm_snapshot_valid = false;
     bool _geometric_arm_frame_logged = false;
+    uint32_t _geometric_ekf_ne_reset_ms = 0;
+    uint32_t _geometric_ekf_d_reset_ms = 0;
+    uint32_t _geometric_ekf_yaw_reset_ms = 0;
+    // Measured yaw sampled on the previous geometric frame.  A yaw reset
+    // shifts the held yaw targets by the step the estimate actually took,
+    // which preserves their tracking error the way Native does.
+    float _geometric_yaw_measured_rad = 0.0f;
+    bool _geometric_yaw_measured_valid = false;
 };
 
 #if AP_SCRIPTING_ENABLED

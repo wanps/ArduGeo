@@ -32,6 +32,11 @@ public:
     // geometric altitude target when this is clearly a horizontal move.
     const Vector3p& set_destination_target(const Vector3p& position_ned_m, bool is_terrain_alt);
 
+    // Applies an EKF-frame reset delta to the held target.  The stored target
+    // decides how a later horizontal- or vertical-only destination reuses the
+    // previous axes, so it has to follow the frame it was captured in.
+    void shift_position_target(const Vector3f& position_delta_ned_m);
+
     bool target_valid() const { return _target_valid; }
     const Vector3p& position_target_ned_m() const { return _position_target_ned_m; }
     bool is_terrain_alt() const { return _is_terrain_alt; }
