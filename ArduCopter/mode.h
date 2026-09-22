@@ -1585,6 +1585,11 @@ private:
     uint32_t _geometric_ekf_ne_reset_ms = 0;
     uint32_t _geometric_ekf_d_reset_ms = 0;
     uint32_t _geometric_ekf_yaw_reset_ms = 0;
+    // Yaw reference minus measured yaw, sampled on the previous geometric
+    // frame.  An EKF yaw reset re-anchors the reference so this error is
+    // preserved, which is the Native AC_AttitudeControl semantic.
+    float _geometric_yaw_tracking_error_rad = 0.0f;
+    bool _geometric_yaw_tracking_error_valid = false;
     uint8_t _geometric_log_counter = 0;
     uint32_t _geometric_reference_frames = 0;
     uint32_t _native_reference_frames = 0;

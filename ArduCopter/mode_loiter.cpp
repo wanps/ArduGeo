@@ -399,6 +399,7 @@ void ModeLoiter::init_geometric_ekf_reset_tracking()
     _geometric_ekf_ne_reset_ms = ahrs.getLastPosNorthEastReset(position_shift_ne_m);
     _geometric_ekf_d_reset_ms = ahrs.getLastPosDownReset(position_shift_d_m);
     _geometric_ekf_yaw_reset_ms = ahrs.getLastYawResetAngle(yaw_shift_rad);
+    _geometric_yaw_tracking_error_valid = false;
 }
 
 bool ModeLoiter::handle_geometric_ekf_resets()
@@ -432,11 +433,35 @@ bool ModeLoiter::handle_geometric_ekf_resets()
         yaw_shift_rad = 0.0f;
     } else {
         _geometric_ekf_yaw_reset_ms = yaw_reset_ms;
+        // The reported delta is not applied directly.  A yaw reset
+        // notification does not guarantee that the published yaw estimate
+        // stepped by that amount, and an unconditional shift then turns the
+        // aircraft by the reported angle.  Native never consumes the value
+        // either: AC_AttitudeControl::inertial_frame_reset() re-anchors the
+        // attitude target to the current attitude and keeps the body-frame
+        // error.  Mirror that here so the reference only moves when the
+        // estimate actually moved.
+        if (_geometric_yaw_tracking_error_valid) {
+            const float anchored_yaw_rad = wrap_PI(ahrs.get_yaw_rad() +
+                                                   _geometric_yaw_tracking_error_rad);
+            yaw_shift_rad = wrap_PI(anchored_yaw_rad - _geometric_reference.yaw_ref_rad());
+        } else {
+            // No sampled error to preserve yet: hold the reference still
+            // rather than command an unverified turn.
+            yaw_shift_rad = 0.0f;
+        }
         shifted = true;
     }
 
-    return !shifted || _geometric_reference.shift_reference(position_shift_ned_m,
-                                                             yaw_shift_rad);
+    if (shifted && !_geometric_reference.shift_reference(position_shift_ned_m,
+                                                         yaw_shift_rad)) {
+        return false;
+    }
+
+    _geometric_yaw_tracking_error_rad = wrap_PI(_geometric_reference.yaw_ref_rad() -
+                                                ahrs.get_yaw_rad());
+    _geometric_yaw_tracking_error_valid = true;
+    return true;
 }
 
 AC_Geometric_LoiterReference_Limits ModeLoiter::geometric_reference_limits() const
