@@ -65,6 +65,18 @@ const Vector3p& AC_Geometric_GuidedTargetManager::set_destination_target(const V
     return _position_target_ned_m;
 }
 
+void AC_Geometric_GuidedTargetManager::shift_position_target(const Vector3f& position_delta_ned_m)
+{
+    if (!_target_valid ||
+        position_delta_ned_m.is_nan() ||
+        position_delta_ned_m.is_inf()) {
+        return;
+    }
+    _position_target_ned_m.x += position_delta_ned_m.x;
+    _position_target_ned_m.y += position_delta_ned_m.y;
+    _position_target_ned_m.z += position_delta_ned_m.z;
+}
+
 bool AC_Geometric_GuidedTargetManager::is_horizontal_destination(const Vector3p& position_ned_m, bool is_terrain_alt) const
 {
     if (!_target_valid || _is_terrain_alt || is_terrain_alt) {

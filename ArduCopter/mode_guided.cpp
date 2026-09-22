@@ -92,6 +92,7 @@ bool ModeGuided::init(bool ignore_checks)
     _geometric_prearm_native_frames = 0;
     _geometric_prearm_snapshot_valid = false;
     _geometric_arm_frame_logged = false;
+    init_geometric_ekf_reset_tracking();
     copter.geometric_control.reset();
     guided_geometric_heading_mode = 0;
     guided_geometric_trajectory_yaw_allowed = false;
@@ -185,6 +186,10 @@ void ModeGuided::run()
         is_disarmed_or_landed()) {
         update_geometric_ground_safe_observer();
     }
+
+    // Held geometric targets are absolute NED/yaw quantities.  Reconcile them
+    // with any EKF frame reset before a submode reads them.
+    handle_geometric_ekf_resets();
 
     // run pause control if the vehicle is paused
     if (_paused) {
@@ -399,6 +404,94 @@ bool ModeGuided::geometric_position_control_active() const
         return false;
     }
     return !copter.geometric_motor_output_blocked_by_rate_thread();
+}
+
+void ModeGuided::init_geometric_ekf_reset_tracking()
+{
+    Vector2f position_shift_ne_m;
+    float position_shift_d_m = 0.0f;
+    float yaw_shift_rad = 0.0f;
+    _geometric_ekf_ne_reset_ms = ahrs.getLastPosNorthEastReset(position_shift_ne_m);
+    _geometric_ekf_d_reset_ms = ahrs.getLastPosDownReset(position_shift_d_m);
+    _geometric_ekf_yaw_reset_ms = ahrs.getLastYawResetAngle(yaw_shift_rad);
+    _geometric_yaw_measured_valid = false;
+}
+
+// Guided latches absolute NED position and absolute yaw for its geometric
+// hold references.  Unlike AUTO, RTL and Circle, which re-read AC_PosControl's
+// desired PVA every frame and therefore inherit its reset correction, these
+// latches are only as valid as the EKF frame they were captured in.
+void ModeGuided::handle_geometric_ekf_resets()
+{
+    if (!geometric_position_control_active()) {
+        // Native owns the output on this frame, so Native reconciles its own
+        // targets.  Re-snapshot instead of accumulating, so a reset consumed
+        // while Native was flying cannot be replayed on geometric re-entry.
+        init_geometric_ekf_reset_tracking();
+        return;
+    }
+
+    Vector3f position_shift_ned_m;
+    bool position_shifted = false;
+
+    Vector2f position_shift_ne_m;
+    const uint32_t ne_reset_ms = ahrs.getLastPosNorthEastReset(position_shift_ne_m);
+    if (ne_reset_ms != 0 && ne_reset_ms != _geometric_ekf_ne_reset_ms) {
+        position_shift_ned_m.x = position_shift_ne_m.x;
+        position_shift_ned_m.y = position_shift_ne_m.y;
+        _geometric_ekf_ne_reset_ms = ne_reset_ms;
+        position_shifted = true;
+    }
+
+    float position_shift_d_m = 0.0f;
+    const uint32_t d_reset_ms = ahrs.getLastPosDownReset(position_shift_d_m);
+    if (d_reset_ms != 0 && d_reset_ms != _geometric_ekf_d_reset_ms) {
+        position_shift_ned_m.z = position_shift_d_m;
+        _geometric_ekf_d_reset_ms = d_reset_ms;
+        position_shifted = true;
+    }
+
+    if (position_shifted &&
+        !position_shift_ned_m.is_nan() &&
+        !position_shift_ned_m.is_inf()) {
+        guided_pos_target_ned_m.x += position_shift_ned_m.x;
+        guided_pos_target_ned_m.y += position_shift_ned_m.y;
+        guided_pos_target_ned_m.z += position_shift_ned_m.z;
+        if (guided_pause_pos_valid) {
+            guided_pause_pos_ned_m.x += position_shift_ned_m.x;
+            guided_pause_pos_ned_m.y += position_shift_ned_m.y;
+            guided_pause_pos_ned_m.z += position_shift_ned_m.z;
+        }
+        guided_geometric_land_hold_ned_m.x += position_shift_ned_m.x;
+        guided_geometric_land_hold_ned_m.y += position_shift_ned_m.y;
+        guided_geometric_land_hold_ned_m.z += position_shift_ned_m.z;
+        guided_geometric_target_manager.shift_position_target(position_shift_ned_m);
+    }
+
+    // The reported yaw delta is not applied.  A reset notification does not
+    // guarantee the published estimate stepped by that amount, so the step the
+    // estimate actually took is used instead.  That keeps each held target's
+    // tracking error unchanged, which is what
+    // AC_AttitudeControl::inertial_frame_reset() does for the Native target.
+    float reported_yaw_shift_rad = 0.0f;
+    const uint32_t yaw_reset_ms = ahrs.getLastYawResetAngle(reported_yaw_shift_rad);
+    const float measured_yaw_rad = ahrs.get_yaw_rad();
+    if (yaw_reset_ms != 0 && yaw_reset_ms != _geometric_ekf_yaw_reset_ms) {
+        _geometric_ekf_yaw_reset_ms = yaw_reset_ms;
+        if (_geometric_yaw_measured_valid && isfinite(measured_yaw_rad)) {
+            const float observed_step_rad = wrap_PI(measured_yaw_rad - _geometric_yaw_measured_rad);
+            guided_geometric_land_yaw_rad = wrap_PI(guided_geometric_land_yaw_rad + observed_step_rad);
+            if (guided_pause_yaw_valid) {
+                guided_pause_yaw_rad = wrap_PI(guided_pause_yaw_rad + observed_step_rad);
+            }
+        }
+        // Without a sampled measurement the held yaw is left alone rather than
+        // moved by an unverified angle.
+    }
+    if (isfinite(measured_yaw_rad)) {
+        _geometric_yaw_measured_rad = measured_yaw_rad;
+        _geometric_yaw_measured_valid = true;
+    }
 }
 
 bool ModeGuided::wp_destination_reached() const

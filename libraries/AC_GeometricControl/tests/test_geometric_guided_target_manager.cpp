@@ -162,4 +162,36 @@ TEST(AC_Geometric_GuidedTargetManager, ResetClearsTrajectoryYaw)
     EXPECT_FALSE(manager.trajectory_yaw_allowed());
 }
 
+TEST(AC_Geometric_GuidedTargetManager, ShiftPositionTargetFollowsFrameReset)
+{
+    AC_Geometric_GuidedTargetManager manager;
+
+    manager.set_position_target(Vector3p{10.0, -4.0, -6.0}, false);
+    manager.shift_position_target(Vector3f{1.5f, 2.5f, -0.5f});
+
+    const Vector3p& stored = manager.position_target_ned_m();
+    EXPECT_DOUBLE_EQ(stored.x, 11.5);
+    EXPECT_DOUBLE_EQ(stored.y, -1.5);
+    EXPECT_DOUBLE_EQ(stored.z, -6.5);
+}
+
+TEST(AC_Geometric_GuidedTargetManager, ShiftPositionTargetIgnoresInvalidTargetAndDelta)
+{
+    AC_Geometric_GuidedTargetManager manager;
+
+    // No target captured yet: the shift has nothing to reconcile.
+    manager.shift_position_target(Vector3f{1.0f, 1.0f, 1.0f});
+    EXPECT_FALSE(manager.target_valid());
+    EXPECT_DOUBLE_EQ(manager.position_target_ned_m().x, 0.0);
+
+    manager.set_position_target(Vector3p{3.0, 4.0, -7.0}, false);
+    manager.shift_position_target(Vector3f{NAN, 0.0f, 0.0f});
+    manager.shift_position_target(Vector3f{0.0f, INFINITY, 0.0f});
+
+    const Vector3p& stored = manager.position_target_ned_m();
+    EXPECT_DOUBLE_EQ(stored.x, 3.0);
+    EXPECT_DOUBLE_EQ(stored.y, 4.0);
+    EXPECT_DOUBLE_EQ(stored.z, -7.0);
+}
+
 AP_GTEST_MAIN()
