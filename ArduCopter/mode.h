@@ -1802,6 +1802,7 @@ private:
     void build_path();
     void compute_return_target();
     bool geometric_wpnav_reference_supported(const AC_AttitudeControl::HeadingCommand& heading) const;
+    bool geometric_wpnav_rate_only_heading_supported(const AC_AttitudeControl::HeadingCommand& heading) const;
     void update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingCommand& heading);
     void stop_geometric_wpnav_observer(bool log_unsupported = false);
 #if HAL_LOGGING_ENABLED
@@ -1839,6 +1840,13 @@ private:
     bool terrain_following_allowed;
 
     bool _geometric_wpnav_reference_supported = false;
+    // Rate-only heading observation.  RTL drives AutoYaw HOLD on its WPNav
+    // phases, so a rate-only command with a zero rate means "hold the current
+    // heading".  The mode owns that absolute yaw reference.  This path is
+    // observer-only and never authorises geometric motor output.
+    bool _geometric_wpnav_rate_only_heading = false;
+    bool _geometric_wpnav_rate_only_yaw_valid = false;
+    float _geometric_wpnav_rate_only_yaw_rad = 0.0f;
     GeometricTrajectoryAuthorizationState _geometric_wpnav_authorization;
     uint32_t _geometric_wpnav_update_count = 0;
 

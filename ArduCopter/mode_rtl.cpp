@@ -489,13 +489,28 @@ bool ModeRTL::geometric_wpnav_reference_supported(const AC_AttitudeControl::Head
            !copter.is_tradheli() &&
            !copter.geometric_motor_output_blocked_by_rate_thread() &&
            (heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_Only ||
-            heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate);
+            heading.heading_mode == AC_AttitudeControl::HeadingMode::Angle_And_Rate ||
+            geometric_wpnav_rate_only_heading_supported(heading));
+}
+
+// RTL only ever selects AutoYaw HOLD or RESET_TO_ARMED_YAW, and only HOLD maps
+// to Rate_Only.  HOLD carries a zero rate, so the command means "hold the
+// current heading" and the mode can own an absolute yaw reference for it.  A
+// non-zero rate is a semantic this stage does not own and fails closed to
+// Native, as does any other AutoYaw mode that reaches Rate_Only.
+bool ModeRTL::geometric_wpnav_rate_only_heading_supported(const AC_AttitudeControl::HeadingCommand& heading) const
+{
+    return heading.heading_mode == AC_AttitudeControl::HeadingMode::Rate_Only &&
+           auto_yaw.mode() == AutoYaw::Mode::HOLD &&
+           is_zero(heading.yaw_rate_rads);
 }
 
 void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingCommand& heading)
 {
     const bool reference_supported = geometric_wpnav_reference_supported(heading);
     _geometric_wpnav_reference_supported = reference_supported;
+    _geometric_wpnav_rate_only_heading = reference_supported &&
+                                         geometric_wpnav_rate_only_heading_supported(heading);
     const bool motor_output_requested = option_is_enabled(Option::GeometricMotorOutput);
     const bool observer_requested = copter.geometric_control.output_enabled();
     if (!reference_supported || !observer_requested) {
@@ -518,6 +533,18 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
     reference.velocity_ned_ms = pos_control->get_vel_desired_NED_ms();
     reference.acceleration_ned_mss = pos_control->get_accel_desired_NED_mss();
     reference.heading = heading;
+    if (_geometric_wpnav_rate_only_heading) {
+        // Latch once on entry and hold.  The AHRS yaw is used rather than a
+        // read-back of the Native attitude target, matching the Loiter
+        // geometric reference and the Guided rate-only substitution.
+        if (!_geometric_wpnav_rate_only_yaw_valid) {
+            _geometric_wpnav_rate_only_yaw_rad = ahrs.get_yaw_rad();
+            _geometric_wpnav_rate_only_yaw_valid = true;
+        }
+        reference.heading.yaw_angle_rad = _geometric_wpnav_rate_only_yaw_rad;
+        reference.heading.yaw_rate_rads = 0.0f;
+        reference.heading.heading_mode = AC_AttitudeControl::HeadingMode::Angle_Only;
+    }
 
     const AC_GeometricReferencePolicy policy {
         true,
@@ -542,7 +569,14 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
     const bool motor_output_prepared =
         copter.geometric_control.output_is_fresh(AP_HAL::millis(), rtl_wpnav_geometric_output_recent_ms) &&
         copter.geometric_motor_output_is_valid();
-    _geometric_wpnav_authorization.update(motor_output_prepared, motor_output_requested);
+    if (_geometric_wpnav_rate_only_heading) {
+        // Observer-first gate.  stop() clears prepared/active and preserves an
+        // existing hard-fault latch, which is the established treatment for a
+        // structurally unsupported period.
+        _geometric_wpnav_authorization.stop();
+    } else {
+        _geometric_wpnav_authorization.update(motor_output_prepared, motor_output_requested);
+    }
 
 #if HAL_LOGGING_ENABLED
     _geometric_wpnav_observer_frames++;
@@ -607,6 +641,8 @@ void ModeRTL::update_geometric_wpnav_observer(const AC_AttitudeControl::HeadingC
 void ModeRTL::stop_geometric_wpnav_observer(bool log_unsupported)
 {
     _geometric_wpnav_reference_supported = false;
+    _geometric_wpnav_rate_only_heading = false;
+    _geometric_wpnav_rate_only_yaw_valid = false;
     _geometric_wpnav_authorization.stop();
     copter.geometric_control.set_enabled(false);
 #if HAL_LOGGING_ENABLED
@@ -639,7 +675,8 @@ void ModeRTL::log_geometric_wpnav_observer_status(bool reference_supported,
     // @Field: Shp: True if the geometric controller reshaped the Native reference
     // @Field: Age: Geometric controller output age
     // @Field: CFrm: Cumulative RTL WPNav geometric calculation frames
-    AP::logger().WriteStreaming("GERS", "TimeUS,Phs,Run,Sup,Req,Prep,Act,Rej,AutoY,HMode,Shp,Age,CFrm", "QBBBBBBBBBBII",
+    // @Field: RoY: True while an owned absolute yaw replaces a rate-only heading
+    AP::logger().WriteStreaming("GERS", "TimeUS,Phs,Run,Sup,Req,Prep,Act,Rej,AutoY,HMode,Shp,Age,CFrm,RoY", "QBBBBBBBBBBIIB",
                                 AP_HAL::micros64(),
                                 (uint8_t)_state,
                                 (uint8_t)copter.geometric_control.enabled(),
@@ -652,13 +689,17 @@ void ModeRTL::log_geometric_wpnav_observer_status(bool reference_supported,
                                 (uint8_t)heading_mode,
                                 (uint8_t)copter.geometric_control.shaper_active(),
                                 copter.geometric_control.output_age_ms(AP_HAL::millis()),
-                                _geometric_wpnav_observer_frames);
+                                _geometric_wpnav_observer_frames,
+                                (uint8_t)_geometric_wpnav_rate_only_heading);
 }
 #endif
 
 bool ModeRTL::allows_geometric_motor_output() const
 {
     return _geometric_wpnav_reference_supported &&
+           // Rate-only heading support is observer-only until it has its own
+           // active-ownership review.  Motor output stays Native.
+           !_geometric_wpnav_rate_only_heading &&
            _geometric_wpnav_authorization.allows_output(
                option_is_enabled(Option::GeometricMotorOutput));
 }
