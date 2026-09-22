@@ -17385,6 +17385,152 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
         self.context_pop()
         self.reboot_sitl()
 
+    def GeometricRTLWPNavRateOnlyMotorOutput(self):
+        '''test RTL WPNav geometric ownership with a rate-only HOLD heading'''
+        def timestamp_us():
+            return int(self.get_sim_time() * 1000000)
+
+        def log_window(label, duration_s, settle_s=0.2):
+            self.delay_sim_time(settle_s, reason="settle before %s" % label)
+            start_us = timestamp_us()
+            self.delay_sim_time(duration_s, reason=label)
+            self.assert_mode("RTL")
+            if not self.armed(cached=True):
+                raise NotAchievedException("Vehicle disarmed during %s" % label)
+            return start_us, timestamp_us()
+
+        observer_options = 0
+        active_options = 1 << 8
+        self.context_push()
+        self.set_parameters({
+            "AUTO_OPTIONS": 0,
+            "FSTRATE_ENABLE": 0,
+            "GEO_OUT_EN": 1,
+            "GEO_SHAPE_EN": 1,
+            "GEO_POS_KX_XY": 1.0,
+            "GEO_POS_KV_XY": 2.0,
+            "GEO_ATT_KR_X": 4.0,
+            "GEO_ATT_KR_Y": 4.0,
+            "GEO_ATT_KR_Z": 2.0,
+            "GEO_ATT_KO_X": 0.2,
+            "GEO_ATT_KO_Y": 0.2,
+            "GEO_ATT_KO_Z": 0.4,
+            "GEO_HOV_THR": 0.0,
+            "GEO_MOM_NORM_X": 4.0,
+            "GEO_MOM_NORM_Y": 4.0,
+            "GEO_MOM_NORM_Z": 2.0,
+            "GUID_OPTIONS": 0,
+            "LOIT_OPTIONS": 0,
+            "PLND_ENABLED": 0,
+            "RTL_ALT_FINAL_M": 5,
+            "RTL_ALT_M": 25,
+            "RTL_ALT_TYPE": 0,
+            "RTL_CLIMB_MIN_M": 10,
+            "RTL_LOIT_TIME": 8000,
+            "RTL_OPTIONS": active_options,
+            "RTL_SPEED_MS": 5,
+            "SIM_FLOAT_EXCEPT": 0,
+            "SIM_TERRAIN": 0,
+            # The ArduPilot default.  AutoYaw is HOLD during RTL, so the
+            # heading command reaching the geometric path is Rate_Only.
+            "WP_YAW_BEHAVIOR": 2,
+        })
+        self.reboot_sitl()
+
+        windows = {}
+        self.takeoff(10, mode="GUIDED")
+        self.fly_guided_move_local(200, 0, 10)
+        self.change_mode("RTL")
+        self.zero_throttle()
+        windows["initial-climb"] = log_window("RTL rate-only Initial Climb", 0.8)
+        self.wait_altitude(24, 27, relative=True, timeout=60)
+        self.wait_distance_to_home(0, 190, timeout=60)
+        windows["return-home"] = log_window("RTL rate-only active Return Home", 0.8)
+
+        self.set_parameter("RTL_OPTIONS", observer_options)
+        windows["observer-only"] = log_window("RTL rate-only observer-only", 0.6)
+        self.set_parameter("RTL_OPTIONS", active_options)
+        windows["reenabled"] = log_window("RTL rate-only re-enabled", 0.8)
+
+        # Pilot yaw latches AutoYaw into PILOT_RATE, which is not an owned
+        # rate-only semantic, so the heading must fall back to Native.
+        yaw_channel = int(self.get_parameter("RCMAP_YAW"))
+        yaw_trim = int(self.get_parameter("RC%u_TRIM" % yaw_channel))
+        self.set_rc(yaw_channel, min(2000, yaw_trim + 200))
+        windows["pilot-yaw"] = log_window("RTL pilot yaw Native handoff", 0.6)
+        self.set_rc(yaw_channel, yaw_trim)
+
+        self.wait_distance_to_home(0, 3, timeout=120)
+        windows["loiter-home"] = log_window("RTL rate-only Loiter At Home", 0.8, settle_s=4.0)
+        self.wait_altitude(5, 23, relative=True, timeout=60)
+        windows["final-descent"] = log_window("RTL Final Descent Native handoff", 0.8)
+        self.change_mode("LAND")
+        self.wait_disarmed(timeout=120)
+
+        dfreader = self.dfreader_for_current_onboard_log()
+        messages = {name: [] for name in ("GERS", "GEFR")}
+        while True:
+            message = dfreader.recv_match(type=list(messages.keys()))
+            if message is None:
+                break
+            messages[message.get_type()].append(message)
+
+        def in_window(message_type, window):
+            return [message for message in messages[message_type]
+                    if window[0] <= message.TimeUS <= window[1]]
+
+        def check_frame_window(label, expect_geometric):
+            frame_messages = sorted(in_window("GEFR", windows[label]),
+                                    key=lambda message: message.TimeUS)
+            if len(frame_messages) < 2:
+                raise NotAchievedException("Too few RTL frame samples during %s" % label)
+            first = frame_messages[0]
+            last = frame_messages[-1]
+            delta_main = int(last.MFrm) - int(first.MFrm)
+            delta_geometric = int(last.GFrm) - int(first.GFrm)
+            delta_native = int(last.NFrm) - int(first.NFrm)
+            if delta_main <= 0 or delta_geometric + delta_native != delta_main:
+                raise NotAchievedException("Invalid RTL ownership accounting during %s" % label)
+            if expect_geometric:
+                if delta_geometric != delta_main or delta_native != 0:
+                    raise NotAchievedException(
+                        "%s was not Geo-exclusive: main=%u geo=%u native=%u" %
+                        (label, delta_main, delta_geometric, delta_native))
+            elif delta_native != delta_main or delta_geometric != 0:
+                raise NotAchievedException(
+                    "%s was not Native-exclusive: main=%u geo=%u native=%u" %
+                    (label, delta_main, delta_geometric, delta_native))
+            self.progress("RTL %s frames main=%u geo=%u native=%u" %
+                          (label, delta_main, delta_geometric, delta_native))
+
+        def check_status(label, expect_rate_only, expect_active):
+            rows = in_window("GERS", windows[label])
+            if not rows:
+                raise NotAchievedException("No RTL status during %s" % label)
+            for row in rows:
+                if int(row.RoY) != int(expect_rate_only):
+                    raise NotAchievedException(
+                        "%s RoY=%u expected %u" % (label, int(row.RoY), int(expect_rate_only)))
+                if int(row.Act) != int(expect_active):
+                    raise NotAchievedException(
+                        "%s Act=%u expected %u" % (label, int(row.Act), int(expect_active)))
+            self.progress("RTL %s status rows=%u RoY=%u Act=%u" %
+                          (label, len(rows), int(expect_rate_only), int(expect_active)))
+
+        for label in ("return-home", "reenabled", "loiter-home"):
+            check_frame_window(label, True)
+            check_status(label, True, True)
+        # The heading substitution is structural, so it is still recorded while
+        # motor output is merely not requested.
+        check_frame_window("observer-only", False)
+        check_status("observer-only", True, False)
+        for label in ("initial-climb", "pilot-yaw", "final-descent"):
+            check_frame_window(label, False)
+            check_status(label, False, False)
+
+        self.context_pop()
+        self.reboot_sitl()
+
     def GeometricRTLWPNavMotorOutput(self):
         '''test RTL WPNav geometric ownership and native handoff'''
         def timestamp_us():
@@ -24265,6 +24411,7 @@ return update, 1000
             self.GeometricAutoWPMotorOutput,
             self.GeometricRTLWPNavObserver,
             self.GeometricRTLWPNavMotorOutput,
+            self.GeometricRTLWPNavRateOnlyMotorOutput,
             self.GeometricGuidedObserver,
             self.GeometricGuidedPositionObserver,
             self.GeometricLoiterObserver,
