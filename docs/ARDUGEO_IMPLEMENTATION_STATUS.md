@@ -98,6 +98,42 @@ Rate/direct/special Mode family   Native unless separately designed
 - C7 RTL observer: `cbb5ed8a49c11f83822d8cf5caef557222e4fa6f`
 - C8 RTL active: `407477c467e4a4478dddd42bab02dabab1ce6828`
 
+## Hardware gate H1 (R-26)
+
+**Passed** on the X400 airframe, 2026-09-23, against `e46f64c`. Props removed,
+`YJUAV_A6SE_H743` connected over USB.
+
+| R-26 item | Result |
+|---|---|
+| target board build | `-Werror`, zero warnings |
+| flash/RAM budget | 1,569,400 B used, 396,676 B free (20.2%) |
+| main-loop CPU timing | armed `PM.MaxT` 2530 µs against a 3000 µs overtime threshold |
+| watchdog/scheduler margin | armed `PM.NLon` 0; one long loop in 112,000, disarmed, at log-file open |
+| bench arm/disarm | 5/5 cycles, all four outputs symmetric at `MOT_SPIN_ARM` throughout |
+| no-prop motor output | motor-test order A→1 B→4 C→2 D→3, standard QUAD-X, no cross-talk |
+| Native↔Geo switch | `GFrm + NFrm == MFrm` held 21886/21886; 360,764 frames each attributed to exactly one writer across 24 ownership flips |
+| fault fallback | hard-fault latch does not auto-recover; invalid configuration refused 3/3; latch clears only on Loiter re-entry |
+
+Notes for repeating this gate:
+
+- The scheduler criterion is `PM.NLon`, not `PM.MaxT` against the nominal period.
+  `MaxT` is the maximum over the logging window and sits slightly above the nominal
+  2500 µs in normal operation. The overtime threshold is `1e6 / rate_hz * 1.2`
+  (`AP_Scheduler/PerfInfo.cpp`).
+- `GEFR` is written with `WriteStreaming`, so consecutive rows span many frames. A
+  row pair with both `dGFrm > 0` and `dNFrm > 0` is an interval containing a
+  handover, not a same-frame double write. The invariants to check are
+  `GFrm + NFrm == MFrm` and its per-interval form `dGFrm + dNFrm == dMFrm`.
+- Arming with `LOIT_OPTIONS` bit 2 set while `GEO_OUT_EN` is 0 is refused outright
+  rather than falling back silently to the Native rate PID. This is deliberate
+  (`ModeLoiter::allows_arming`) and was confirmed on hardware here for the first
+  time.
+- The stick-driven differential check was not run. `AP_MotorsMatrix` is unmodified
+  and the airframe had already flown the geometric controller in Loiter, Circle and
+  RTL, which exercises the same signs far more strongly than a bench check. On a
+  no-prop bench the altitude loop never sees a climb response, so collective thrust
+  saturates; that is a bench artifact, not a controller property.
+
 ## Release follow-up
 
 REL-FQ-01: Circle → Loiter transition flight-quality transient. **Characterized.**
@@ -126,6 +162,12 @@ circle's tangential speed removes component 2 entirely. At `GEO_LREF_VXY` 5.0 th
 step falls to 1.196 m/s² (-68%), attitude error to 0.180 rad (-64%), and the roll
 command no longer saturates. Component 1 remains and requires a C1-continuous
 handover, which is tracked as deferred work below.
+
+The mitigation is now flight-validated and adopted. X400 flight at `GEO_LREF_VXY`
+8.0 on 2026-09-23 gives a 1.223 m/s² step against the 4.258 m/s² suite reference
+(-71%), maximum attitude error 0.232 rad, and an unsaturated roll command.
+`engineering-v1.0-rc2` ships `GEO_LREF_VXY` 8.0 and `GEO_LREF_BDLY` 1.0 in
+`geo-p9r.param`. Component 1 is unchanged.
 
 ## Known residual: geometric attitude-loop lead
 
@@ -187,4 +229,4 @@ A dedicated attitude/collective ownership contract is required first.
 - rate-thread support
 - terrain reference model
 - partial-axis ownership
-- hardware/HIL/physical-flight validation
+- HIL and a formal physical-flight validation campaign (bench gate H1 is complete)
