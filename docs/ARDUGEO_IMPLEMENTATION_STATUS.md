@@ -100,10 +100,65 @@ Rate/direct/special Mode family   Native unless separately designed
 
 ## Release follow-up
 
-REL-FQ-01: Circle → Loiter transition flight-quality transient.
-Safety/ownership PASS. X400 observed acceleration-reference step 4.258 m/s²,
-max attitude error 0.433 rad, and one limited sample. Must be characterized
-before Engineering v1.0 final release.
+REL-FQ-01: Circle → Loiter transition flight-quality transient. **Characterized.**
+
+The transient is the sum of two reference discontinuities at the handover, not a
+control defect:
+
+1. The Circle reference holds a centripetal acceleration of `omega^2 * r`, which
+   the incoming Loiter reference drops to zero in one frame. This component is
+   inherent to ending a circle and cannot be removed by parameters.
+2. When the circle's tangential speed `omega * r` exceeds the Loiter reference
+   speed limit, the Loiter reference enters overspeed and commands saturated
+   deceleration from its first frame. The drag term
+   `accel_xy_max * speed / speed_max` saturates immediately and bypasses the jerk
+   shaper that the overspeed recovery term does use.
+
+Evidence. X400 flight at 20 deg/s and 10 m: step 3.740 m/s², maximum attitude
+error 0.536 rad, geometric roll command saturated, geometric ownership retained
+across the handover. SITL reproduces it to three decimal places (3.741 m/s²,
+0.497 rad). The original 4.258 m/s² figure corresponds to the suite's 25 deg/s
+and 16 m configuration: centripetal 3.046 plus saturated braking 3.0, which are
+perpendicular, giving 4.28.
+
+Mitigation validated in SITL: raising the Loiter reference speed limit above the
+circle's tangential speed removes component 2 entirely. At `GEO_LREF_VXY` 5.0 the
+step falls to 1.196 m/s² (-68%), attitude error to 0.180 rad (-64%), and the roll
+command no longer saturates. Component 1 remains and requires a C1-continuous
+handover, which is tracked as deferred work below.
+
+## Known residual: geometric attitude-loop lead
+
+The geometric moment law is a PD on SO(3) with feedforward. Native's cascade is
+equivalent to a PD on attitude error plus a second-derivative term
+(`ATC_RAT_*_D`). Expanded against attitude error, Native is
+`0.6075*e + 0.135*e' + 0.0036*e''` while the geometric law is `0.608*e + 0.137*e'`
+at `GEO_MOM_NORM` 6.58, so the proportional and rate terms match and the
+acceleration term has no geometric equivalent.
+
+At 18.2 rad/s the Native compensator leads by 103.4 deg and the geometric one by
+76.3 deg, a 27 deg difference. This is the measured residual behind the X400's
+2.5-3.5 Hz hover mode.
+
+Measured on the X400 over stick-centred hover windows, geometric 2-5 Hz gyro band
+power against a Native control flown in the same session and configuration:
+
+```text
+GEO_MOM_NORM 6.58, GEO_LREF_VXY 5   geo 0.0510 / native 0.0213   2.4x   (19/11 windows)
+GEO_MOM_NORM 6.58, GEO_LREF_VXY 8   geo 0.0383 / native 0.0291   1.3x   (97/76 windows)
+```
+
+The second pair is the better-grounded measurement. Native's own level rose
+between the two sessions, so conditions were rougher, and the geometric level
+still fell. Raising the reference speed limit appears to keep the Loiter
+reference out of the drag and overspeed paths that bypass its jerk shaper, which
+otherwise inject roughness the attitude loop then tracks.
+
+Reducing `GEO_MOM_NORM` lowers the crossover to where less lead is required and
+was validated as a mitigation, but it cannot close a missing term. Restoring the
+lead is a controller capability change, is out of Full-Trajectory scope, and is a
+prerequisite for any adaptive augmentation, which assumes a well-damped nominal
+loop and adds its own phase lag.
 
 ## Next
 
