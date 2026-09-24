@@ -495,7 +495,51 @@ void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Outp
                           (double)attitude.attitude_error_angle_rad);
 }
 
-// GEOR, GEOX and GEFR are emitted by Guided, Loiter, AUTO-WP and RTL-WPNav. Keep each dynamic
+// @LoggerMessage: GEOA
+// @Description: Geometric SO(3) attitude moment and its error terms
+// @Field: TimeUS: Time since system startup
+// @Field: ERx: Lee attitude error, X-Axis
+// @Field: ERy: Lee attitude error, Y-Axis
+// @Field: ERz: Lee attitude error, Z-Axis
+// @Field: EOx: Angular velocity error, X-Axis
+// @Field: EOy: Angular velocity error, Y-Axis
+// @Field: EOz: Angular velocity error, Z-Axis
+// @Field: Mx: Geometric body-moment proxy, X-Axis
+// @Field: My: Geometric body-moment proxy, Y-Axis
+// @Field: Mz: Geometric body-moment proxy, Z-Axis
+// @Field: EIx: Geometric integral error, X-Axis
+// @Field: EIy: Geometric integral error, Y-Axis
+// @Field: EIz: Geometric integral error, Z-Axis
+// @Field: RTx: Body-rate target proxy, X-Axis
+// @Field: RTy: Body-rate target proxy, Y-Axis
+// @Field: RTz: Body-rate target proxy, Z-Axis
+
+// M is the sum of the feedback terms and the rigid-body feedforward, so the
+// feedforward is recoverable from this message alone given the logged gains:
+// FF = M + K_R*e_R + K_Omega*e_Omega + K_I*e_I.
+void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Output &attitude)
+{
+    logger.WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,EIx,EIy,EIz,RTx,RTy,RTz", "Qfffffffffffffff",
+                          AP_HAL::micros64(),
+                          (double)attitude.attitude_error.x,
+                          (double)attitude.attitude_error.y,
+                          (double)attitude.attitude_error.z,
+                          (double)attitude.omega_error_rads.x,
+                          (double)attitude.omega_error_rads.y,
+                          (double)attitude.omega_error_rads.z,
+                          (double)attitude.moment.x,
+                          (double)attitude.moment.y,
+                          (double)attitude.moment.z,
+                          (double)attitude.integral_error.x,
+                          (double)attitude.integral_error.y,
+                          (double)attitude.integral_error.z,
+                          (double)attitude.rate_target_body_rads.x,
+                          (double)attitude.rate_target_body_rads.y,
+                          (double)attitude.rate_target_body_rads.z);
+}
+
+// GEOR, GEOA, GEOX and GEFR are emitted by Guided, Loiter, Circle, AUTO-WP and
+// RTL-WPNav. Keep each dynamic
 // message registration in this single translation unit so the logger cannot
 // allocate separate FMT IDs for identical names from different mode files.
 void Copter::Log_Write_Geometric_Output_State(bool motor_output_allowed,
