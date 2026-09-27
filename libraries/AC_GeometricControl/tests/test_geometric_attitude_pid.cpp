@@ -1,5 +1,7 @@
 #include <AP_gtest.h>
 
+#include <vector>
+
 #include <AC_GeometricControl/AC_Geometric_Attitude_PID.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
@@ -367,6 +369,201 @@ TEST(AC_Geometric_Attitude_PID, RollPitchIntegralCanBeEnabledExplicitly)
     EXPECT_NEAR(output.moment.x, -0.2f, 1.0e-6f);
     EXPECT_NEAR(output.moment.y, 0.25f, 1.0e-6f);
     EXPECT_NEAR(output.moment.z, 0.0f, 1.0e-6f);
+}
+
+
+// The lead term is the geometric counterpart of the Native rate-controller
+// derivative term. These lock down the three properties that make it safe to
+// enable: it is inert at zero gain, it cannot kick on the first frame after a
+// reset, and it opposes a growing angular-rate error.
+namespace {
+
+// Drives the controller repeatedly so the derivative state is exercised, and
+// returns the output of the final update.
+AC_Geometric_Attitude_Output run_steps(const AC_Geometric_Attitude_Gains& gains,
+                                       const AC_Geometric_Attitude_Filter_Hz& filters,
+                                       const std::vector<Vector3f>& omega_sequence,
+                                       float dt)
+{
+    AC_Geometric_Attitude_PID controller;
+    AC_Geometric_Attitude_Output output {};
+    set_unit_inertia(controller);
+    controller.set_gains(gains);
+    controller.set_filter_hz(filters);
+
+    AC_Geometric_State state {};
+    AC_Geometric_Target target {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+    target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    for (const Vector3f& omega : omega_sequence) {
+        state.omega_body_rads = omega;
+        controller.update(state, target, dt, output);
+    }
+    return output;
+}
+
+AC_Geometric_Attitude_Gains lead_gains(float kd)
+{
+    AC_Geometric_Attitude_Gains gains {};
+    gains.attitude_p = Vector3f{1.0f, 1.0f, 1.0f};
+    gains.omega_p = Vector3f{0.1f, 0.1f, 0.1f};
+    gains.omega_d = Vector3f{kd, kd, kd};
+    return gains;
+}
+
+}  // namespace
+
+TEST(AC_Geometric_Attitude_PID, LeadTermIsInertAtZeroGain)
+{
+    AC_Geometric_Attitude_Filter_Hz filters {};   // both filters disabled
+    const std::vector<Vector3f> ramp {
+        Vector3f{0.00f, 0.0f, 0.0f},
+        Vector3f{0.05f, 0.0f, 0.0f},
+        Vector3f{0.10f, 0.0f, 0.0f},
+        Vector3f{0.15f, 0.0f, 0.0f},
+    };
+
+    const AC_Geometric_Attitude_Output without = run_steps(lead_gains(0.0f), filters, ramp, 0.01f);
+    // A zero gain must leave the moment bit-identical to the pre-lead law, which
+    // for this state is just the rate term.
+    EXPECT_FLOAT_EQ(-0.1f * without.omega_error_rads.x, without.moment.x);
+    // The derivative is still reported, so the diagnostic stays usable, but it
+    // contributes nothing.
+    EXPECT_GT(without.omega_error_derivative_radss.x, 0.0f);
+}
+
+TEST(AC_Geometric_Attitude_PID, LeadTermDoesNotKickOnFirstUpdate)
+{
+    AC_Geometric_Attitude_Filter_Hz filters {};
+    // A large rate error present on the very first update would differentiate to
+    // a huge value if the state were not seeded.
+    const std::vector<Vector3f> step { Vector3f{0.5f, 0.0f, 0.0f} };
+
+    const AC_Geometric_Attitude_Output output = run_steps(lead_gains(0.02f), filters, step, 0.01f);
+    EXPECT_FLOAT_EQ(0.0f, output.omega_error_derivative_radss.x);
+    EXPECT_FLOAT_EQ(-0.1f * output.omega_error_rads.x, output.moment.x);
+}
+
+TEST(AC_Geometric_Attitude_PID, LeadTermOpposesGrowingRateError)
+{
+    AC_Geometric_Attitude_Filter_Hz filters {};
+    const std::vector<Vector3f> ramp {
+        Vector3f{0.00f, 0.0f, 0.0f},
+        Vector3f{0.05f, 0.0f, 0.0f},
+        Vector3f{0.10f, 0.0f, 0.0f},
+    };
+    const float kd = 0.02f;
+
+    const AC_Geometric_Attitude_Output with = run_steps(lead_gains(kd), filters, ramp, 0.01f);
+    const AC_Geometric_Attitude_Output without = run_steps(lead_gains(0.0f), filters, ramp, 0.01f);
+
+    // e_Omega is growing positive, so the lead term must push the moment further
+    // negative than the law without it.
+    EXPECT_LT(with.moment.x, without.moment.x);
+    EXPECT_FLOAT_EQ(without.moment.x - kd * with.omega_error_derivative_radss.x,
+                    with.moment.x);
+}
+
+TEST(AC_Geometric_Attitude_PID, LeadTermDerivativeFilterAttenuates)
+{
+    const std::vector<Vector3f> ramp {
+        Vector3f{0.00f, 0.0f, 0.0f},
+        Vector3f{0.05f, 0.0f, 0.0f},
+        Vector3f{0.10f, 0.0f, 0.0f},
+        Vector3f{0.15f, 0.0f, 0.0f},
+    };
+
+    AC_Geometric_Attitude_Filter_Hz unfiltered {};
+    AC_Geometric_Attitude_Filter_Hz filtered {};
+    filtered.omega_error_derivative = 5.0f;
+
+    const AC_Geometric_Attitude_Output raw = run_steps(lead_gains(0.02f), unfiltered, ramp, 0.01f);
+    const AC_Geometric_Attitude_Output smooth = run_steps(lead_gains(0.02f), filtered, ramp, 0.01f);
+
+    // A ramp gives a constant raw derivative; a low-pass started from zero has
+    // not reached it yet, so the filtered value must be smaller and positive.
+    EXPECT_GT(raw.omega_error_derivative_radss.x, smooth.omega_error_derivative_radss.x);
+    EXPECT_GT(smooth.omega_error_derivative_radss.x, 0.0f);
+}
+
+TEST(AC_Geometric_Attitude_PID, LeadTermResetClearsDerivativeState)
+{
+    AC_Geometric_Attitude_Filter_Hz filters {};
+    AC_Geometric_Attitude_PID controller;
+    AC_Geometric_Attitude_Output output {};
+    set_unit_inertia(controller);
+    controller.set_gains(lead_gains(0.02f));
+    controller.set_filter_hz(filters);
+
+    AC_Geometric_State state {};
+    AC_Geometric_Target target {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+    target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    for (int i = 0; i < 4; i++) {
+        state.omega_body_rads = Vector3f{0.05f * i, 0.0f, 0.0f};
+        controller.update(state, target, 0.01f, output);
+    }
+    EXPECT_GT(output.omega_error_derivative_radss.x, 0.0f);
+
+    // After a reset the next update must behave like a first update again.
+    controller.reset();
+    state.omega_body_rads = Vector3f{0.5f, 0.0f, 0.0f};
+    controller.update(state, target, 0.01f, output);
+    EXPECT_FLOAT_EQ(0.0f, output.omega_error_derivative_radss.x);
+}
+
+
+TEST(AC_Geometric_Attitude_PID, LeadTermDoesNotDifferentiateTheReference)
+{
+    // A reference rate that steps between updates must not appear in the lead
+    // term: the reference contribution is analytic, so a step in Omega_ref with
+    // a constant measured rate leaves the derivative at zero apart from the
+    // transport term, which is zero here because Omega is zero.
+    AC_Geometric_Attitude_PID controller;
+    AC_Geometric_Attitude_Output output {};
+    set_unit_inertia(controller);
+    controller.set_gains(lead_gains(0.02f));
+    controller.set_filter_hz(AC_Geometric_Attitude_Filter_Hz {});
+
+    AC_Geometric_State state {};
+    AC_Geometric_Target target {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+    target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+    state.omega_body_rads.zero();
+
+    controller.update(state, target, 0.01f, output);   // seeds the state
+    // Step the reference rate hard. dot(Omega_ref) stays zero, so the lead term
+    // must stay zero; differencing e_Omega would instead produce -50 rad/s^2.
+    target.omega_body_rads = Vector3f{0.5f, 0.0f, 0.0f};
+    controller.update(state, target, 0.01f, output);
+
+    EXPECT_FLOAT_EQ(0.0f, output.omega_error_derivative_radss.x);
+    // The rate term still sees the step: e_Omega = Omega - Omega_ref = -0.5.
+    EXPECT_FLOAT_EQ(-0.5f, output.omega_error_rads.x);
+}
+
+TEST(AC_Geometric_Attitude_PID, LeadTermFollowsAnalyticReferenceAcceleration)
+{
+    // A commanded angular acceleration is a real input to the lead term and must
+    // pass through with the opposite sign to a measured one.
+    AC_Geometric_Attitude_PID controller;
+    AC_Geometric_Attitude_Output output {};
+    set_unit_inertia(controller);
+    controller.set_gains(lead_gains(0.02f));
+    controller.set_filter_hz(AC_Geometric_Attitude_Filter_Hz {});
+
+    AC_Geometric_State state {};
+    AC_Geometric_Target target {};
+    state.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+    target.attitude_body_to_ned = attitude_from_euler(0.0f, 0.0f, 0.0f);
+
+    controller.update(state, target, 0.01f, output);
+    target.omega_dot_body_radss = Vector3f{2.0f, 0.0f, 0.0f};
+    controller.update(state, target, 0.01f, output);
+
+    EXPECT_FLOAT_EQ(-2.0f, output.omega_error_derivative_radss.x);
 }
 
 AP_GTEST_MAIN()

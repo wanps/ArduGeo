@@ -513,13 +513,18 @@ void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Outp
 // @Field: RTx: Body-rate target proxy, X-Axis
 // @Field: RTy: Body-rate target proxy, Y-Axis
 // @Field: RTz: Body-rate target proxy, Z-Axis
+// @Field: EDx: Filtered angular velocity error derivative, X-Axis
+// @Field: EDy: Filtered angular velocity error derivative, Y-Axis
+// @Field: EDz: Filtered angular velocity error derivative, Z-Axis
 
 // M is the sum of the feedback terms and the rigid-body feedforward, so the
 // feedforward is recoverable from this message alone given the logged gains:
-// FF = M + K_R*e_R + K_Omega*e_Omega + K_I*e_I.
+// FF = M + K_R*e_R + K_Omega*e_Omega + K_I*e_I + K_D*dot(e_Omega), where the
+// last term is the logged EDx/EDy/EDz.
 void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Output &attitude)
 {
-    logger.WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,EIx,EIy,EIz,RTx,RTy,RTz", "Qfffffffffffffff",
+    logger.WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,EIx,EIy,EIz,RTx,RTy,RTz,EDx,EDy,EDz",
+                          "Qffffffffffffffffff",
                           AP_HAL::micros64(),
                           (double)attitude.attitude_error.x,
                           (double)attitude.attitude_error.y,
@@ -535,7 +540,10 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
                           (double)attitude.integral_error.z,
                           (double)attitude.rate_target_body_rads.x,
                           (double)attitude.rate_target_body_rads.y,
-                          (double)attitude.rate_target_body_rads.z);
+                          (double)attitude.rate_target_body_rads.z,
+                          (double)attitude.omega_error_derivative_radss.x,
+                          (double)attitude.omega_error_derivative_radss.y,
+                          (double)attitude.omega_error_derivative_radss.z);
 }
 
 // GEOR, GEOA, GEOX and GEFR are emitted by Guided, Loiter, Circle, AUTO-WP and
