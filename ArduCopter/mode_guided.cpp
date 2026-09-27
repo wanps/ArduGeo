@@ -1853,25 +1853,6 @@ bool ModeGuided::update_geometric_observer(
     }
 #if HAL_LOGGING_ENABLED
     const AC_Geometric_Target& target = copter.geometric_control.get_raw_target();
-    // @LoggerMessage: GEOA
-    // @Description: Geometric guided attitude observer
-    // @Field: TimeUS: Time since system startup
-    // @Field: ERx: Lee attitude error, X-Axis
-    // @Field: ERy: Lee attitude error, Y-Axis
-    // @Field: ERz: Lee attitude error, Z-Axis
-    // @Field: EOx: Angular velocity error, X-Axis
-    // @Field: EOy: Angular velocity error, Y-Axis
-    // @Field: EOz: Angular velocity error, Z-Axis
-    // @Field: Mx: Geometric body-moment proxy, X-Axis
-    // @Field: My: Geometric body-moment proxy, Y-Axis
-    // @Field: Mz: Geometric body-moment proxy, Z-Axis
-    // @Field: EIx: Geometric integral error, X-Axis
-    // @Field: EIy: Geometric integral error, Y-Axis
-    // @Field: EIz: Geometric integral error, Z-Axis
-    // @Field: RTx: Body-rate target proxy, X-Axis
-    // @Field: RTy: Body-rate target proxy, Y-Axis
-    // @Field: RTz: Body-rate target proxy, Z-Axis
-
     // @LoggerMessage: GEOP
     // @Description: Geometric guided position observer
     // @Field: TimeUS: Time since system startup
@@ -2024,25 +2005,8 @@ bool ModeGuided::update_geometric_observer(
         const AC_Geometric_Target& raw_target = copter.geometric_control.get_raw_target();
         const AC_Geometric_Target& shaped_target = copter.geometric_control.get_shaped_target();
         const bool shaper_active = copter.geometric_control.shaper_active();
-        AP::logger().WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,EIx,EIy,EIz,RTx,RTy,RTz", "Qfffffffffffffff",
-                                    AP_HAL::micros64(),
-                                    (double)output.attitude.attitude_error.x,
-                                    (double)output.attitude.attitude_error.y,
-                                    (double)output.attitude.attitude_error.z,
-                                    (double)output.attitude.omega_error_rads.x,
-                                    (double)output.attitude.omega_error_rads.y,
-                                    (double)output.attitude.omega_error_rads.z,
-                                    (double)output.attitude.moment.x,
-                                    (double)output.attitude.moment.y,
-                                    (double)output.attitude.moment.z,
-                                    (double)output.attitude.integral_error.x,
-                                    (double)output.attitude.integral_error.y,
-                                    (double)output.attitude.integral_error.z,
-                                    (double)output.attitude.rate_target_body_rads.x,
-                                    (double)output.attitude.rate_target_body_rads.y,
-                                    (double)output.attitude.rate_target_body_rads.z);
-
         copter.Log_Write_Geometric_Attitude_Error(output.attitude);
+        copter.Log_Write_Geometric_Attitude_Moment(output.attitude);
 
         float rc_roll_rad;
         float rc_pitch_rad;
