@@ -13,6 +13,9 @@
 #define AC_GEOMETRIC_ATT_IMAX_Y_DEFAULT 0.0f
 #define AC_GEOMETRIC_ATT_IMAX_Z_DEFAULT 1.0f
 #define AC_GEOMETRIC_ATT_INT_C_DEFAULT 0.5f
+#define AC_GEOMETRIC_ATT_KD_DEFAULT 0.0f
+// Matches the Native rate-controller derivative filter default (ATC_RAT_*_FLTD).
+#define AC_GEOMETRIC_OMG_FLTD_DEFAULT 20.0f
 #define AC_GEOMETRIC_ATT_J_X_DEFAULT 0.010f
 #define AC_GEOMETRIC_ATT_J_Y_DEFAULT 0.020f
 #define AC_GEOMETRIC_ATT_J_Z_DEFAULT 0.020f
@@ -158,6 +161,38 @@ const AP_Param::GroupInfo AC_Geometric_Attitude_PID_Params::var_info[] = {
     // @Increment: 0.001
     // @User: Advanced
     AP_GROUPINFO("ATT_J_Z", 41, AC_Geometric_Attitude_PID_Params, _inertia_z, AC_GEOMETRIC_ATT_J_Z_DEFAULT),
+    // @Param: ATT_KD_X
+    // @DisplayName: Geometric roll angular-acceleration-error gain
+    // @Description: K_D for body-X in the Lee SO(3) moment law, acting on the rate of change of the angular velocity error. This is the geometric counterpart of the Native rate-controller derivative term ATC_RAT_RLL_D, which the SO(3) law otherwise has no equivalent for. Scale it with GEO_MOM_NORM: K_D / GEO_MOM_NORM is directly comparable to ATC_RAT_RLL_D. Zero disables the term and leaves the moment law unchanged. Requires GEO_OMG_FLTD to be set, since an unfiltered rate-error derivative is dominated by noise.
+    // @Range: 0 0.2
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("ATT_KD_X", 42, AC_Geometric_Attitude_PID_Params, _kd_x, AC_GEOMETRIC_ATT_KD_DEFAULT),
+
+    // @Param: ATT_KD_Y
+    // @DisplayName: Geometric pitch angular-acceleration-error gain
+    // @Description: K_D for body-Y. See GEO_ATT_KD_X.
+    // @Range: 0 0.2
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("ATT_KD_Y", 43, AC_Geometric_Attitude_PID_Params, _kd_y, AC_GEOMETRIC_ATT_KD_DEFAULT),
+
+    // @Param: ATT_KD_Z
+    // @DisplayName: Geometric yaw angular-acceleration-error gain
+    // @Description: K_D for body-Z. See GEO_ATT_KD_X.
+    // @Range: 0 0.2
+    // @Increment: 0.001
+    // @User: Advanced
+    AP_GROUPINFO("ATT_KD_Z", 44, AC_Geometric_Attitude_PID_Params, _kd_z, AC_GEOMETRIC_ATT_KD_DEFAULT),
+
+    // @Param: OMG_FLTD
+    // @DisplayName: Geometric angular velocity error derivative filter
+    // @Description: First-order low-pass cutoff applied to the rate of change of the Lee angular velocity error before it reaches the GEO_ATT_KD_* lead term. Differentiation raises the noise floor with frequency, so this filter is what makes the lead term usable; the default matches the Native ATC_RAT_*_FLTD. A value of zero passes the raw derivative and is not recommended with a non-zero K_D.
+    // @Range: 0 100
+    // @Units: Hz
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("OMG_FLTD", 45, AC_Geometric_Attitude_PID_Params, _omega_error_deriv_filt_hz, AC_GEOMETRIC_OMG_FLTD_DEFAULT),
 
     AP_GROUPEND
 };
@@ -200,6 +235,7 @@ AC_Geometric_Attitude_Gains AC_Geometric_Attitude_PID_Params::gains() const
     gains.omega_p = Vector3f{_ko_x.get(), _ko_y.get(), _ko_z.get()};
     gains.attitude_i = Vector3f{_ki_x.get(), _ki_y.get(), _ki_z.get()};
     gains.integral_error_p = Vector3f{_integral_error_p.get(), _integral_error_p.get(), _integral_error_p.get()};
+    gains.omega_d = Vector3f{_kd_x.get(), _kd_y.get(), _kd_z.get()};
     return gains;
 }
 
@@ -214,6 +250,7 @@ AC_Geometric_Attitude_Filter_Hz AC_Geometric_Attitude_PID_Params::filter_hz() co
 {
     AC_Geometric_Attitude_Filter_Hz filter_hz {};
     filter_hz.omega_error = _omega_error_filt_hz.get();
+    filter_hz.omega_error_derivative = _omega_error_deriv_filt_hz.get();
     return filter_hz;
 }
 
@@ -331,6 +368,9 @@ void AC_Geometric_Attitude_PID::reset()
     _omega_error_filtered_rads.zero();
     _integral_error.zero();
     _filter_reset = true;
+    _omega_measured_prev_rads.zero();
+    _omega_error_derivative_filtered_radss.zero();
+    _derivative_reset = true;
 }
 
 void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
@@ -367,6 +407,33 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
     }
     output.omega_error_rads = _omega_error_filtered_rads;
 
+    // d(e_Omega)/dt for the lead term. Only the measured rate is differenced;
+    // the reference side is exact. With Omega_ref_body = R^T*R_ref*Omega_ref the
+    // transport theorem gives
+    //     d/dt(Omega_ref_body) = dot(Omega_ref_body) - Omega x Omega_ref_body
+    // and both of those are already built for the rigid-body feedforward below.
+    // Differencing the reference instead would turn every trajectory update step
+    // into a spike, which is what an earlier revision did.
+    const Vector3f omega_reference_derivative_radss =
+        omega_dot_target_current_body_radss -
+        (state.omega_body_rads % omega_target_current_body_rads);
+    if (_derivative_reset || !is_positive(dt)) {
+        _omega_error_derivative_filtered_radss.zero();
+        _derivative_reset = false;
+    } else {
+        const Vector3f omega_measured_derivative_radss =
+            (state.omega_body_rads - _omega_measured_prev_rads) / dt;
+        const Vector3f raw_derivative =
+            omega_measured_derivative_radss - omega_reference_derivative_radss;
+        _omega_error_derivative_filtered_radss =
+            apply_optional_lowpass(raw_derivative,
+                                   _filter_hz.omega_error_derivative,
+                                   dt,
+                                   _omega_error_derivative_filtered_radss);
+    }
+    _omega_measured_prev_rads = state.omega_body_rads;
+    output.omega_error_derivative_radss = _omega_error_derivative_filtered_radss;
+
     // Geometric PID attitude integral e_I^R = integral(e_Omega + C_R*e_R).
     // Each axis can be independently disabled with zero K_I or zero IMAX.
     const Vector3f integral_input {
@@ -392,7 +459,7 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
     output.integral_error = _integral_error;
 
     // SO(3) PID moment equation:
-    // M = -K_R*e_R - K_Omega*e_Omega - K_I*e_I^R
+    // M = -K_R*e_R - K_Omega*e_Omega - K_I*e_I^R - K_D*dot(e_Omega)
     //     + Omega x J*Omega
     //     - J[Omega x (R^T R_ref Omega_ref)
     //         - R^T R_ref dot(Omega_ref)].
@@ -406,15 +473,18 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
     const Vector3f feedforward = gyro - desired_dynamics;
     output.moment.x = -_gains.attitude_p.x * output.attitude_error.x -
                       _gains.omega_p.x * output.omega_error_rads.x -
-                      _gains.attitude_i.x * output.integral_error.x +
+                      _gains.attitude_i.x * output.integral_error.x -
+                      _gains.omega_d.x * output.omega_error_derivative_radss.x +
                       feedforward.x;
     output.moment.y = -_gains.attitude_p.y * output.attitude_error.y -
                       _gains.omega_p.y * output.omega_error_rads.y -
-                      _gains.attitude_i.y * output.integral_error.y +
+                      _gains.attitude_i.y * output.integral_error.y -
+                      _gains.omega_d.y * output.omega_error_derivative_radss.y +
                       feedforward.y;
     output.moment.z = -_gains.attitude_p.z * output.attitude_error.z -
                       _gains.omega_p.z * output.omega_error_rads.z -
-                      _gains.attitude_i.z * output.integral_error.z +
+                      _gains.attitude_i.z * output.integral_error.z -
+                      _gains.omega_d.z * output.omega_error_derivative_radss.z +
                       feedforward.z;
 
     // Legacy diagnostic rate-target proxy retained for geometric logging. It

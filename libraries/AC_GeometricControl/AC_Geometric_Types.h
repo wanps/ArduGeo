@@ -112,10 +112,15 @@ struct AC_Geometric_Position_Gains {
 struct AC_Geometric_Attitude_Gains {
     Vector3f attitude_p; // K_R: SO(3) attitude-error gain.
     Vector3f omega_p; // K_Omega: body angular-rate-error gain.
+    // K_D: rate-of-change of the angular-rate error. Native's cascade carries an
+    // equivalent second-derivative term through ATC_RAT_*_D, which the SO(3) law
+    // has no counterpart for; without it the loop is short of phase lead at
+    // crossover. Zero leaves the law exactly as it was.
     // Geometric integral gains. Roll/pitch default to zero parameters for now
     // to avoid coupling attitude integral action back into the position-generated R_c.
     Vector3f attitude_i; // K_I: geometric attitude-integral gain.
     Vector3f integral_error_p; // C_R in integral(e_Omega + C_R*e_R).
+    Vector3f omega_d; // K_D: gain on d(e_Omega)/dt.
 };
 
 // Diagonal rigid-body inertia model used by the SO(3) moment equation. These
@@ -146,6 +151,11 @@ struct AC_Geometric_Position_Integral_Limits {
 struct AC_Geometric_Attitude_Filter_Hz {
     // Optional cutoff for the angular-rate error used by the SO(3) channel.
     float omega_error = 0.0f;
+    // Cutoff for d(e_Omega)/dt. Differentiating a rate error raises the noise
+    // floor with frequency, so the lead term is only usable filtered; Native
+    // filters its equivalent at ATC_RAT_*_FLTD for the same reason. Zero leaves
+    // the raw derivative in place and is not recommended with a non-zero K_D.
+    float omega_error_derivative = 0.0f;
 };
 
 struct AC_Geometric_Attitude_Integral_Limits {
@@ -197,6 +207,10 @@ struct AC_Geometric_Attitude_Output {
     // reference and the active geometric path does not feed it to the native
     // rate PID.
     Vector3f rate_target_body_rads;
+    // Filtered d(e_Omega)/dt actually used by the lead term. Logged so the
+    // rigid-body feedforward stays recoverable from GEOA as
+    // FF = M + K_R*e_R + K_Omega*e_Omega + K_I*e_I + K_D*this.
+    Vector3f omega_error_derivative_radss;
 };
 
 struct AC_Geometric_Mapped_Output {

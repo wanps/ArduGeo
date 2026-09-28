@@ -39,6 +39,10 @@ private:
     AP_Float _inertia_y;
     AP_Float _inertia_z;
     AP_Float _omega_error_filt_hz;
+    AP_Float _kd_x;
+    AP_Float _kd_y;
+    AP_Float _kd_z;
+    AP_Float _omega_error_deriv_filt_hz;
 };
 
 // Lee SO(3) attitude and angular-rate channel. It tracks either a direct
@@ -78,4 +82,13 @@ private:
     Vector3f _omega_error_filtered_rads;
     Vector3f _integral_error;
     bool _filter_reset = true;
+
+    // Lead-term state. Only the measured body rate is differentiated
+    // numerically; the reference side is available in closed form, so it is
+    // never differenced. The first update after a reset produces a zero
+    // derivative rather than a step, so re-entering the controller cannot kick
+    // the actuators.
+    Vector3f _omega_measured_prev_rads;
+    Vector3f _omega_error_derivative_filtered_radss;
+    bool _derivative_reset = true;
 };
