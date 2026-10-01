@@ -480,6 +480,30 @@ void Copter::Log_Write_Geometric_Loiter_Lifecycle(uint8_t phase,
     logger.WriteCriticalBlock(&pkt, sizeof(pkt));
 }
 
+// ArduPilot packs a dynamic message's format string into log_Format::format and
+// its labels into log_Format::labels. AP_Logger::msg_fmt_for_name() copies both
+// with strncpy_noterm(), so a definition that does not fit is truncated instead
+// of rejected: the FMT that reaches the log then no longer describes the payload
+// being written, and every reader loses byte synchronisation at each occurrence.
+// assert_same_fmt_for_name() does not cover this -- it is SITL-only and only
+// fires when one name is registered twice with differing strings. Nothing checks
+// the lengths at runtime on any board, so they are checked here at compile time.
+static constexpr uint8_t geometric_log_field_count(const char *labels)
+{
+    return (*labels == '\0') ? 1
+                              : (((*labels == ',') ? 1 : 0) + geometric_log_field_count(labels + 1));
+}
+
+#define GEOMETRIC_LOG_MSG(tag, labels_literal, format_literal)                     \
+    static constexpr char tag##_LABELS[] = labels_literal;                         \
+    static constexpr char tag##_FMT[] = format_literal;                            \
+    static_assert(sizeof(tag##_FMT) - 1 <= sizeof(log_Format::format),             \
+                  #tag " format string does not fit log_Format::format");          \
+    static_assert(sizeof(tag##_LABELS) - 1 <= sizeof(log_Format::labels),          \
+                  #tag " labels string does not fit log_Format::labels");          \
+    static_assert(sizeof(tag##_FMT) - 1 == geometric_log_field_count(tag##_LABELS),\
+                  #tag " format and labels disagree on the field count")
+
 // @LoggerMessage: GEOR
 // @Description: Global geometric SO(3) attitude-error diagnostics
 // @Field: TimeUS: Time since system startup
@@ -488,7 +512,8 @@ void Copter::Log_Write_Geometric_Loiter_Lifecycle(uint8_t phase,
 // @Field: Ang: Principal relative attitude angle in radians
 void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Output &attitude)
 {
-    logger.WriteStreaming("GEOR", "TimeUS,PsiR,ERn,Ang", "s--r", "F000", "Qfff",
+    GEOMETRIC_LOG_MSG(GEOR, "TimeUS,PsiR,ERn,Ang", "Qfff");
+    logger.WriteStreaming("GEOR", GEOR_LABELS, "s--r", "F000", GEOR_FMT,
                           AP_HAL::micros64(),
                           (double)attitude.attitude_configuration_error,
                           (double)attitude.attitude_error.length(),
@@ -496,7 +521,7 @@ void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Outp
 }
 
 // @LoggerMessage: GEOA
-// @Description: Geometric SO(3) attitude moment and its error terms
+// @Description: Geometric SO(3) attitude error terms and the moment they produce
 // @Field: TimeUS: Time since system startup
 // @Field: ERx: Lee attitude error, X-Axis
 // @Field: ERy: Lee attitude error, Y-Axis
@@ -507,6 +532,10 @@ void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Outp
 // @Field: Mx: Geometric body-moment proxy, X-Axis
 // @Field: My: Geometric body-moment proxy, Y-Axis
 // @Field: Mz: Geometric body-moment proxy, Z-Axis
+
+// @LoggerMessage: GEOD
+// @Description: Geometric SO(3) attitude integral, rate target and error derivative
+// @Field: TimeUS: Time since system startup
 // @Field: EIx: Geometric integral error, X-Axis
 // @Field: EIy: Geometric integral error, Y-Axis
 // @Field: EIz: Geometric integral error, Z-Axis
@@ -517,15 +546,23 @@ void Copter::Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Outp
 // @Field: EDy: Filtered angular velocity error derivative, Y-Axis
 // @Field: EDz: Filtered angular velocity error derivative, Z-Axis
 
+// The nineteen fields do not fit one dynamic message, so they are split across
+// GEOA and GEOD. Both carry the same TimeUS -- taken once below rather than per
+// call -- so the pair joins exactly on that column.
+//
 // M is the sum of the feedback terms and the rigid-body feedforward, so the
-// feedforward is recoverable from this message alone given the logged gains:
+// feedforward is recoverable from the joined pair given the logged gains:
 // FF = M + K_R*e_R + K_Omega*e_Omega + K_I*e_I + K_D*dot(e_Omega), where the
-// last term is the logged EDx/EDy/EDz.
+// last term is GEOD's EDx/EDy/EDz.
 void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Output &attitude)
 {
-    logger.WriteStreaming("GEOA", "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz,EIx,EIy,EIz,RTx,RTy,RTz,EDx,EDy,EDz",
-                          "Qffffffffffffffffff",
-                          AP_HAL::micros64(),
+    GEOMETRIC_LOG_MSG(GEOA, "TimeUS,ERx,ERy,ERz,EOx,EOy,EOz,Mx,My,Mz", "Qfffffffff");
+    GEOMETRIC_LOG_MSG(GEOD, "TimeUS,EIx,EIy,EIz,RTx,RTy,RTz,EDx,EDy,EDz", "Qfffffffff");
+
+    const uint64_t now_us = AP_HAL::micros64();
+
+    logger.WriteStreaming("GEOA", GEOA_LABELS, GEOA_FMT,
+                          now_us,
                           (double)attitude.attitude_error.x,
                           (double)attitude.attitude_error.y,
                           (double)attitude.attitude_error.z,
@@ -534,7 +571,10 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
                           (double)attitude.omega_error_rads.z,
                           (double)attitude.moment.x,
                           (double)attitude.moment.y,
-                          (double)attitude.moment.z,
+                          (double)attitude.moment.z);
+
+    logger.WriteStreaming("GEOD", GEOD_LABELS, GEOD_FMT,
+                          now_us,
                           (double)attitude.integral_error.x,
                           (double)attitude.integral_error.y,
                           (double)attitude.integral_error.z,
@@ -546,7 +586,7 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
                           (double)attitude.omega_error_derivative_radss.z);
 }
 
-// GEOR, GEOA, GEOX and GEFR are emitted by Guided, Loiter, Circle, AUTO-WP and
+// GEOR, GEOA, GEOD, GEOX and GEFR are emitted by Guided, Loiter, Circle, AUTO-WP and
 // RTL-WPNav. Keep each dynamic
 // message registration in this single translation unit so the logger cannot
 // allocate separate FMT IDs for identical names from different mode files.
@@ -558,7 +598,8 @@ void Copter::Log_Write_Geometric_Output_State(bool motor_output_allowed,
                                               uint32_t motor_output_age_ms,
                                               const AC_Geometric_Mapped_Output &mapped)
 {
-    logger.WriteStreaming("GEOX", "TimeUS,Allow,OEn,RT,Wrote,GAge,WAge,Roll,Pitch,Yaw,Thr,RLim,TLim", "QBBBBIIffffBB",
+    GEOMETRIC_LOG_MSG(GEOX, "TimeUS,Allow,OEn,RT,Wrote,GAge,WAge,Roll,Pitch,Yaw,Thr,RLim,TLim", "QBBBBIIffffBB");
+    logger.WriteStreaming("GEOX", GEOX_LABELS, GEOX_FMT,
                           AP_HAL::micros64(),
                           (uint8_t)motor_output_allowed,
                           (uint8_t)geometric_output_enabled,
@@ -576,7 +617,8 @@ void Copter::Log_Write_Geometric_Output_State(bool motor_output_allowed,
 
 void Copter::Log_Write_Geometric_Frame_Counters()
 {
-    logger.WriteStreaming("GEFR", "TimeUS,MFrm,GFrm,NFrm", "QIII",
+    GEOMETRIC_LOG_MSG(GEFR, "TimeUS,MFrm,GFrm,NFrm", "QIII");
+    logger.WriteStreaming("GEFR", GEFR_LABELS, GEFR_FMT,
                           AP_HAL::micros64(),
                           main_rate_controller_frames(),
                           geometric_motor_output_frames(),
