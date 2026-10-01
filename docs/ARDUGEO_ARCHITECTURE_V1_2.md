@@ -623,6 +623,101 @@ OutputMapper
 
 ---
 
+### 8.4 L1 增强的 fail-closed 契约
+
+#### 现有契约的隐含前提
+
+I-05 规定异常一律 fail closed 回 Native。该规则成立依赖一个没有写出来的前提：
+**Native 在当前工况下是可飞的**。V1 的全部场景满足它，因为 Geo 与 Native
+面对同一个对象、同一组配平，Native 只是性能差一些。
+
+L1 的目标场景破坏这个前提。非对称载荷下 L1 补偿的恰好是 Native 补不了的量，
+此时回退等于把飞机交给一个已知不足的控制器 —— **回退动作本身成为危险源**。
+
+契约因此要改的不是"异常时失效到安全侧"这个原则，而是"安全侧是哪里"。
+
+#### Q1 真故障（stale / nonfinite / unsupported）
+
+分层，而不是单一回退目标：
+
+| 层 | 触发 | 去向 | 依据 |
+|---|---|---|---|
+| 1 | L1 自身故障 | **Geo nominal，保留姿态积分状态** | `integral_error` 能吸收定常扰动，是离 L1 最近的可用状态 |
+| 2 | Geo 故障（陈旧 / 非有限 / 模式不支持） | Native，**带速率环积分器预装** | 维持 I-05，同时消除交接瞬态 |
+| 3 | L1 接管许可 | engage 时检查，**不是连续门** | 见下 |
+
+**为什么第 3 层不做成连续门。** "只在 Native 也能飞的包线内启用 L1"听起来保守，
+但它否定了 L1 的目标场景 —— 非对称载荷正是 Native 飞不了的地方。
+把它退化成 engage 时刻的准入检查（接管瞬间 Native 仍可恢复），
+而不是飞行全程的持续约束。
+
+**预装的含义（第 2 层）。** 交接帧把 Geo 最后一帧的力矩按 `GEO_MOM_NORM` 归一后
+写入 Native 速率环积分器，使 Native 接管瞬间的输出连续。
+这是对 I-04（同帧交接）的加强，不是替换。
+
+#### Q2 飞手打偏航杆
+
+**先更正一处此前的说法：这个问题不影响 Loiter。**
+`ModeLoiter` 自己构造 `Angle_And_Rate` heading（`ArduCopter/mode_loiter.cpp:748`），
+其 yaw 参考来自 `AC_Geometric_LoiterReference` 中已经积分了飞手偏航速率的
+`_yaw_ref_rad`。Loiter 不消费 `auto_yaw.get_heading()`。
+
+实际受影响的是消费 `auto_yaw.get_heading()` 并按 `Angle_*` 设门的四个模式：
+**AUTO / RTL / Guided / Circle**。链条是：
+
+```text
+飞手拨杆 → auto_yaw.set_mode(PILOT_RATE)        ArduCopter/autoyaw.cpp:337
+         → heading_mode = Rate_Only              ArduCopter/autoyaw.cpp:355
+         → reference_to_target() 返回 false      AC_GeometricControl.cpp:107
+         → Geo 无目标 → fail closed → Native
+```
+
+且 `PILOT_RATE` **不因杆回中而退出** —— `autoyaw.cpp:339` 的 else-if 只在
+RC 失效或 `use_pilot_yaw()` 为假时触发。所以一次打杆 = 该模式剩余全程在 Native 上。
+
+现有代码已经画过一次这条线。F-03 的 `ModeRTL::geometric_wpnav_rate_only_heading_supported()`
+接受 Rate_Only **仅当速率为零**（AutoYaw HOLD，语义是"保持当前航向"，
+模式可以为它拥有一个绝对 yaw 参考）；非零速率被判为非自有语义而 fail closed，
+源码注释里已经记录了这个暴露。
+
+**建议把 Loiter 已验证的做法推广到那四个模式**：收到非零 Rate_Only 时，
+由模式积分出自有的绝对 yaw 参考，而不是拒绝参考。
+这一步同时消除回退与闩锁暴露，且机制是现成的。
+
+这是新增 controller capability，**按 R-23 必须先走 observer 阶段**，
+与 F-03 的 observer → active 两步相同。
+
+#### Q3 硬故障闩锁
+
+现策略"不自动重入、需显式确认"在 V1 下是对的：闩锁期间飞机在 Native 上，
+而 Native 在 V1 的工况里是安全态。
+
+L1 下同样的推理不成立 —— 闩锁意味着长期停留在能力更弱的控制器上。
+但放宽自动重入会引入反复接管/脱离，那比停在弱控制器更糟。
+
+**建议保留"不自动重入"，但把闩锁的落点从 Native 改为 Q1 的第 1 层。**
+闩锁锁住的是"本架次不再使用 L1"，不是"不再使用 Geo"。
+只有 Geo 自身故障才闩锁到 Native。
+
+#### 对 §17.1 不变量表的增补
+
+| Scenario | Required result |
+|---|---|
+| L1 fault, Geo healthy | same-frame degrade to Geo nominal; geometric integral state retained; zero L1 contribution |
+| Geo fault with L1 active | same-frame handoff to Native with rate-loop integrator preload; handoff logged |
+| L1 engage request | refused unless the engage-time admission check passes |
+| L1 latched | L1 contribution stays zero for the rest of the flight; Geo ownership unaffected |
+| Non-zero Rate_Only heading | mode owns an integrated yaw reference; Geo ownership retained |
+
+#### 本节未决（需要算法侧输入）
+
+- L1 "超界"的具体判据：`σ̂` 的幅值上限与变化率上限
+- 第 1 层降级时，Geo 积分项的初值是否继承 L1 的 `σ̂` 估计
+- engage-time 准入检查的具体可观测量
+
+
+---
+
 ## 9. Reference composition ownership
 
 ### 9.1 Do not make WPNav depend on Geo
