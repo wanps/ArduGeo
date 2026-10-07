@@ -2007,6 +2007,7 @@ bool ModeGuided::update_geometric_observer(
         const bool shaper_active = copter.geometric_control.shaper_active();
         copter.Log_Write_Geometric_Attitude_Error(output.attitude);
         copter.Log_Write_Geometric_Attitude_Moment(output.attitude);
+        copter.Log_Write_Geometric_L1_Observer(copter.geometric_control.get_l1_observer_output());
 
         float rc_roll_rad;
         float rc_pitch_rad;

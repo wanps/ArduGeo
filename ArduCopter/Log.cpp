@@ -586,7 +586,68 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
                           (double)attitude.omega_error_derivative_radss.z);
 }
 
-// GEOR, GEOA, GEOD, GEOX and GEFR are emitted by Guided, Loiter, Circle, AUTO-WP and
+// @LoggerMessage: GEL1
+// @Description: L1 observer prediction error and uncertainty estimate
+// @Field: TimeUS: Time since system startup
+// @Field: VEx: Velocity prediction error, X-Axis
+// @Field: VEy: Velocity prediction error, Y-Axis
+// @Field: VEz: Velocity prediction error, Z-Axis
+// @Field: SHx: Raw matched-uncertainty estimate, X-Axis
+// @Field: SHy: Raw matched-uncertainty estimate, Y-Axis
+// @Field: SHz: Raw matched-uncertainty estimate, Z-Axis
+// @Field: SFx: Low-passed uncertainty estimate, X-Axis
+// @Field: SFy: Low-passed uncertainty estimate, Y-Axis
+// @Field: SFz: Low-passed uncertainty estimate, Z-Axis
+
+// @LoggerMessage: GEL2
+// @Description: L1 observer predicted state, nominal model and health
+// @Field: TimeUS: Time since system startup
+// @Field: VPx: Predicted velocity, X-Axis
+// @Field: VPy: Predicted velocity, Y-Axis
+// @Field: VPz: Predicted velocity, Z-Axis
+// @Field: NAx: Nominal model acceleration, X-Axis
+// @Field: NAy: Nominal model acceleration, Y-Axis
+// @Field: NAz: Nominal model acceleration, Z-Axis
+// @Field: Vld: True when the estimate may be read
+// @Field: Sat: True when the raw estimate hit its limit this step
+// @Field: Rst: Cumulative re-seeds of the predictor
+
+// The observer never contributes to a command, so these messages are the only
+// way its behaviour reaches anyone.  Both carry the same TimeUS, taken once
+// below, so the pair joins exactly on that column.
+void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer)
+{
+    GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");
+    GEOMETRIC_LOG_MSG(GEL2, "TimeUS,VPx,VPy,VPz,NAx,NAy,NAz,Vld,Sat,Rst", "QffffffBBI");
+
+    const uint64_t now_us = AP_HAL::micros64();
+
+    logger.WriteStreaming("GEL1", GEL1_LABELS, GEL1_FMT,
+                          now_us,
+                          (double)observer.velocity_error_ned_ms.x,
+                          (double)observer.velocity_error_ned_ms.y,
+                          (double)observer.velocity_error_ned_ms.z,
+                          (double)observer.sigma_hat_ned_mss.x,
+                          (double)observer.sigma_hat_ned_mss.y,
+                          (double)observer.sigma_hat_ned_mss.z,
+                          (double)observer.sigma_filtered_ned_mss.x,
+                          (double)observer.sigma_filtered_ned_mss.y,
+                          (double)observer.sigma_filtered_ned_mss.z);
+
+    logger.WriteStreaming("GEL2", GEL2_LABELS, GEL2_FMT,
+                          now_us,
+                          (double)observer.velocity_predicted_ned_ms.x,
+                          (double)observer.velocity_predicted_ned_ms.y,
+                          (double)observer.velocity_predicted_ned_ms.z,
+                          (double)observer.nominal_accel_ned_mss.x,
+                          (double)observer.nominal_accel_ned_mss.y,
+                          (double)observer.nominal_accel_ned_mss.z,
+                          (uint8_t)observer.valid,
+                          (uint8_t)observer.saturated,
+                          observer.resets);
+}
+
+// GEOR, GEOA, GEOD, GEOX, GEFR and the GEL1/GEL2 pair are emitted by Guided, Loiter, Circle, AUTO-WP and
 // RTL-WPNav. Keep each dynamic
 // message registration in this single translation unit so the logger cannot
 // allocate separate FMT IDs for identical names from different mode files.

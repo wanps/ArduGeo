@@ -1237,6 +1237,7 @@ bool ModeLoiter::update_geometric_observer(
         const bool motor_output_written_recently = motor_output_age_ms <= loiter_geometric_output_recent_ms;
         copter.Log_Write_Geometric_Attitude_Error(output.attitude);
         copter.Log_Write_Geometric_Attitude_Moment(output.attitude);
+        copter.Log_Write_Geometric_L1_Observer(copter.geometric_control.get_l1_observer_output());
         AP::logger().WriteStreaming("GEOL", "TimeUS,St,Act,Wrote,Shp,PX,PY,PZ,VX,VY,VZ,AX,AY,AZ,Yaw,YRN", "QBBBBfffffffffff",
                                     AP_HAL::micros64(),
                                     (uint8_t)loiter_state,

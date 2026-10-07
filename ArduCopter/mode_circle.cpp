@@ -312,6 +312,7 @@ void ModeCircle::update_geometric_circle_observer(
         log_geometric_circle_observer_status(true, heading.heading_mode);
         copter.Log_Write_Geometric_Attitude_Error(output.attitude);
         copter.Log_Write_Geometric_Attitude_Moment(output.attitude);
+        copter.Log_Write_Geometric_L1_Observer(copter.geometric_control.get_l1_observer_output());
         copter.Log_Write_Geometric_Output_State(motor_output_allowed,
                                                 copter.geometric_control.output_enabled(),
                                                 rate_thread_active,

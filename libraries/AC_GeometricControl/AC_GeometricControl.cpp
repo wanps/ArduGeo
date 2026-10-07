@@ -39,6 +39,12 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // SANM storage nor changes LREF_ persistent identity across compatible
     // geometric-controller branch variants.
 
+    // Indices 45 through 61 stay reserved by the note above; 63 is left as the
+    // final slot, so the observer takes the first index after the yaw shaper.
+    // @Group:
+    // @Path: AC_Geometric_L1_Observer.cpp
+    AP_SUBGROUPINFO(_l1_observer_params, "", 37, AC_GeometricControl, AC_Geometric_L1_Observer_Params),
+
     // @Group: LREF_
     // @Path: AC_Geometric_LoiterReference.cpp
     AP_SUBGROUPINFO(_loiter_reference_params, "LREF_", 62, AC_GeometricControl, AC_Geometric_LoiterReference_Params),
@@ -66,6 +72,7 @@ void AC_GeometricControl::reset()
 {
     _position_pid.reset();
     _attitude_pid.reset();
+    _l1_observer.reset();
     _setpoint_shaper.reset();
     _yaw_shaper.reset();
     _output = {};
@@ -264,6 +271,18 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
                           hover_throttle_norm(),
                           _output_mapper_params.moment_norm(),
                           _output.mapped);
+    // Observer stage, deliberately after the mapper. It reads the state and
+    // the already-computed nominal force and produces an estimate that nothing
+    // downstream consumes, so no ordering change here can alter a command.
+    if (_l1_observer_params.enabled()) {
+        _l1_observer.set_config(_l1_observer_params.config());
+        _l1_observer.update(state, _output.position, dt);
+    } else {
+        // Clearing while disabled stops a stale estimate from being logged as
+        // if it were current, and makes a later enable start from the state.
+        _l1_observer.reset();
+    }
+
     // This timestamp marks computation freshness only. Vehicle code performs
     // the separate geometric/native ownership decision and motor write.
     _last_update_ms = AP_HAL::millis();
