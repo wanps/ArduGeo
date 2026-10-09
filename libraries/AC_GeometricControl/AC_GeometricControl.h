@@ -5,6 +5,7 @@
 #include <AC_AttitudeControl/AC_ControlReference.h>
 
 #include "AC_Geometric_Attitude_PID.h"
+#include "AC_Geometric_L1_Observer.h"
 #include "AC_Geometric_LoiterReference.h"
 #include "AC_Geometric_OutputMapper.h"
 #include "AC_Geometric_Position_PID.h"
@@ -65,6 +66,13 @@ public:
     const AC_Geometric_Target& get_raw_target() const { return _raw_target; }
     const AC_Geometric_Target& get_shaped_target() const { return _shaped_target; }
     bool shaper_active() const { return _shaper_active; }
+
+    // Observer-only L1 estimate. Reading this cannot change any command: the
+    // cascade above never consumes it, which R-23 requires of an observer
+    // stage and which the unit tests assert.
+    const AC_Geometric_L1_Observer_Output& get_l1_observer_output() const {
+        return _l1_observer.get_output();
+    }
     AC_Geometric_LoiterReference_Profile get_loiter_reference_profile() const { return _loiter_reference_params.get(); }
 
 private:
@@ -87,6 +95,8 @@ private:
     AC_Geometric_Attitude_PID _attitude_pid;
     AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_LoiterReference_Params _loiter_reference_params;
+    AC_Geometric_L1_Observer_Params _l1_observer_params;
+    AC_Geometric_L1_Observer _l1_observer;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_YawShaper _yaw_shaper;
     AC_Geometric_Output _output;

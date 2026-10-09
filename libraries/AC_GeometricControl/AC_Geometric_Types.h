@@ -163,6 +163,45 @@ struct AC_Geometric_Attitude_Integral_Limits {
     Vector3f integral_error;
 };
 
+// Configuration for the observer-only L1 translational estimator.
+struct AC_Geometric_L1_Observer_Config {
+    // Predictor convergence rate a_s in A_s = -a_s*I [1/s]. Larger values make
+    // the predictor follow the measurement harder, which moves uncertainty out
+    // of the prediction error and into sigma faster.
+    float predictor_gain = 0.0f;
+    // Cut-off for the estimate's low-pass [Hz]. Zero bypasses it, matching the
+    // convention used by every other optional filter in this library.
+    float filter_hz = 0.0f;
+    // Magnitude at which the estimate is treated as out of range [m/s/s]. The
+    // value that belongs here is still an open question for the algorithm side;
+    // the mechanism is present so that the bound can be set without a code
+    // change once it is decided.
+    float sigma_max = 0.0f;
+};
+
+// Everything the L1 observer produces. No field is consumed by the control
+// cascade; they exist to be logged and analysed.
+struct AC_Geometric_L1_Observer_Output {
+    // False whenever the estimate must not be read: disabled, mis-configured,
+    // first sample, non-finite input, or a non-positive timestep.
+    bool valid = false;
+    // Predicted velocity v_hat in NED.
+    Vector3f velocity_predicted_ned_ms;
+    // Prediction error v_hat - v, the only thing the adaptive law observes.
+    Vector3f velocity_error_ned_ms;
+    // Raw piecewise-constant estimate of the matched uncertainty.
+    Vector3f sigma_hat_ned_mss;
+    // The same estimate after the configured low-pass.
+    Vector3f sigma_filtered_ned_mss;
+    // Nominal acceleration the predictor was advanced with, kept so that a log
+    // can separate a modelling error from an estimator one.
+    Vector3f nominal_accel_ned_mss;
+    // True when the raw estimate hit sigma_max on this step.
+    bool saturated = false;
+    // Counts re-seeds, so a log shows whether an estimate had time to converge.
+    uint32_t resets = 0;
+};
+
 struct AC_Geometric_Position_Output {
     // Body-to-NED reference attitude/rate passed to the attitude channel. The
     // coupled path supplies position-derived (R_c,Omega_c,dot(Omega_c)); the
