@@ -45,6 +45,10 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // @Path: AC_Geometric_L1_Observer.cpp
     AP_SUBGROUPINFO(_l1_observer_params, "", 37, AC_GeometricControl, AC_Geometric_L1_Observer_Params),
 
+    // @Group:
+    // @Path: AC_Geometric_HandoverCarry.cpp
+    AP_SUBGROUPINFO(_handover_carry_params, "", 18, AC_GeometricControl, AC_Geometric_HandoverCarry_Params),
+
     // @Group: LREF_
     // @Path: AC_Geometric_LoiterReference.cpp
     AP_SUBGROUPINFO(_loiter_reference_params, "LREF_", 62, AC_GeometricControl, AC_Geometric_LoiterReference_Params),
@@ -271,6 +275,11 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
                           hover_throttle_norm(),
                           _output_mapper_params.moment_norm(),
                           _output.mapped);
+
+    // Handover carry. Identity on every frame outside a handover and whenever
+    // GEO_HAND_TC is not positive, because the offset is zero in both cases.
+    _handover_carry.set_config(_handover_carry_params.config());
+    apply_handover_carry(_handover_carry.update(dt));
     // Observer stage, deliberately after the mapper. It reads the state and
     // the already-computed nominal force and produces an estimate that nothing
     // downstream consumes, so no ordering change here can alter a command.
@@ -286,4 +295,28 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     // This timestamp marks computation freshness only. Vehicle code performs
     // the separate geometric/native ownership decision and motor write.
     _last_update_ms = AP_HAL::millis();
+}
+
+void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm)
+{
+    _handover_carry.set_config(_handover_carry_params.config());
+    apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm_raw));
+}
+
+void AC_GeometricControl::end_output_ownership()
+{
+    _handover_carry.reset();
+}
+
+void AC_GeometricControl::apply_handover_carry(const Vector3f& offset)
+{
+    if (offset.is_zero()) {
+        return;
+    }
+    _output.mapped.rpy_norm_raw += offset;
+    _output.mapped.rpy_norm = Vector3f {
+        constrain_float(_output.mapped.rpy_norm_raw.x, -1.0f, 1.0f),
+        constrain_float(_output.mapped.rpy_norm_raw.y, -1.0f, 1.0f),
+        constrain_float(_output.mapped.rpy_norm_raw.z, -1.0f, 1.0f)
+    };
 }

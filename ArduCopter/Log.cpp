@@ -615,6 +615,25 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // The observer never contributes to a command, so these messages are the only
 // way its behaviour reaches anyone.  Both carry the same TimeUS, taken once
 // below, so the pair joins exactly on that column.
+// @LoggerMessage: GEOC
+// @Description: Geometric handover trim carry, logged once per rising edge of output ownership
+// @Field: TimeUS: Time since system startup
+// @Field: Ox: Seeded carry offset, roll
+// @Field: Oy: Seeded carry offset, pitch
+// @Field: Oz: Seeded carry offset, yaw
+// @Field: TC: Washout time constant in effect
+// @Field: On: True when the carry was seeded rather than skipped
+void Copter::Log_Write_Geometric_Handover_Carry(const Vector3f &offset, float time_constant_s)
+{
+    AP::logger().Write("GEOC", "TimeUS,Ox,Oy,Oz,TC,On", "QffffB",
+                       AP_HAL::micros64(),
+                       offset.x,
+                       offset.y,
+                       offset.z,
+                       time_constant_s,
+                       uint8_t(!offset.is_zero()));
+}
+
 void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer)
 {
     GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");
