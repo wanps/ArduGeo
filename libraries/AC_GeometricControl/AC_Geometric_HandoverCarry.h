@@ -30,11 +30,14 @@
 // in mean command over a second either side is 0.002 to 0.022, well below the
 // jump, because two controllers holding the same aircraft have to supply
 // similar mean moments. That is a statement about the second after the
-// handover, not about steady state: the geometric law has no roll or pitch
-// integrator and builds its share out of attitude error over tens of seconds,
-// visibly leaning further as it does. The washout should therefore be short.
-// A long one holds stale fast content open loop and delays that error from
-// forming, parking the aircraft at the wrong attitude.
+// handover, not about steady state. The law has no roll or pitch integrator
+// and builds its share out of attitude error over tens of seconds: GEOA.ERx
+// averages +0.001 and +0.003 in the second before the engage, and -0.119 and
+// +0.025 thirty seconds after.
+//
+// The washout should therefore be short. A long one holds stale content open
+// loop and delays that error from forming, parking the aircraft at the wrong
+// attitude.
 //
 // A non-positive time constant disables the carry entirely, which reproduces
 // the behaviour those two flights measured.
@@ -62,12 +65,16 @@ public:
     // so that adding the result reproduces the native command exactly. Zero
     // when the carry is disabled or either input is not finite.
     //
-    // The native side is clamped first, because AP_Motors documents its -1..+1
-    // range without enforcing it. The result is then bounded to the span of
-    // that range: the offset moves the command from one realizable value to
-    // another, so nothing larger can be used, and it is re-applied every frame
-    // to a command the mapper has recomputed -- an unbounded one would drive a
-    // later frame to the opposite rail.
+    // Returns zero when this law's own command is outside the realizable
+    // range. Reproducing the last native command then means withholding
+    // authority the law is asking for, which is the wrong way to be wrong, and
+    // it is the only case that produced a large offset. Neither logged flight
+    // ever saturated, so refusing it costs nothing observed.
+    //
+    // The native side is clamped, because AP_Motors documents its -1..+1 range
+    // without enforcing it. The result is bounded to MAX_OFFSET: the offset is
+    // sized against one frame's command and re-applied to the next one's, so
+    // an oversized one parks the command on a rail the law never asked for.
     const Vector3f& seed(const Vector3f& native_rpy_norm,
                          const Vector3f& geometric_rpy_norm);
 
@@ -98,9 +105,12 @@ private:
     // motors, so holding it serves no purpose.
     static constexpr float NEGLIGIBLE = 1.0e-4f;
 
-    // The command range is -1..+1, so an offset moving between two realizable
-    // commands cannot usefully exceed its span.
-    static constexpr float MAX_OFFSET = 2.0f;
+    // 2.4 times the largest jump measured on either flight (0.208, yaw,
+    // log_19). The offset is applied to later frames' commands as well as the
+    // one it was computed from, so it is bounded by the size of the thing
+    // being smoothed rather than by what the command range permits. A
+    // disagreement larger than this is not something a washout should hide.
+    static constexpr float MAX_OFFSET = 0.5f;
 
     AC_Geometric_HandoverCarry_Config _config {};
     Vector3f _offset;
@@ -115,13 +125,26 @@ public:
     static const struct AP_Param::GroupInfo var_info[];
 
     // The parameter's declared range is metadata the ground station honours and
-    // nothing else does. Clamp it here, because a time constant of a minute
-    // would hold an open-loop offset on the command for minutes.
-    static constexpr float MAX_TIME_CONSTANT_S = 2.0f;
+    // nothing else does. Five times the suggested starting value of 0.1 s,
+    // which is already twice the measured transient envelope.
+    static constexpr float MAX_TIME_CONSTANT_S = 0.5f;
+
+    // Separated from config() so it can be tested: the parameter itself cannot
+    // be set from a unit test without the full AP_Param machinery.
+    static float clamped_time_constant(float requested) {
+        // constrain_float returns the midpoint of its range for NaN, so
+        // clamping alone would turn a corrupt parameter into an enabled carry.
+        // Before the clamp existed, is_positive rejected NaN and the carry
+        // stayed off; keep it that way.
+        if (!isfinite(requested)) {
+            return 0.0f;
+        }
+        return constrain_float(requested, 0.0f, MAX_TIME_CONSTANT_S);
+    }
 
     AC_Geometric_HandoverCarry_Config config() const {
         return AC_Geometric_HandoverCarry_Config {
-            constrain_float(_time_constant_s.get(), 0.0f, MAX_TIME_CONSTANT_S) };
+            clamped_time_constant(_time_constant_s.get()) };
     }
 
 private:

@@ -4,8 +4,8 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
 
     // @Param: HAND_TC
     // @DisplayName: Geometric output handover washout time constant
-    // @Description: Washout time constant for smoothing the command discontinuity on the frame the geometric controller takes the outputs. The carry makes the first geometric command reproduce the last native one, then decays that correction with this time constant. Measured jumps on the two logged engagements were 0.035 and 0.076 in roll, 0.033 and 0.049 in pitch, and 0.022 and 0.208 in yaw, so yaw is the axis this is for. Keep it short: the measured transient decays with a 50 to 100 ms envelope, and a longer constant holds a correction the aircraft no longer needs. Start at 0.1 s. Values above 2 are clamped in code. Zero disables the carry and reproduces the behaviour measured on the aircraft.
-    // @Range: 0 2
+    // @Description: Washout time constant for smoothing the command discontinuity on the frame the geometric controller takes the outputs. The carry makes the first geometric command reproduce the last native one, then decays that correction with this time constant. Measured jumps on the two logged engagements were 0.035 and 0.076 in roll, 0.033 and 0.049 in pitch, and 0.022 and 0.208 in yaw, so yaw is the axis this is for. Keep it short: the measured transient decays with a 50 to 100 ms envelope, and a longer constant holds a correction the aircraft no longer needs. Start at 0.1 s. Values above 0.5 are clamped in code. Zero disables the carry and reproduces the behaviour measured on the aircraft.
+    // @Range: 0 0.5
     // @Units: s
     // @User: Advanced
     AP_GROUPINFO("HAND_TC", 1, AC_Geometric_HandoverCarry_Params, _time_constant_s, 0.0f),
@@ -47,9 +47,16 @@ const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm
         return _offset;
     }
 
-    // The geometric side is deliberately not clamped: adding this to the law's
-    // raw command has to land on the native command exactly, and clamping it
-    // would land somewhere between the two instead.
+    // A saturated law is refused rather than bounded. Seeding against it would
+    // hold the command near what native wanted while the law is asking for
+    // more than full authority.
+    if (geometric_rpy_norm != realizable(geometric_rpy_norm)) {
+        return _offset;
+    }
+
+    // The geometric side is deliberately not clamped -- it is already in range
+    // by the check above -- so adding this to the law's raw command lands on
+    // the native command exactly.
     const Vector3f difference = realizable(native_rpy_norm) - geometric_rpy_norm;
     const Vector3f bounded {
         constrain_float(difference.x, -MAX_OFFSET, MAX_OFFSET),

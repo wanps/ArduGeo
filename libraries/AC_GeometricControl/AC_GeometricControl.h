@@ -62,13 +62,15 @@ public:
     //
     // The command it adjusts is the one update() left behind, which is the
     // previous loop iteration's -- the ownership decision runs in FAST_TASK
-    // ahead of the flight mode. The mapper assigns rpy_norm_raw rather than
-    // accumulating into it, so the next update() overwrites rather than
-    // compounds. GEO_FAIL_STALE bounds how old that command may be, but only
-    // to 100 ms, which for this law is a median command excursion of 0.055 --
-    // the seed is sized against a command up to that far from the current one,
-    // which is why the washout has to be short. A non-positive GEO_HAND_TC
-    // leaves the command untouched.
+    // ahead of the flight mode. One iteration, not GEO_FAIL_STALE's 100 ms:
+    // update() runs every frame whether or not this controller owns the
+    // outputs. The mapper assigns rpy_norm_raw rather than accumulating into
+    // it, so the next update() overwrites rather than compounds.
+    //
+    // The offset outlives that frame, though. It is re-applied to each later
+    // frame's command, which is why it is bounded to the size of the jump
+    // rather than to what the command range permits. A non-positive
+    // GEO_HAND_TC leaves the command untouched.
     void begin_output_ownership(const Vector3f& native_rpy_norm);
 
     // Called when geometric output ownership ends, so a stale carry cannot be

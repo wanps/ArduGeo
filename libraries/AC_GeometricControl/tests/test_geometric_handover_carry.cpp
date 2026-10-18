@@ -62,44 +62,78 @@ TEST(HandoverCarry, AgreeingControllersSeedNothing)
     EXPECT_FALSE(carry.active());
 }
 
-TEST(HandoverCarry, SaturatedGeometricCommandIsBoundedToTheCommandSpan)
+TEST(HandoverCarry, ASaturatedLawIsRefusedRatherThanSmoothed)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.1f));
 
-    // A law demanding three times full scale. The raw difference is -3.02, and
-    // the offset is re-applied each frame to a command the mapper recomputes,
-    // so an unbounded one would drive a later frame to the opposite rail.
-    const Vector3f saturated { 3.0f, -3.0f, 0.0f };
-    const Vector3f& offset = carry.seed(NATIVE, saturated);
-
-    EXPECT_NEAR(-2.0f, offset.x, TOLERANCE);
-    EXPECT_NEAR(2.0f, offset.y, TOLERANCE);
+    // A law demanding three times full scale. Reproducing the last native
+    // command would hold the output near what native wanted while this law is
+    // asking for more than full authority, which is the wrong way to be wrong.
+    EXPECT_TRUE(carry.seed(NATIVE, Vector3f{3.0f, -3.0f, 0.0f}).is_zero());
+    EXPECT_FALSE(carry.active());
 }
 
-TEST(HandoverCarry, OutOfRangeNativeIsAlsoBounded)
+TEST(HandoverCarry, OneSaturatedAxisRefusesTheWholeSeed)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.1f));
 
-    // AP_Motors documents set_roll as -1..+1 but does not enforce it.
-    const Vector3f out_of_range { 4.0f, -4.0f, 0.0f };
-    const Vector3f& offset = carry.seed(out_of_range, GEOMETRIC);
-
-    EXPECT_NEAR(1.0f - GEOMETRIC.x, offset.x, TOLERANCE);
-    EXPECT_NEAR(-1.0f - GEOMETRIC.y, offset.y, TOLERANCE);
+    // Conservative on purpose. A law at the rail on one axis is not in a state
+    // where smoothing the others is obviously right.
+    EXPECT_TRUE(carry.seed(NATIVE, Vector3f{0.2f, 1.5f, 0.1f}).is_zero());
+    EXPECT_TRUE(carry.seed(NATIVE, Vector3f{0.2f, 0.1f, -1.01f}).is_zero());
 }
 
-TEST(HandoverCarry, OffsetNeverExceedsTwiceTheCommandRange)
+TEST(HandoverCarry, ACommandExactlyAtTheRailIsStillSeeded)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.1f));
 
-    const Vector3f& offset = carry.seed(Vector3f{100.0f, -100.0f, 50.0f},
-                                        Vector3f{-100.0f, 100.0f, -50.0f});
-    EXPECT_NEAR(2.0f, offset.x, TOLERANCE);
-    EXPECT_NEAR(-2.0f, offset.y, TOLERANCE);
-    EXPECT_NEAR(2.0f, offset.z, TOLERANCE);
+    // The refusal is for commands the mapper had to limit, not for one that
+    // happens to land on the boundary.
+    EXPECT_FALSE(carry.seed(NATIVE, Vector3f{1.0f, -1.0f, 0.0f}).is_zero());
+}
+
+TEST(HandoverCarry, OutOfRangeNativeIsClampedBeforeSubtracting)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+
+    // AP_Motors documents set_roll as -1..+1 but does not enforce it. The
+    // difference against an in-range law is then 0.95 and -1.05, both past
+    // the offset bound.
+    const Vector3f& offset = carry.seed(Vector3f{4.0f, -4.0f, 0.0f}, GEOMETRIC);
+
+    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);
+    EXPECT_NEAR(-0.5f, offset.y, TOLERANCE);
+}
+
+TEST(HandoverCarry, TheOffsetIsBoundedToTheScaleOfTheJump)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+
+    // The offset is applied to later frames' commands too, so it is bounded by
+    // the size of the thing being smoothed -- 0.5, against a worst measured
+    // jump of 0.208 -- not by what the command range would permit.
+    const Vector3f& offset = carry.seed(Vector3f{1.0f, -1.0f, 1.0f},
+                                        Vector3f{-0.9f, 0.9f, -0.2f});
+    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);
+    EXPECT_NEAR(-0.5f, offset.y, TOLERANCE);
+    EXPECT_NEAR(0.5f, offset.z, TOLERANCE);
+}
+
+TEST(HandoverCarry, EachAxisIsBoundedIndependently)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+
+    const Vector3f& offset = carry.seed(Vector3f{1.0f, 0.1f, -1.0f},
+                                        Vector3f{-0.9f, 0.0f, -0.8f});
+    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);      // bound binds
+    EXPECT_NEAR(0.1f, offset.y, TOLERANCE);      // does not
+    EXPECT_NEAR(-0.2f, offset.z, TOLERANCE);     // does not
 }
 
 TEST(HandoverCarry, OneTimeConstantLeavesAboutAThird)
@@ -160,39 +194,35 @@ TEST(HandoverCarryApply, TheFirstFrameReproducesTheNativeCommand)
     EXPECT_FALSE(applied.limited);
 }
 
-TEST(HandoverCarryApply, ASaturatedLawStillLandsOnTheNativeCommand)
+TEST(HandoverCarryApply, ASaturatedLawGetsNoCarryAndKeepsItsAuthority)
 {
-    // The case that broke: the offset was computed against the limited command
-    // and added to the unlimited one, so a law demanding 1.5 against a native
-    // -0.5 produced 0.0 -- neither continuous nor the law's intent -- and
-    // reported the rail as clean.
+    // The case that broke in review: the offset was computed against the
+    // limited command and added to the unlimited one, so a law demanding 1.5
+    // against a native -0.5 produced 0.0 -- neither continuous nor the law's
+    // intent -- and reported the rail as clean. It is now refused outright,
+    // so the law keeps the authority it is asking for.
     AC_Geometric_HandoverCarry carry;
     carry.set_config(config_with(0.1f));
     const Vector3f raw { 1.5f, 0.0f, 0.0f };
-    const Vector3f native { -0.5f, 0.0f, 0.0f };
-    const Vector3f offset = carry.seed(native, raw);
+    const Vector3f offset = carry.seed(Vector3f{-0.5f, 0.0f, 0.0f}, raw);
+    EXPECT_TRUE(offset.is_zero());
 
-    const AC_Geometric_HandoverCarry::Applied applied =
-        AC_Geometric_HandoverCarry::apply(raw, offset, true);
-
-    EXPECT_NEAR(-0.5f, applied.rpy_norm.x, TOLERANCE);
-    EXPECT_TRUE(applied.limited);
-}
-
-TEST(HandoverCarryApply, BeyondTheOffsetBoundTheCommandLandsOnTheRailNotBetween)
-{
-    // Further out than the offset can reach. The carry does not pretend: the
-    // command goes to the rail, and the flag says so.
-    AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(0.1f));
-    const Vector3f raw { 3.0f, 0.0f, 0.0f };
-    const Vector3f native { 0.4f, 0.0f, 0.0f };
-    const Vector3f offset = carry.seed(native, raw);
-
-    EXPECT_NEAR(-2.0f, offset.x, TOLERANCE);
     const AC_Geometric_HandoverCarry::Applied applied =
         AC_Geometric_HandoverCarry::apply(raw, offset, true);
     EXPECT_NEAR(1.0f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_TRUE(applied.limited);
+}
+
+TEST(HandoverCarryApply, ADecayFrameCannotBePushedBeyondTheRail)
+{
+    // The offset was sized against the previous frame's command and is applied
+    // to this one. Whatever that mis-sizing does, the result is a realizable
+    // command and the rail is reported.
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(Vector3f{0.8f, -0.8f, 0.0f},
+                                          Vector3f{0.5f, -0.5f, 0.0f}, false);
+    EXPECT_NEAR(1.0f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_NEAR(-1.0f, applied.rpy_norm.y, TOLERANCE);
     EXPECT_TRUE(applied.limited);
 }
 
@@ -318,6 +348,40 @@ TEST(HandoverCarry, DisablingMidDecayStopsTheCarry)
 
     carry.set_config(config_with(0.0f));
     EXPECT_TRUE(carry.update(DT).is_zero());
+}
+
+// ---------------------------------------------------------------------------
+// The parameter clamp. Separated from config() because the parameter itself
+// cannot be set from a unit test without the full AP_Param machinery, and this
+// is the half that has the failure modes.
+
+TEST(HandoverCarryParams, AValueInRangePassesThrough)
+{
+    EXPECT_FLOAT_EQ(0.1f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(0.1f));
+    EXPECT_FLOAT_EQ(0.5f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(0.5f));
+}
+
+TEST(HandoverCarryParams, AnOverlongConstantIsClamped)
+{
+    // The declared range is metadata the ground station honours and nothing
+    // else did. A 30 s constant would hold an open-loop offset for half a
+    // minute.
+    EXPECT_FLOAT_EQ(0.5f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(30.0f));
+    EXPECT_FLOAT_EQ(0.5f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(2.0f));
+}
+
+TEST(HandoverCarryParams, NegativeStaysNegativeInEffect)
+{
+    EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(-1.0f));
+}
+
+TEST(HandoverCarryParams, NonFiniteDisablesRatherThanEnabling)
+{
+    // constrain_float returns the midpoint of its range for NaN, so clamping
+    // alone would turn a corrupt parameter into an enabled carry at 0.25 s.
+    EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(NAN));
+    EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(INFINITY));
+    EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(-INFINITY));
 }
 
 AP_GTEST_MAIN()
