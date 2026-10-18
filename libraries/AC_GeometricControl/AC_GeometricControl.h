@@ -5,6 +5,7 @@
 #include <AC_AttitudeControl/AC_ControlReference.h>
 
 #include "AC_Geometric_Attitude_PID.h"
+#include "AC_Geometric_HandoverCarry.h"
 #include "AC_Geometric_L1_Observer.h"
 #include "AC_Geometric_LoiterReference.h"
 #include "AC_Geometric_OutputMapper.h"
@@ -53,6 +54,35 @@ public:
                 const AC_Geometric_Target& target,
                 float dt);
 
+    // Called by vehicle code on the frame the geometric controller first owns
+    // the outputs, with the normalized roll/pitch/yaw the native controller
+    // last wrote. Seeds the handover carry from the difference between that
+    // and this law's own command, so the first geometric frame reproduces what
+    // the motors were already getting.
+    //
+    // The command it adjusts is the one update() left behind, which is the
+    // previous loop iteration's -- the ownership decision runs in FAST_TASK
+    // ahead of the flight mode. One iteration on the nominal path, since
+    // update() runs every frame whether or not this controller owns the
+    // outputs; but what the gate enforces is GEOMETRIC_OUTPUT_MAX_AGE_MS, so a
+    // skipped or overrun mode frame can present a command up to 100 ms old,
+    // over which this law's command moves a median of 0.028 to 0.038 and up
+    // to 0.33. The mapper assigns rpy_norm_raw rather than accumulating into
+    // it, so the next update() overwrites rather than compounds.
+    //
+    // The offset outlives that frame, though. It is re-applied to each later
+    // frame's command, which is why it is bounded to the size of the jump
+    // rather than to what the command range permits. A non-positive
+    // GEO_HAND_TC leaves the command untouched.
+    void begin_output_ownership(const Vector3f& native_rpy_norm);
+
+    // Called when geometric output ownership ends, so a stale carry cannot be
+    // applied if ownership returns later in the flight.
+    void end_output_ownership();
+
+    const Vector3f& handover_carry_offset() const { return _handover_carry.offset(); }
+    float handover_carry_time_constant_s() const { return _handover_carry_params.config().time_constant_s; }
+
     static bool reference_to_target(const AC_TrajectoryReference& reference,
                                     AC_Geometric_Target& target);
     static bool reference_to_target(const AC_AttitudeReference& reference,
@@ -77,6 +107,8 @@ public:
 
 private:
     void update_gains_from_params();
+    // Adds the carry to the mapped command and re-applies the output limits.
+    void apply_handover_carry(const Vector3f& offset);
     float hover_throttle_norm() const;
 
     // Controls whether the cascade computes. GEO_OUT_EN is a separate output
@@ -96,6 +128,8 @@ private:
     AC_Geometric_OutputMapper _output_mapper;
     AC_Geometric_LoiterReference_Params _loiter_reference_params;
     AC_Geometric_L1_Observer_Params _l1_observer_params;
+    AC_Geometric_HandoverCarry_Params _handover_carry_params;
+    AC_Geometric_HandoverCarry _handover_carry;
     AC_Geometric_L1_Observer _l1_observer;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_YawShaper _yaw_shaper;

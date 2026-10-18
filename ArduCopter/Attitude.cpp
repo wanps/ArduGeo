@@ -47,6 +47,7 @@ void Copter::run_rate_controller_main()
         if (flightmode != nullptr) {
             flightmode->handle_geometric_motor_output_fallback();
         }
+        geometric_control.end_output_ownership();
         geometric_motor_output_was_active = false;
 
 #if HAL_LOGGING_ENABLED
@@ -78,6 +79,24 @@ void Copter::run_rate_controller_main()
             // Keep throttle-mix state moving for the landing detector without
             // running the native rate PIDs or writing native motor commands.
             attitude_control->rate_controller_update_throttle_mix();
+            if (!geometric_motor_output_was_active) {
+                // Rising edge. AP_Motors still holds what the native rate
+                // controller wrote last frame, which is what the motors are
+                // actually getting, so that is what the first geometric frame
+                // has to reproduce.
+                //
+                // Not the rate loop's integrator alone. An earlier revision
+                // carried that, which against the measured jumps left a
+                // residual of 0.009 to 0.215 where the whole difference leaves
+                // none by construction.
+                geometric_control.begin_output_ownership(Vector3f{
+                    motors->get_roll(), motors->get_pitch(), motors->get_yaw()});
+#if HAL_LOGGING_ENABLED
+                Log_Write_Geometric_Handover_Carry(
+                    geometric_control.handover_carry_offset(),
+                    geometric_control.handover_carry_time_constant_s());
+#endif
+            }
             geometric_motor_output_to_motors();
             geometric_motor_output_frame_count++;
             geometric_motor_output_was_active = true;
