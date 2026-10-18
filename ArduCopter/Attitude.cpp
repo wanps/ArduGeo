@@ -51,23 +51,16 @@ void Copter::run_rate_controller_main()
         geometric_motor_output_was_active = false;
 
 #if HAL_LOGGING_ENABLED
-        // @LoggerMessage: GEOH
-        // @Description: Geometric motor-output handoff event, logged after mode handoff and before the native rate controller runs
-        // @Field: TimeUS: Time since system startup
-        // @Field: Mode: Flight mode at the output-path falling edge
-        // @Field: Fail: Geometric gate failure bitmask
-        // @Field: Prev: True because the previous control frame wrote geometric output
-        // @Field: Act: False because geometric output is no longer authorized
-        // @Field: Hand: True after the native-controller handoff completed
-        // @Field: RT: True if the rate thread blocked geometric output
-        AP::logger().Write("GEOH", "TimeUS,Mode,Fail,Prev,Act,Hand,RT", "QBBBBBB",
-                           AP_HAL::micros64(),
-                           mode_number,
-                           geometric_failure_flags,
-                           uint8_t(1),
-                           uint8_t(0),
-                           uint8_t(1),
-                           uint8_t(using_rate_thread));
+        // The integrators as they now stand, so the log shows what the rate
+        // loop actually holds rather than what was asked for: clamped to
+        // ATC_RAT_*_IMAX, and zero when GEO_HAND_PRE is off.
+        Log_Write_Geometric_Handoff(mode_number, geometric_failure_flags,
+                                    using_rate_thread,
+                                    Vector3f {
+                                        attitude_control->get_rate_roll_pid().get_i(),
+                                        attitude_control->get_rate_pitch_pid().get_i(),
+                                        attitude_control->get_rate_yaw_pid().get_i()
+                                    });
 #endif
     }
 

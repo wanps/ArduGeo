@@ -634,6 +634,37 @@ void Copter::Log_Write_Geometric_Handover_Carry(const Vector3f &offset, float ti
                        uint8_t(!offset.is_zero()));
 }
 
+// @LoggerMessage: GEOH
+// @Description: Geometric motor-output handoff event, logged after mode handoff and before the native rate controller runs
+// @Field: TimeUS: Time since system startup
+// @Field: Mode: Flight mode at the output-path falling edge
+// @Field: Fail: Geometric gate failure bitmask
+// @Field: Prev: True because the previous control frame wrote geometric output
+// @Field: Act: False because geometric output is no longer authorized
+// @Field: Hand: True after the native-controller handoff completed
+// @Field: RT: True if the rate thread blocked geometric output
+// @Field: Px: Native roll rate integrator after the handoff
+// @Field: Py: Native pitch rate integrator after the handoff
+// @Field: Pz: Native yaw rate integrator after the handoff
+void Copter::Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_flags,
+                                         bool rate_thread_active,
+                                         const Vector3f &rate_integrator)
+{
+    GEOMETRIC_LOG_MSG(GEOH, "TimeUS,Mode,Fail,Prev,Act,Hand,RT,Px,Py,Pz", "QBBBBBBfff");
+
+    AP::logger().Write("GEOH", GEOH_LABELS, GEOH_FMT,
+                       AP_HAL::micros64(),
+                       mode_number,
+                       failure_flags,
+                       uint8_t(1),
+                       uint8_t(0),
+                       uint8_t(1),
+                       uint8_t(rate_thread_active),
+                       (double)rate_integrator.x,
+                       (double)rate_integrator.y,
+                       (double)rate_integrator.z);
+}
+
 void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer)
 {
     GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");

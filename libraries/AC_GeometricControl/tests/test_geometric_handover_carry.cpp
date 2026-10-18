@@ -431,7 +431,7 @@ namespace {
 // Sets GEO_HAND_TC through the real parameter path. The sub-group is declared
 // with an empty name (AP_SUBGROUPINFO(..., "", 18, ...)), so it is located by
 // the table it points at rather than by name.
-bool set_handover_tc(AC_GeometricControl& control, float value)
+bool set_param(AC_GeometricControl& control, const char* name, float value)
 {
     for (const AP_Param::GroupInfo* gi = AC_GeometricControl::var_info;
          gi->type != AP_PARAM_NONE; gi++) {
@@ -439,10 +439,15 @@ bool set_handover_tc(AC_GeometricControl& control, float value)
             gi->group_info == AC_Geometric_HandoverCarry_Params::var_info) {
             return AP_Param::set_object_value(
                 reinterpret_cast<const uint8_t*>(&control) + gi->offset,
-                gi->group_info, "HAND_TC", value);
+                gi->group_info, name, value);
         }
     }
     return false;
+}
+
+bool set_handover_tc(AC_GeometricControl& control, float value)
+{
+    return set_param(control, "HAND_TC", value);
 }
 
 }  // namespace
@@ -518,6 +523,37 @@ TEST(HandoverCarryWiring, ResetAlsoClearsTheOffset)
 
     control.reset();
     EXPECT_TRUE(control.handover_carry_offset().is_zero());
+}
+
+TEST(HandoverCarryWiring, TheFallbackPreloadDefaultsOff)
+{
+    // It changes the fail-closed path, and no flight has used it.
+    AC_GeometricControl control;
+    EXPECT_FALSE(control.handover_preload_on_fallback());
+}
+
+TEST(HandoverCarryWiring, TheFallbackPreloadReachesTheAccessor)
+{
+    AC_GeometricControl control;
+    ASSERT_TRUE(set_param(control, "HAND_PRE", 1.0f));
+    EXPECT_TRUE(control.handover_preload_on_fallback());
+
+    ASSERT_TRUE(set_param(control, "HAND_PRE", 0.0f));
+    EXPECT_FALSE(control.handover_preload_on_fallback());
+}
+
+TEST(HandoverCarryWiring, TheTwoEdgesAreConfiguredIndependently)
+{
+    // One group, two edges. Enabling the fallback preload must not arm the
+    // engage-edge carry, which is a different mechanism on a different frame.
+    AC_GeometricControl control;
+    ASSERT_TRUE(set_param(control, "HAND_PRE", 1.0f));
+
+    EXPECT_TRUE(control.handover_preload_on_fallback());
+    EXPECT_FLOAT_EQ(0.0f, control.handover_carry_time_constant_s());
+    control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
+    EXPECT_TRUE(control.handover_carry_offset().is_zero());
+    EXPECT_TRUE(control.get_output().mapped.rpy_norm.is_zero());
 }
 
 TEST(HandoverCarryWiring, AnOverlongParameterIsClampedThroughTheRealPath)

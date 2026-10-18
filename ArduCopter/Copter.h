@@ -954,6 +954,8 @@ private:
     void Log_Write_Geometric_Attitude_Error(const AC_Geometric_Attitude_Output &attitude);
     void Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Output &attitude);
     void Log_Write_Geometric_Handover_Carry(const Vector3f &offset, float time_constant_s);
+    void Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_flags,
+                                     bool rate_thread_active, const Vector3f &rate_integrator);
     void Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer);
     void Log_Write_Geometric_Output_State(bool motor_output_allowed,
                                           bool geometric_output_enabled,

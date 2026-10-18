@@ -135,6 +135,14 @@ public:
     // which is already twice the measured transient envelope.
     static constexpr float MAX_TIME_CONSTANT_S = 0.5f;
 
+    // The other edge. The carry smooths Native to Geo; this preloads the
+    // native rate loop on Geo to Native so it resumes from what the geometric
+    // controller was commanding rather than from zero. Vehicle code owns the
+    // logic, because it touches AP_Motors and AC_AttitudeControl and this
+    // library deliberately does not; only the parameter lives here, so both
+    // edges of the handover are configured in one place.
+    bool preload_on_fallback() const { return _preload_on_fallback.get() != 0; }
+
     static float clamped_time_constant(float requested) {
         // A non-finite value is corruption, not a request, and is treated as
         // off. A finite one, however large, is treated as a request and
@@ -154,4 +162,5 @@ public:
 
 private:
     AP_Float _time_constant_s;
+    AP_Int8 _preload_on_fallback;
 };
