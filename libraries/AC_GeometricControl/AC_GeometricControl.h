@@ -62,9 +62,12 @@ public:
     //
     // The command it adjusts is the one update() left behind, which is the
     // previous loop iteration's -- the ownership decision runs in FAST_TASK
-    // ahead of the flight mode. One iteration, not GEO_FAIL_STALE's 100 ms:
+    // ahead of the flight mode. One iteration on the nominal path, since
     // update() runs every frame whether or not this controller owns the
-    // outputs. The mapper assigns rpy_norm_raw rather than accumulating into
+    // outputs; but what the gate enforces is GEOMETRIC_OUTPUT_MAX_AGE_MS, so a
+    // skipped or overrun mode frame can present a command up to 100 ms old,
+    // over which this law's command moves a median of 0.028 to 0.038 and up
+    // to 0.33. The mapper assigns rpy_norm_raw rather than accumulating into
     // it, so the next update() overwrites rather than compounds.
     //
     // The offset outlives that frame, though. It is re-applied to each later

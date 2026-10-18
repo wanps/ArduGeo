@@ -1,6 +1,8 @@
 #include <AP_gtest.h>
 
 #include <AC_GeometricControl/AC_Geometric_HandoverCarry.h>
+#include <AC_GeometricControl/AC_GeometricControl.h>
+#include <AP_Param/AP_Param.h>
 
 const AP_HAL::HAL& hal = AP_HAL::get_HAL();
 
@@ -42,7 +44,7 @@ TEST(HandoverCarry, NegativeTimeConstantIsTreatedAsDisabled)
 TEST(HandoverCarry, SeedIsTheCommandStepItCancels)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
 
     const Vector3f& offset = carry.seed(NATIVE, GEOMETRIC);
     // Adding the offset to what the geometric controller computed reproduces
@@ -56,7 +58,7 @@ TEST(HandoverCarry, SeedIsTheCommandStepItCancels)
 TEST(HandoverCarry, AgreeingControllersSeedNothing)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
 
     EXPECT_TRUE(carry.seed(NATIVE, NATIVE).is_zero());
     EXPECT_FALSE(carry.active());
@@ -85,14 +87,29 @@ TEST(HandoverCarry, OneSaturatedAxisRefusesTheWholeSeed)
     EXPECT_TRUE(carry.seed(NATIVE, Vector3f{0.2f, 0.1f, -1.01f}).is_zero());
 }
 
-TEST(HandoverCarry, ACommandExactlyAtTheRailIsStillSeeded)
+TEST(HandoverCarry, ACommandExactlyAtTheRailIsNotTreatedAsSaturated)
 {
     AC_Geometric_HandoverCarry carry;
     carry.set_config(config_with(0.1f));
 
     // The refusal is for commands the mapper had to limit, not for one that
-    // happens to land on the boundary.
-    EXPECT_FALSE(carry.seed(NATIVE, Vector3f{1.0f, -1.0f, 0.0f}).is_zero());
+    // happens to land on the boundary. Native is near the same rail so the
+    // difference stays inside MAX_OFFSET and the other refusal cannot fire.
+    const Vector3f& offset = carry.seed(Vector3f{0.9f, -0.9f, 0.0f},
+                                        Vector3f{1.0f, -1.0f, 0.0f});
+    EXPECT_NEAR(-0.1f, offset.x, TOLERANCE);
+    EXPECT_NEAR(0.1f, offset.y, TOLERANCE);
+}
+
+TEST(HandoverCarry, OneUlpPastTheRailIsSaturated)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+
+    // FLT_EPSILON is one ulp at 1.0, so there is no gap between "at the rail"
+    // and "past it".
+    EXPECT_TRUE(carry.seed(Vector3f{0.9f, 0.0f, 0.0f},
+                           Vector3f{nextafterf(1.0f, 2.0f), 0.0f, 0.0f}).is_zero());
 }
 
 TEST(HandoverCarry, OutOfRangeNativeIsClampedBeforeSubtracting)
@@ -100,40 +117,48 @@ TEST(HandoverCarry, OutOfRangeNativeIsClampedBeforeSubtracting)
     AC_Geometric_HandoverCarry carry;
     carry.set_config(config_with(0.1f));
 
-    // AP_Motors documents set_roll as -1..+1 but does not enforce it. The
-    // difference against an in-range law is then 0.95 and -1.05, both past
-    // the offset bound.
-    const Vector3f& offset = carry.seed(Vector3f{4.0f, -4.0f, 0.0f}, GEOMETRIC);
+    // AP_Motors documents set_roll as -1..+1 but does not enforce it. Clamped
+    // to 1.0 the difference against a law at 0.6 is 0.4, inside the bound;
+    // unclamped it would be 3.4 and the seed would be refused instead.
+    const Vector3f& offset = carry.seed(Vector3f{4.0f, -4.0f, 0.0f},
+                                        Vector3f{0.6f, -0.6f, 0.0f});
 
-    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);
-    EXPECT_NEAR(-0.5f, offset.y, TOLERANCE);
+    EXPECT_NEAR(0.4f, offset.x, TOLERANCE);
+    EXPECT_NEAR(-0.4f, offset.y, TOLERANCE);
 }
 
-TEST(HandoverCarry, TheOffsetIsBoundedToTheScaleOfTheJump)
+TEST(HandoverCarry, ADisagreementLargerThanTheBoundIsRefusedNotTruncated)
 {
     AC_Geometric_HandoverCarry carry;
     carry.set_config(config_with(0.1f));
 
-    // The offset is applied to later frames' commands too, so it is bounded by
-    // the size of the thing being smoothed -- 0.5, against a worst measured
-    // jump of 0.208 -- not by what the command range would permit.
-    const Vector3f& offset = carry.seed(Vector3f{1.0f, -1.0f, 1.0f},
-                                        Vector3f{-0.9f, 0.9f, -0.2f});
-    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);
-    EXPECT_NEAR(-0.5f, offset.y, TOLERANCE);
-    EXPECT_NEAR(0.5f, offset.z, TOLERANCE);
+    // Truncating would take both halves of the bargain and deliver neither:
+    // the part of the step above the bound survives uncancelled, and 0.5 of
+    // command the law never asked for is still held through the decay.
+    EXPECT_TRUE(carry.seed(Vector3f{1.0f, -1.0f, 1.0f},
+                           Vector3f{-0.9f, 0.9f, -0.2f}).is_zero());
+    EXPECT_FALSE(carry.active());
 }
 
-TEST(HandoverCarry, EachAxisIsBoundedIndependently)
+TEST(HandoverCarry, OneOversizedAxisRefusesTheWholeSeed)
 {
     AC_Geometric_HandoverCarry carry;
     carry.set_config(config_with(0.1f));
 
-    const Vector3f& offset = carry.seed(Vector3f{1.0f, 0.1f, -1.0f},
-                                        Vector3f{-0.9f, 0.0f, -0.8f});
-    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);      // bound binds
-    EXPECT_NEAR(0.1f, offset.y, TOLERANCE);      // does not
-    EXPECT_NEAR(-0.2f, offset.z, TOLERANCE);     // does not
+    // Roll differs by 1.9, the others by 0.1 and 0.2. Refusing all three
+    // falls back to the behaviour both logged flights flew.
+    EXPECT_TRUE(carry.seed(Vector3f{1.0f, 0.1f, -1.0f},
+                           Vector3f{-0.9f, 0.0f, -0.8f}).is_zero());
+}
+
+TEST(HandoverCarry, ADisagreementAtTheBoundIsStillSeeded)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+
+    // The refusal is strictly greater than, so the bound itself is usable.
+    const Vector3f& offset = carry.seed(Vector3f{0.5f, 0.0f, 0.0f}, Vector3f{});
+    EXPECT_NEAR(0.5f, offset.x, TOLERANCE);
 }
 
 TEST(HandoverCarry, OneTimeConstantLeavesAboutAThird)
@@ -288,7 +313,7 @@ TEST(HandoverCarry, DecaysToNothingAndStaysThere)
 TEST(HandoverCarry, DecayIsMonotonic)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
     float previous = carry.seed(NATIVE, GEOMETRIC).length();
 
     for (int i = 0; i < 200; i++) {
@@ -301,7 +326,7 @@ TEST(HandoverCarry, DecayIsMonotonic)
 TEST(HandoverCarry, NonFiniteInputsSeedNothing)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
 
     const Vector3f nan_input { NAN, 0.0f, 0.0f };
     const Vector3f inf_input { INFINITY, 0.0f, 0.0f };
@@ -314,7 +339,7 @@ TEST(HandoverCarry, NonFiniteInputsSeedNothing)
 TEST(HandoverCarry, BadTimestepClearsRatherThanHolding)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
 
     carry.seed(NATIVE, GEOMETRIC);
     EXPECT_TRUE(carry.update(0.0f).is_zero());
@@ -329,7 +354,7 @@ TEST(HandoverCarry, BadTimestepClearsRatherThanHolding)
 TEST(HandoverCarry, ResetClears)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
 
     carry.seed(NATIVE, GEOMETRIC);
     EXPECT_TRUE(carry.active());
@@ -341,7 +366,7 @@ TEST(HandoverCarry, ResetClears)
 TEST(HandoverCarry, DisablingMidDecayStopsTheCarry)
 {
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(1.0f));
+    carry.set_config(config_with(0.5f));
     carry.seed(NATIVE, GEOMETRIC);
     carry.update(DT);
     EXPECT_TRUE(carry.active());
@@ -382,6 +407,104 @@ TEST(HandoverCarryParams, NonFiniteDisablesRatherThanEnabling)
     EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(NAN));
     EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(INFINITY));
     EXPECT_FLOAT_EQ(0.0f, AC_Geometric_HandoverCarry_Params::clamped_time_constant(-INFINITY));
+}
+
+// ---------------------------------------------------------------------------
+// The wiring. Which field is handed to seed() and which field is written back
+// is what broke twice, and the class tests cannot see it.
+
+namespace {
+
+// Sets GEO_HAND_TC through the real parameter path. The sub-group is declared
+// with an empty name (AP_SUBGROUPINFO(..., "", 18, ...)), so it is located by
+// the table it points at rather than by name.
+bool set_handover_tc(AC_GeometricControl& control, float value)
+{
+    for (const AP_Param::GroupInfo* gi = AC_GeometricControl::var_info;
+         gi->type != AP_PARAM_NONE; gi++) {
+        if (gi->type == AP_PARAM_GROUP &&
+            gi->group_info == AC_Geometric_HandoverCarry_Params::var_info) {
+            return AP_Param::set_object_value(
+                reinterpret_cast<const uint8_t*>(&control) + gi->offset,
+                gi->group_info, "HAND_TC", value);
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
+TEST(HandoverCarryWiring, TheCommandMovesAndTheLawsIntentDoesNot)
+{
+    // static because GCC cannot see through AP_Param::setup_object_defaults
+    // and -Werror=maybe-uninitialized would reject an automatic.
+    static AC_GeometricControl control;
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+
+    // rpy_norm_raw starts at zero, so the offset is the native command itself.
+    const Vector3f native { 0.10f, -0.20f, 0.30f };
+    control.begin_output_ownership(native);
+
+    const AC_Geometric_Mapped_Output& mapped = control.get_output().mapped;
+    EXPECT_NEAR(native.x, mapped.rpy_norm.x, TOLERANCE);
+    EXPECT_NEAR(native.y, mapped.rpy_norm.y, TOLERANCE);
+    EXPECT_NEAR(native.z, mapped.rpy_norm.z, TOLERANCE);
+    // The law asked for nothing, and still says so. Writing the carry here is
+    // what made a saturated law look unsaturated to the output-rail gate.
+    EXPECT_TRUE(mapped.rpy_norm_raw.is_zero());
+}
+
+TEST(HandoverCarryWiring, TheConfigIsReadBeforeTheFirstSeed)
+{
+    // Without set_config() in begin_output_ownership the carry would use a
+    // default-constructed config on the first engage after boot and silently
+    // never fire.
+    static AC_GeometricControl control;
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+    control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
+    EXPECT_FALSE(control.handover_carry_offset().is_zero());
+}
+
+TEST(HandoverCarryWiring, EndingOwnershipClearsTheOffset)
+{
+    static AC_GeometricControl control;
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+    control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
+    ASSERT_FALSE(control.handover_carry_offset().is_zero());
+
+    control.end_output_ownership();
+    EXPECT_TRUE(control.handover_carry_offset().is_zero());
+}
+
+TEST(HandoverCarryWiring, ResetAlsoClearsTheOffset)
+{
+    // The other door into the same invariant. set_enabled(false) arrives here.
+    static AC_GeometricControl control;
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+    control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
+    ASSERT_FALSE(control.handover_carry_offset().is_zero());
+
+    control.reset();
+    EXPECT_TRUE(control.handover_carry_offset().is_zero());
+}
+
+TEST(HandoverCarryWiring, AnOverlongParameterIsClampedThroughTheRealPath)
+{
+    static AC_GeometricControl control;
+    ASSERT_TRUE(set_handover_tc(control, 30.0f));
+    EXPECT_FLOAT_EQ(0.5f, control.handover_carry_time_constant_s());
+}
+
+TEST(HandoverCarryWiring, TheDefaultLeavesTheCommandAlone)
+{
+    static AC_GeometricControl control;
+    control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
+
+    const AC_Geometric_Mapped_Output& mapped = control.get_output().mapped;
+    EXPECT_TRUE(mapped.rpy_norm.is_zero());
+    EXPECT_TRUE(mapped.rpy_norm_raw.is_zero());
+    EXPECT_FALSE(mapped.rpy_limited);
+    EXPECT_TRUE(control.handover_carry_offset().is_zero());
 }
 
 AP_GTEST_MAIN()

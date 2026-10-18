@@ -58,15 +58,21 @@ const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm
     // by the check above -- so adding this to the law's raw command lands on
     // the native command exactly.
     const Vector3f difference = realizable(native_rpy_norm) - geometric_rpy_norm;
-    const Vector3f bounded {
-        constrain_float(difference.x, -MAX_OFFSET, MAX_OFFSET),
-        constrain_float(difference.y, -MAX_OFFSET, MAX_OFFSET),
-        constrain_float(difference.z, -MAX_OFFSET, MAX_OFFSET)
-    };
-    if (bounded.length() < NEGLIGIBLE) {
+
+    // Refused, not truncated. Truncating takes both halves of the bargain and
+    // delivers neither: the part of the step above MAX_OFFSET survives
+    // uncancelled, and MAX_OFFSET of command the law never asked for is still
+    // held through the decay, below the rail where nothing reports it.
+    // Refusing falls back to the behaviour both logged flights flew.
+    if (fabsf(difference.x) > MAX_OFFSET ||
+        fabsf(difference.y) > MAX_OFFSET ||
+        fabsf(difference.z) > MAX_OFFSET) {
         return _offset;
     }
-    _offset = bounded;
+    if (difference.length() < NEGLIGIBLE) {
+        return _offset;
+    }
+    _offset = difference;
     return _offset;
 }
 

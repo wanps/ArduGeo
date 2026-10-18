@@ -77,6 +77,10 @@ void AC_GeometricControl::reset()
     _position_pid.reset();
     _attitude_pid.reset();
     _l1_observer.reset();
+    // The second door into "no stale carry survives ownership", which
+    // end_output_ownership's comment claims. set_enabled(false) arrives here
+    // rather than there.
+    _handover_carry.reset();
     _setpoint_shaper.reset();
     _yaw_shaper.reset();
     _output = {};

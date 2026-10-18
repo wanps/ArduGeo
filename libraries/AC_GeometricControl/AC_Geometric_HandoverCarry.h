@@ -65,16 +65,23 @@ public:
     // so that adding the result reproduces the native command exactly. Zero
     // when the carry is disabled or either input is not finite.
     //
-    // Returns zero when this law's own command is outside the realizable
-    // range. Reproducing the last native command then means withholding
-    // authority the law is asking for, which is the wrong way to be wrong, and
-    // it is the only case that produced a large offset. Neither logged flight
-    // ever saturated, so refusing it costs nothing observed.
+    // Returns zero in two cases, both falling back to the default-off
+    // behaviour both logged flights flew.
+    //
+    // When this law's own command is outside the realizable range:
+    // reproducing the last native command then means withholding authority
+    // the law is asking for, which is the wrong way to be wrong. Refusing on
+    // any axis refuses all three. The cost is asymmetric in the right
+    // direction -- a saturated axis clamps to its rail with or without a
+    // carry, so what is withheld is smoothing on the other two, and those are
+    // roll and pitch, whose jumps sit inside the law's own per-frame activity.
+    //
+    // And when the two commands differ by more than MAX_OFFSET on any axis.
+    // Neither flight came within a factor of two of that, so this is a guard
+    // rather than a working path.
     //
     // The native side is clamped, because AP_Motors documents its -1..+1 range
-    // without enforcing it. The result is bounded to MAX_OFFSET: the offset is
-    // sized against one frame's command and re-applied to the next one's, so
-    // an oversized one parks the command on a rail the law never asked for.
+    // without enforcing it.
     const Vector3f& seed(const Vector3f& native_rpy_norm,
                          const Vector3f& geometric_rpy_norm);
 
@@ -105,11 +112,11 @@ private:
     // motors, so holding it serves no purpose.
     static constexpr float NEGLIGIBLE = 1.0e-4f;
 
-    // 2.4 times the largest jump measured on either flight (0.208, yaw,
-    // log_19). The offset is applied to later frames' commands as well as the
-    // one it was computed from, so it is bounded by the size of the thing
-    // being smoothed rather than by what the command range permits. A
-    // disagreement larger than this is not something a washout should hide.
+    // The largest disagreement this will smooth, per axis: 2.4 times the
+    // largest jump measured on either flight (0.208, yaw, log_19). Beyond it
+    // the seed is refused rather than truncated, because the offset outlives
+    // the frame it was computed from and a truncated one would hold command
+    // the law never asked for while leaving the excess step uncancelled.
     static constexpr float MAX_OFFSET = 0.5f;
 
     AC_Geometric_HandoverCarry_Config _config {};
@@ -129,13 +136,12 @@ public:
     // which is already twice the measured transient envelope.
     static constexpr float MAX_TIME_CONSTANT_S = 0.5f;
 
-    // Separated from config() so it can be tested: the parameter itself cannot
-    // be set from a unit test without the full AP_Param machinery.
     static float clamped_time_constant(float requested) {
-        // constrain_float returns the midpoint of its range for NaN, so
-        // clamping alone would turn a corrupt parameter into an enabled carry.
-        // Before the clamp existed, is_positive rejected NaN and the carry
-        // stayed off; keep it that way.
+        // A non-finite value is corruption, not a request, and is treated as
+        // off. A finite one, however large, is treated as a request and
+        // clamped. constrain_float would otherwise return the midpoint of its
+        // range for NaN, turning a corrupt parameter into an enabled carry
+        // where is_positive had rejected it before the clamp existed.
         if (!isfinite(requested)) {
             return 0.0f;
         }
