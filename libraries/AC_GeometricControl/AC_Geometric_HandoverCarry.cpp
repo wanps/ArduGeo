@@ -59,11 +59,15 @@ const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm
     // the native command exactly.
     const Vector3f difference = realizable(native_rpy_norm) - geometric_rpy_norm;
 
-    // Refused, not truncated. Truncating takes both halves of the bargain and
-    // delivers neither: the part of the step above MAX_OFFSET survives
-    // uncancelled, and MAX_OFFSET of command the law never asked for is still
-    // held through the decay, below the rail where nothing reports it.
-    // Refusing falls back to the behaviour both logged flights flew.
+    // Refused, not truncated, and the trade is not one-sided. Refusing leaves
+    // an engage step MAX_OFFSET larger than truncating would -- worst just
+    // above the bound, where truncation would have smoothed nearly all of it.
+    // What it buys is that nothing the law never asked for is held afterwards:
+    // truncation holds MAX_OFFSET of that through the decay, hundreds of
+    // frames, below the rail where no judgement reports it, while the excess
+    // step survives anyway. One frame of a larger step against hundreds of a
+    // command nobody chose, and refusing falls back to the behaviour both
+    // logged flights flew.
     if (fabsf(difference.x) > MAX_OFFSET ||
         fabsf(difference.y) > MAX_OFFSET ||
         fabsf(difference.z) > MAX_OFFSET) {

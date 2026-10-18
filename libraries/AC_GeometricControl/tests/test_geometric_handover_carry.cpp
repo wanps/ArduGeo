@@ -161,6 +161,19 @@ TEST(HandoverCarry, ADisagreementAtTheBoundIsStillSeeded)
     EXPECT_NEAR(0.5f, offset.x, TOLERANCE);
 }
 
+TEST(HandoverCarry, OneUlpPastTheBoundIsRefused)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+
+    // Pinned at ulp resolution like the saturation rail, so the boundary
+    // cannot drift without a test noticing.
+    EXPECT_TRUE(carry.seed(Vector3f{nextafterf(0.5f, 1.0f), 0.0f, 0.0f},
+                           Vector3f{}).is_zero());
+    EXPECT_FALSE(carry.seed(Vector3f{nextafterf(0.5f, 0.0f), 0.0f, 0.0f},
+                            Vector3f{}).is_zero());
+}
+
 TEST(HandoverCarry, OneTimeConstantLeavesAboutAThird)
 {
     AC_Geometric_HandoverCarry carry;
@@ -436,9 +449,7 @@ bool set_handover_tc(AC_GeometricControl& control, float value)
 
 TEST(HandoverCarryWiring, TheCommandMovesAndTheLawsIntentDoesNot)
 {
-    // static because GCC cannot see through AP_Param::setup_object_defaults
-    // and -Werror=maybe-uninitialized would reject an automatic.
-    static AC_GeometricControl control;
+    AC_GeometricControl control;
     ASSERT_TRUE(set_handover_tc(control, 0.1f));
 
     // rpy_norm_raw starts at zero, so the offset is the native command itself.
@@ -459,15 +470,36 @@ TEST(HandoverCarryWiring, TheConfigIsReadBeforeTheFirstSeed)
     // Without set_config() in begin_output_ownership the carry would use a
     // default-constructed config on the first engage after boot and silently
     // never fire.
-    static AC_GeometricControl control;
+    AC_GeometricControl control;
     ASSERT_TRUE(set_handover_tc(control, 0.1f));
     control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
     EXPECT_FALSE(control.handover_carry_offset().is_zero());
 }
 
+TEST(HandoverCarryWiring, ASecondEngageSeedsFromTheLawsIntentNotTheCarriedCommand)
+{
+    // The two fields are equal on a first engage, so every other test here is
+    // blind to swapping them -- which is the round-3 defect, both halves of
+    // it. After one engage they differ: rpy_norm carries the first offset
+    // while rpy_norm_raw is still the law's intent, which is what the second
+    // seed must be measured against.
+    AC_GeometricControl control;
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+
+    control.begin_output_ownership(Vector3f{0.10f, 0.0f, 0.0f});
+    control.end_output_ownership();
+    control.begin_output_ownership(Vector3f{0.30f, 0.0f, 0.0f});
+
+    // Seeding from rpy_norm instead would give 0.20; applying to rpy_norm
+    // instead would give a command of 0.40.
+    EXPECT_NEAR(0.30f, control.handover_carry_offset().x, TOLERANCE);
+    EXPECT_NEAR(0.30f, control.get_output().mapped.rpy_norm.x, TOLERANCE);
+    EXPECT_TRUE(control.get_output().mapped.rpy_norm_raw.is_zero());
+}
+
 TEST(HandoverCarryWiring, EndingOwnershipClearsTheOffset)
 {
-    static AC_GeometricControl control;
+    AC_GeometricControl control;
     ASSERT_TRUE(set_handover_tc(control, 0.1f));
     control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
     ASSERT_FALSE(control.handover_carry_offset().is_zero());
@@ -479,7 +511,7 @@ TEST(HandoverCarryWiring, EndingOwnershipClearsTheOffset)
 TEST(HandoverCarryWiring, ResetAlsoClearsTheOffset)
 {
     // The other door into the same invariant. set_enabled(false) arrives here.
-    static AC_GeometricControl control;
+    AC_GeometricControl control;
     ASSERT_TRUE(set_handover_tc(control, 0.1f));
     control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
     ASSERT_FALSE(control.handover_carry_offset().is_zero());
@@ -490,14 +522,14 @@ TEST(HandoverCarryWiring, ResetAlsoClearsTheOffset)
 
 TEST(HandoverCarryWiring, AnOverlongParameterIsClampedThroughTheRealPath)
 {
-    static AC_GeometricControl control;
+    AC_GeometricControl control;
     ASSERT_TRUE(set_handover_tc(control, 30.0f));
     EXPECT_FLOAT_EQ(0.5f, control.handover_carry_time_constant_s());
 }
 
 TEST(HandoverCarryWiring, TheDefaultLeavesTheCommandAlone)
 {
-    static AC_GeometricControl control;
+    AC_GeometricControl control;
     control.begin_output_ownership(Vector3f{0.10f, -0.20f, 0.30f});
 
     const AC_Geometric_Mapped_Output& mapped = control.get_output().mapped;
@@ -505,6 +537,70 @@ TEST(HandoverCarryWiring, TheDefaultLeavesTheCommandAlone)
     EXPECT_TRUE(mapped.rpy_norm_raw.is_zero());
     EXPECT_FALSE(mapped.rpy_limited);
     EXPECT_TRUE(control.handover_carry_offset().is_zero());
+}
+
+
+// Driving the real cascade, because the rail flag the output-rail gate reads
+// can only diverge from the mapper's own on a decay frame, and reaching one
+// needs a command the mapper actually produced.
+namespace {
+
+// A roll attitude error of theta yields rpy_norm_raw.x = -sin(theta), which is
+// how these tests place the command where they need it.
+void step_with_roll_error(AC_GeometricControl& control, float roll_error_deg)
+{
+    AC_Geometric_State state {};
+    state.attitude_body_to_ned.from_euler(radians(roll_error_deg), 0.0f, 0.0f);
+    AC_Geometric_Target target {};
+    target.attitude_body_to_ned.from_euler(0.0f, 0.0f, 0.0f);
+    target.build_attitude_from_position = false;
+    control.update(state, target, 0.0025f);
+}
+
+}  // namespace
+
+TEST(HandoverCarryWiring, ACarryThatRailsADecayFrameIsReportedToTheGate)
+{
+    AC_GeometricControl control;
+    control.set_enabled(true);
+    control.set_hover_throttle_reference(0.2f);
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+
+    // Engage against a law commanding nothing, so the offset is the native
+    // command itself.
+    step_with_roll_error(control, 0.0f);
+    ASSERT_TRUE(control.get_output().mapped.rpy_norm_raw.is_zero());
+    control.begin_output_ownership(Vector3f{-0.5f, 0.0f, 0.0f});
+    ASSERT_NEAR(-0.5f, control.handover_carry_offset().x, TOLERANCE);
+
+    // One frame later the law wants -0.707, which the mapper passes through
+    // untouched. The carry still holds nearly -0.5 on top of it, and the sum
+    // is past the rail.
+    step_with_roll_error(control, 45.0f);
+
+    const AC_Geometric_Mapped_Output& mapped = control.get_output().mapped;
+    EXPECT_NEAR(-0.7071f, mapped.rpy_norm_raw.x, 1.0e-3f);   // the law's intent
+    EXPECT_NEAR(-1.0f, mapped.rpy_norm.x, TOLERANCE);        // what is written
+    // The mapper saw nothing out of range; only the carry reached the rail.
+    // Without the write-back in apply_handover_carry this reads false and the
+    // gate is blind to a handover that railed an axis.
+    EXPECT_TRUE(mapped.rpy_limited);
+}
+
+TEST(HandoverCarryWiring, AnInRangeDecayFrameIsNotReportedAsRailed)
+{
+    AC_GeometricControl control;
+    control.set_enabled(true);
+    control.set_hover_throttle_reference(0.2f);
+    ASSERT_TRUE(set_handover_tc(control, 0.1f));
+
+    step_with_roll_error(control, 0.0f);
+    control.begin_output_ownership(Vector3f{-0.2f, 0.0f, 0.0f});
+    step_with_roll_error(control, 20.0f);                    // law wants -0.342
+
+    const AC_Geometric_Mapped_Output& mapped = control.get_output().mapped;
+    EXPECT_NEAR(-0.542f, mapped.rpy_norm.x, 1.0e-2f);
+    EXPECT_FALSE(mapped.rpy_limited);
 }
 
 AP_GTEST_MAIN()

@@ -114,9 +114,8 @@ private:
 
     // The largest disagreement this will smooth, per axis: 2.4 times the
     // largest jump measured on either flight (0.208, yaw, log_19). Beyond it
-    // the seed is refused rather than truncated, because the offset outlives
-    // the frame it was computed from and a truncated one would hold command
-    // the law never asked for while leaving the excess step uncancelled.
+    // the seed is refused, which costs one frame of a step this size and
+    // saves holding that much unrequested command for the whole decay.
     static constexpr float MAX_OFFSET = 0.5f;
 
     AC_Geometric_HandoverCarry_Config _config {};
