@@ -297,10 +297,17 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     _last_update_ms = AP_HAL::millis();
 }
 
-void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm)
+void AC_GeometricControl::begin_output_ownership(const Vector3f& native_integrator_norm,
+                                                 const Vector3f& native_integrator_limit_norm)
 {
     _handover_carry.set_config(_handover_carry_params.config());
-    apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm_raw));
+    // Against this law's own trim, not its whole command. Roll and pitch
+    // default to K_I 0 and contribute nothing here; yaw does not, and carrying
+    // the native integrator onto an axis already holding its own would count
+    // the same trim twice.
+    apply_handover_carry(_handover_carry.seed(native_integrator_norm,
+                                              _output.mapped.integral_norm,
+                                              native_integrator_limit_norm));
 }
 
 void AC_GeometricControl::end_output_ownership()
@@ -319,4 +326,12 @@ void AC_GeometricControl::apply_handover_carry(const Vector3f& offset)
         constrain_float(_output.mapped.rpy_norm_raw.y, -1.0f, 1.0f),
         constrain_float(_output.mapped.rpy_norm_raw.z, -1.0f, 1.0f)
     };
+    // rpy_limited is what the output-rail gate reads. Rewriting the command
+    // without it would hide exactly the case worth seeing: a carry that puts
+    // the aircraft on the rail, reported by the one check built to catch a
+    // handover made worse.
+    _output.mapped.rpy_limited =
+        !is_equal(_output.mapped.rpy_norm.x, _output.mapped.rpy_norm_raw.x) ||
+        !is_equal(_output.mapped.rpy_norm.y, _output.mapped.rpy_norm_raw.y) ||
+        !is_equal(_output.mapped.rpy_norm.z, _output.mapped.rpy_norm_raw.z);
 }

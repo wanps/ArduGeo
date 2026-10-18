@@ -13,23 +13,42 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
     AP_GROUPEND
 };
 
-const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm,
-                                                 const Vector3f& geometric_rpy_norm)
+// Bounds one axis by the native integrator's own limit. A limit that is zero,
+// negative or not finite leaves the axis at zero rather than unbounded: an
+// integrator that cannot wind up is holding no trim worth carrying, and an
+// unusable limit is not grounds for trusting the difference it failed to bound.
+static float bounded_trim(float difference, float limit)
+{
+    if (!isfinite(limit) || !is_positive(limit)) {
+        return 0.0f;
+    }
+    return constrain_float(difference, -limit, limit);
+}
+
+const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_trim_norm,
+                                                 const Vector3f& geometric_trim_norm,
+                                                 const Vector3f& limit_norm)
 {
     _offset.zero();
     if (!is_positive(_config.time_constant_s)) {
         return _offset;
     }
-    if (native_rpy_norm.is_nan() || native_rpy_norm.is_inf() ||
-        geometric_rpy_norm.is_nan() || geometric_rpy_norm.is_inf()) {
+    if (native_trim_norm.is_nan() || native_trim_norm.is_inf() ||
+        geometric_trim_norm.is_nan() || geometric_trim_norm.is_inf() ||
+        limit_norm.is_nan() || limit_norm.is_inf()) {
         return _offset;
     }
 
-    const Vector3f difference = native_rpy_norm - geometric_rpy_norm;
-    if (difference.length() < NEGLIGIBLE) {
+    const Vector3f difference = native_trim_norm - geometric_trim_norm;
+    const Vector3f bounded {
+        bounded_trim(difference.x, limit_norm.x),
+        bounded_trim(difference.y, limit_norm.y),
+        bounded_trim(difference.z, limit_norm.z)
+    };
+    if (bounded.length() < NEGLIGIBLE) {
         return _offset;
     }
-    _offset = difference;
+    _offset = bounded;
     return _offset;
 }
 

@@ -116,4 +116,12 @@ void AC_Geometric_OutputMapper::update(const AC_Geometric_Position_Output& posit
     output.rpy_limited = !is_equal(output.rpy_norm.x, output.rpy_norm_raw.x) ||
                          !is_equal(output.rpy_norm.y, output.rpy_norm_raw.y) ||
                          !is_equal(output.rpy_norm.z, output.rpy_norm_raw.z);
+
+    // Normalized by the same scales, so the handover carry can subtract the
+    // trim this law already holds without repeating the divide-by-zero guard.
+    output.integral_norm = Vector3f{
+        attitude.integral_moment.x / safe_norm.x,
+        attitude.integral_moment.y / safe_norm.y,
+        attitude.integral_moment.z / safe_norm.z
+    };
 }

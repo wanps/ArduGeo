@@ -80,12 +80,21 @@ void Copter::run_rate_controller_main()
             // running the native rate PIDs or writing native motor commands.
             attitude_control->rate_controller_update_throttle_mix();
             if (!geometric_motor_output_was_active) {
-                // Rising edge. AP_Motors still holds what the native rate
-                // controller wrote last frame, trim included, and the geometric
-                // command for this frame has already been computed, so the
-                // carry is seeded and applied before the write below.
-                geometric_control.begin_output_ownership(Vector3f{
-                    motors->get_roll(), motors->get_pitch(), motors->get_yaw()});
+                // Rising edge. Hand over the native rate loop's trim, which is
+                // its integrator -- not motors->get_roll(), which is the whole
+                // output and carries P, D and any SystemID injection that the
+                // geometric law is answering for itself this frame.
+                //
+                // imax goes with it as the bound: no trim can exceed it, so a
+                // difference that does is a transient or a saturated geometric
+                // command, and holding one for the washout would be worse than
+                // the step the carry replaces.
+                const AC_PID &roll_pid = attitude_control->get_rate_roll_pid();
+                const AC_PID &pitch_pid = attitude_control->get_rate_pitch_pid();
+                const AC_PID &yaw_pid = attitude_control->get_rate_yaw_pid();
+                geometric_control.begin_output_ownership(
+                    Vector3f{roll_pid.get_i(), pitch_pid.get_i(), yaw_pid.get_i()},
+                    Vector3f{roll_pid.imax(), pitch_pid.imax(), yaw_pid.imax()});
 #if HAL_LOGGING_ENABLED
                 Log_Write_Geometric_Handover_Carry(
                     geometric_control.handover_carry_offset(),

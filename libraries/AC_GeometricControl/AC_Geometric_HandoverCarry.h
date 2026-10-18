@@ -8,10 +8,18 @@
 // controller takes the outputs.
 //
 // The native rate loop holds a steady command against wind in its integrator.
-// The geometric roll and pitch channels have no integrator, so at the handover
-// that trim disappears from the command and the aircraft receives a step: the
-// aircraft showed 0.060 and 0.068 of full scale on two flights, with the gyro
-// peaking at 15.9 and 14.4 deg/s against a 5 to 7 deg/s background.
+// The geometric roll and pitch channels default to no integrator, so at the
+// handover that trim disappears from the command and the aircraft receives a
+// step: the aircraft showed 0.060 and 0.068 of full scale on two flights, with
+// the gyro peaking at 15.9 and 14.4 deg/s against a 5 to 7 deg/s background.
+//
+// What transfers is the two loops' trims, not their commands. The rest of the
+// native output is P and D answering instantaneous error, and the geometric law
+// is computing its own answer to that same error in the same frame, from the
+// same gyro. Carrying it would transfer a transient open loop for the length of
+// the washout and count the error twice. The yaw axis has a geometric
+// integrator by default, so the seed is a difference rather than the native
+// trim alone.
 //
 // It is a transient rather than a divergence. The geometric controller re-earns
 // the trim through attitude error, and its mean command one second after the
@@ -33,11 +41,19 @@ public:
 
     void set_config(const AC_Geometric_HandoverCarry_Config& config) { _config = config; }
 
-    // Seeds the carry from what the native controller last commanded and what
-    // the geometric controller computed for the same frame. Returns the offset
-    // to add to the geometric command, which is zero when the carry is disabled
-    // or either input is not finite.
-    const Vector3f& seed(const Vector3f& native_rpy_norm, const Vector3f& geometric_rpy_norm);
+    // Seeds the carry from the trim each loop is holding, in normalized
+    // actuator units. Returns the offset to add to the geometric command, which
+    // is zero when the carry is disabled or any input is not finite.
+    //
+    // limit_norm bounds the result per axis, and the bound that means something
+    // is the native integrator's own imax: nothing larger can be trim, so
+    // anything larger is a transient or a saturated geometric command and
+    // holding it for the washout would make the handover worse than the step it
+    // replaces. A zero or non-finite limit disables that axis, which is right --
+    // an integrator that cannot wind up holds no trim to carry.
+    const Vector3f& seed(const Vector3f& native_trim_norm,
+                         const Vector3f& geometric_trim_norm,
+                         const Vector3f& limit_norm);
 
     // Decays the offset by one step and returns it. Zero once the carry has
     // decayed below the command resolution that reaches the motors, so a dead

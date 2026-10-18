@@ -55,12 +55,19 @@ public:
                 float dt);
 
     // Called by vehicle code on the frame the geometric controller first owns
-    // the outputs, with the normalized roll/pitch/yaw the native controller
-    // last wrote. Seeds the handover carry and applies it to the command
-    // already computed for this frame, because by the time the vehicle reaches
-    // the ownership decision update() has run. A non-positive GEO_HAND_TC
-    // leaves the command untouched.
-    void begin_output_ownership(const Vector3f& native_rpy_norm);
+    // the outputs. Takes the native rate loop's integrator, in the same
+    // normalized units as the command, and that integrator's own imax as the
+    // bound. Only the trim transfers: the rest of the native output answers
+    // instantaneous error that this law answers for itself.
+    //
+    // The command it modifies is the one update() left behind, which is the
+    // previous loop iteration's -- the ownership decision runs in FAST_TASK
+    // ahead of the flight mode. That is sound because the mapper assigns
+    // rpy_norm_raw rather than accumulating into it, so the next update()
+    // overwrites rather than compounds, and GEO_FAIL_STALE bounds how old the
+    // command may be. A non-positive GEO_HAND_TC leaves the command untouched.
+    void begin_output_ownership(const Vector3f& native_integrator_norm,
+                                const Vector3f& native_integrator_limit_norm);
 
     // Called when geometric output ownership ends, so a stale carry cannot be
     // applied if ownership returns later in the flight.
