@@ -57,15 +57,18 @@ public:
     // Called by vehicle code on the frame the geometric controller first owns
     // the outputs, with the normalized roll/pitch/yaw the native controller
     // last wrote. Seeds the handover carry from the difference between that
-    // and this law's own limited command, so the first geometric frame
-    // reproduces what the motors were already getting.
+    // and this law's own command, so the first geometric frame reproduces what
+    // the motors were already getting.
     //
-    // The command it modifies is the one update() left behind, which is the
+    // The command it adjusts is the one update() left behind, which is the
     // previous loop iteration's -- the ownership decision runs in FAST_TASK
-    // ahead of the flight mode. That is sound because the mapper assigns
-    // rpy_norm_raw rather than accumulating into it, so the next update()
-    // overwrites rather than compounds, and GEO_FAIL_STALE bounds how old the
-    // command may be. A non-positive GEO_HAND_TC leaves the command untouched.
+    // ahead of the flight mode. The mapper assigns rpy_norm_raw rather than
+    // accumulating into it, so the next update() overwrites rather than
+    // compounds. GEO_FAIL_STALE bounds how old that command may be, but only
+    // to 100 ms, which for this law is a median command excursion of 0.055 --
+    // the seed is sized against a command up to that far from the current one,
+    // which is why the washout has to be short. A non-positive GEO_HAND_TC
+    // leaves the command untouched.
     void begin_output_ownership(const Vector3f& native_rpy_norm);
 
     // Called when geometric output ownership ends, so a stale carry cannot be

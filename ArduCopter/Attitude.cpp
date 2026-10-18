@@ -85,14 +85,10 @@ void Copter::run_rate_controller_main()
                 // actually getting, so that is what the first geometric frame
                 // has to reproduce.
                 //
-                // Not the rate loop's integrator alone: decomposing the two
-                // logged handovers, the integrator is larger than the
-                // persistent difference between the two controllers on four of
-                // six axes and carries the opposite sign, so transferring it
-                // enlarged the step on five of six. The persistent difference
-                // is near zero because any controller holding the aircraft has
-                // to supply the same mean moment; what the handover produces is
-                // a fast discontinuity, and that is what this cancels.
+                // Not the rate loop's integrator alone. An earlier revision
+                // carried that, which against the measured jumps left a
+                // residual of 0.009 to 0.215 where the whole difference leaves
+                // none by construction.
                 geometric_control.begin_output_ownership(Vector3f{
                     motors->get_roll(), motors->get_pitch(), motors->get_yaw()});
 #if HAL_LOGGING_ENABLED

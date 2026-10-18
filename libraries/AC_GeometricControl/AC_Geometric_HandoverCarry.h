@@ -7,25 +7,34 @@
 // Smooths the command discontinuity on the frame the geometric controller
 // takes the outputs.
 //
-// The two logged handovers jumped 0.050 and 0.059 of full scale between the
-// last native command and the first geometric one, with the gyro peaking at
-// 15.9 and 14.4 deg/s against a 5 to 7 deg/s background.
+// Measured at the AP_Motors interface on the two logged engagements -- RATE
+// keeps reporting after the handover because the geometric path writes through
+// the same setters, and its timestamp freezing marks the boundary exactly:
 //
-// What it is not: a transfer of trim the geometric law lacks. Decomposing
-// those same handovers, the difference in mean command over a second either
-// side is 0.002 to 0.022 -- an order of magnitude below the jump -- and the
-// native integrator is larger than it on four of the six axes, with
-// inconsistent sign. In steady flight any controller holding the aircraft must
-// supply the same mean moment or the aircraft drifts, so the persistent
-// difference between two stable controllers is near zero by construction. The
-// geometric law gets that moment from attitude error, because the aircraft is
-// already leaning into the wind.
+//            roll     pitch    yaw
+//   log_15  +0.0352  +0.0325  +0.0223
+//   log_19  -0.0762  -0.0493  +0.2078
 //
-// So the discontinuity is fast content, and the seed is the whole command
-// difference, which cancels it exactly on the first frame. The washout should
-// be short for the same reason: what it decays toward is a persistent
-// difference already near zero, and a long constant holds stale fast content
-// open loop instead.
+// Yaw on the second flight is the event worth smoothing. Roll and pitch are
+// inside the geometric law's own per-frame command activity, which runs a
+// median single-frame step of 0.015 to 0.030 once it owns the outputs.
+//
+// The seed is the whole difference, which makes the first geometric command
+// reproduce the last native one exactly. An earlier revision carried only the
+// native rate integrator, on the reasoning that P and D answer instantaneous
+// error the geometric law answers for itself; against these jumps that left
+// 0.009 to 0.215, so the whole difference is simply the better seed and the
+// reasoning is beside the point.
+//
+// What this is not: a transfer of trim the geometric law lacks. The difference
+// in mean command over a second either side is 0.002 to 0.022, well below the
+// jump, because two controllers holding the same aircraft have to supply
+// similar mean moments. That is a statement about the second after the
+// handover, not about steady state: the geometric law has no roll or pitch
+// integrator and builds its share out of attitude error over tens of seconds,
+// visibly leaning further as it does. The washout should therefore be short.
+// A long one holds stale fast content open loop and delays that error from
+// forming, parking the aircraft at the wrong attitude.
 //
 // A non-positive time constant disables the carry entirely, which reproduces
 // the behaviour those two flights measured.
@@ -41,21 +50,38 @@ public:
 
     void set_config(const AC_Geometric_HandoverCarry_Config& config) { _config = config; }
 
+    // The command the motors should receive once an offset is applied, and
+    // whether reaching it required limiting.
+    struct Applied {
+        Vector3f rpy_norm;
+        bool limited;
+    };
+
     // Seeds the carry from the two commands either side of the handover, in
-    // normalized actuator units. Returns the offset to add to the geometric
-    // command, which is zero when the carry is disabled or either input is not
-    // finite.
+    // normalized actuator units. The geometric side is the law's raw command,
+    // so that adding the result reproduces the native command exactly. Zero
+    // when the carry is disabled or either input is not finite.
     //
-    // Both inputs are clamped to the command range first, which is what bounds
-    // the result. AP_Motors documents that range but does not enforce it, and
-    // the geometric side is the pre-limit command, so without this a law
-    // demanding three times full scale would seed an offset of -2.6 and the
-    // washout would hold the aircraft's command down for seconds while the
-    // controller was saturated. Clamping makes the offset the difference of two
-    // realizable commands, so the carry can neither hide a saturation nor
-    // undo one.
+    // The native side is clamped first, because AP_Motors documents its -1..+1
+    // range without enforcing it. The result is then bounded to the span of
+    // that range: the offset moves the command from one realizable value to
+    // another, so nothing larger can be used, and it is re-applied every frame
+    // to a command the mapper has recomputed -- an unbounded one would drive a
+    // later frame to the opposite rail.
     const Vector3f& seed(const Vector3f& native_rpy_norm,
                          const Vector3f& geometric_rpy_norm);
+
+    // Applies an offset to the law's raw command without writing to it. The
+    // raw command is the law's intent, read by the vehicle's finite check and
+    // logged as GEOM; an earlier revision added the offset there, which made a
+    // saturated law look unsaturated to the output-rail gate.
+    //
+    // mapper_limited is the flag the mapper already set. It is carried through
+    // rather than recomputed, because either cause of reaching the rail is
+    // worth reporting: the law asking for more than the mapper could give, or
+    // the carry pushing what it could give past the limit.
+    static Applied apply(const Vector3f& rpy_norm_raw, const Vector3f& offset,
+                         bool mapper_limited);
 
     // Decays the offset by one step and returns it. Zero once the carry has
     // decayed below the command resolution that reaches the motors, so a dead
@@ -72,6 +98,10 @@ private:
     // motors, so holding it serves no purpose.
     static constexpr float NEGLIGIBLE = 1.0e-4f;
 
+    // The command range is -1..+1, so an offset moving between two realizable
+    // commands cannot usefully exceed its span.
+    static constexpr float MAX_OFFSET = 2.0f;
+
     AC_Geometric_HandoverCarry_Config _config {};
     Vector3f _offset;
 };
@@ -84,8 +114,14 @@ public:
 
     static const struct AP_Param::GroupInfo var_info[];
 
+    // The parameter's declared range is metadata the ground station honours and
+    // nothing else does. Clamp it here, because a time constant of a minute
+    // would hold an open-loop offset on the command for minutes.
+    static constexpr float MAX_TIME_CONSTANT_S = 2.0f;
+
     AC_Geometric_HandoverCarry_Config config() const {
-        return AC_Geometric_HandoverCarry_Config { _time_constant_s.get() };
+        return AC_Geometric_HandoverCarry_Config {
+            constrain_float(_time_constant_s.get(), 0.0f, MAX_TIME_CONSTANT_S) };
     }
 
 private:

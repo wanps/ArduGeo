@@ -4,7 +4,7 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
 
     // @Param: HAND_TC
     // @DisplayName: Geometric output handover washout time constant
-    // @Description: Washout time constant for smoothing the command discontinuity on the frame the geometric controller takes the outputs. The two logged handovers jumped 0.050 and 0.059 of full scale; the carry cancels that jump on the first frame and decays the correction with this time constant. Keep it short. The jump is fast content, not a trim the geometric law lacks: the difference in mean command over a second either side of those same handovers was 0.002 to 0.022, so what the washout decays toward is already near zero and a long constant only holds stale content open loop. Start around 0.1 to 0.2 s. Zero disables the carry and reproduces the behaviour measured on the aircraft.
+    // @Description: Washout time constant for smoothing the command discontinuity on the frame the geometric controller takes the outputs. The carry makes the first geometric command reproduce the last native one, then decays that correction with this time constant. Measured jumps on the two logged engagements were 0.035 and 0.076 in roll, 0.033 and 0.049 in pitch, and 0.022 and 0.208 in yaw, so yaw is the axis this is for. Keep it short: the measured transient decays with a 50 to 100 ms envelope, and a longer constant holds a correction the aircraft no longer needs. Start at 0.1 s. Values above 2 are clamped in code. Zero disables the carry and reproduces the behaviour measured on the aircraft.
     // @Range: 0 2
     // @Units: s
     // @User: Advanced
@@ -13,9 +13,7 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
     AP_GROUPEND
 };
 
-// AP_Motors documents set_roll/pitch/yaw as -1..+1 but does not enforce it, and
-// the geometric side of the subtraction is the command before the mapper's own
-// limiting. Clamping both to the realizable range is what bounds the offset.
+// AP_Motors documents set_roll/pitch/yaw as -1..+1 but does not enforce it.
 static Vector3f realizable(const Vector3f& command)
 {
     return Vector3f {
@@ -23,6 +21,18 @@ static Vector3f realizable(const Vector3f& command)
         constrain_float(command.y, -1.0f, 1.0f),
         constrain_float(command.z, -1.0f, 1.0f)
     };
+}
+
+AC_Geometric_HandoverCarry::Applied
+AC_Geometric_HandoverCarry::apply(const Vector3f& rpy_norm_raw, const Vector3f& offset,
+                                  bool mapper_limited)
+{
+    const Vector3f carried = rpy_norm_raw + offset;
+    const Vector3f limited = realizable(carried);
+    const bool clipped = !is_equal(limited.x, carried.x) ||
+                         !is_equal(limited.y, carried.y) ||
+                         !is_equal(limited.z, carried.z);
+    return Applied { limited, mapper_limited || clipped };
 }
 
 const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm,
@@ -37,11 +47,19 @@ const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm
         return _offset;
     }
 
-    const Vector3f difference = realizable(native_rpy_norm) - realizable(geometric_rpy_norm);
-    if (difference.length() < NEGLIGIBLE) {
+    // The geometric side is deliberately not clamped: adding this to the law's
+    // raw command has to land on the native command exactly, and clamping it
+    // would land somewhere between the two instead.
+    const Vector3f difference = realizable(native_rpy_norm) - geometric_rpy_norm;
+    const Vector3f bounded {
+        constrain_float(difference.x, -MAX_OFFSET, MAX_OFFSET),
+        constrain_float(difference.y, -MAX_OFFSET, MAX_OFFSET),
+        constrain_float(difference.z, -MAX_OFFSET, MAX_OFFSET)
+    };
+    if (bounded.length() < NEGLIGIBLE) {
         return _offset;
     }
-    _offset = difference;
+    _offset = bounded;
     return _offset;
 }
 

@@ -300,12 +300,7 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
 void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm)
 {
     _handover_carry.set_config(_handover_carry_params.config());
-    // Against rpy_norm, the limited command, not rpy_norm_raw. The raw value
-    // is unbounded, so a saturated law would seed an offset several times full
-    // scale and the washout would hold the command down for seconds. Using the
-    // limited value still makes the first frame continuous, because that is
-    // what the previous frames were writing.
-    apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm));
+    apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm_raw));
 }
 
 void AC_GeometricControl::end_output_ownership()
@@ -318,18 +313,12 @@ void AC_GeometricControl::apply_handover_carry(const Vector3f& offset)
     if (offset.is_zero()) {
         return;
     }
-    _output.mapped.rpy_norm_raw += offset;
-    _output.mapped.rpy_norm = Vector3f {
-        constrain_float(_output.mapped.rpy_norm_raw.x, -1.0f, 1.0f),
-        constrain_float(_output.mapped.rpy_norm_raw.y, -1.0f, 1.0f),
-        constrain_float(_output.mapped.rpy_norm_raw.z, -1.0f, 1.0f)
-    };
-    // rpy_limited is what the output-rail gate reads. Rewriting the command
-    // without it would hide exactly the case worth seeing: a carry that puts
-    // the aircraft on the rail, reported by the one check built to catch a
-    // handover made worse.
-    _output.mapped.rpy_limited =
-        !is_equal(_output.mapped.rpy_norm.x, _output.mapped.rpy_norm_raw.x) ||
-        !is_equal(_output.mapped.rpy_norm.y, _output.mapped.rpy_norm_raw.y) ||
-        !is_equal(_output.mapped.rpy_norm.z, _output.mapped.rpy_norm_raw.z);
+    // rpy_norm_raw stays as the law asked for it. It is what the vehicle's
+    // finite check and the GEOM log read, and writing the carry into it would
+    // make a saturated law look unsaturated.
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(_output.mapped.rpy_norm_raw, offset,
+                                          _output.mapped.rpy_limited);
+    _output.mapped.rpy_norm = applied.rpy_norm;
+    _output.mapped.rpy_limited = applied.limited;
 }

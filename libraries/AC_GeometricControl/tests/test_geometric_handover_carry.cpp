@@ -62,19 +62,19 @@ TEST(HandoverCarry, AgreeingControllersSeedNothing)
     EXPECT_FALSE(carry.active());
 }
 
-TEST(HandoverCarry, SaturatedGeometricCommandIsBoundedToTheCommandRange)
+TEST(HandoverCarry, SaturatedGeometricCommandIsBoundedToTheCommandSpan)
 {
     AC_Geometric_HandoverCarry carry;
     carry.set_config(config_with(1.0f));
 
-    // A law demanding three times full scale. Unbounded this seeds -2.96 and
-    // the washout holds the command down for seconds while the controller is
-    // saturated, which hides the saturation instead of smoothing a handover.
+    // A law demanding three times full scale. The raw difference is -3.02, and
+    // the offset is re-applied each frame to a command the mapper recomputes,
+    // so an unbounded one would drive a later frame to the opposite rail.
     const Vector3f saturated { 3.0f, -3.0f, 0.0f };
     const Vector3f& offset = carry.seed(NATIVE, saturated);
 
-    EXPECT_NEAR(NATIVE.x - 1.0f, offset.x, TOLERANCE);
-    EXPECT_NEAR(NATIVE.y + 1.0f, offset.y, TOLERANCE);
+    EXPECT_NEAR(-2.0f, offset.x, TOLERANCE);
+    EXPECT_NEAR(2.0f, offset.y, TOLERANCE);
 }
 
 TEST(HandoverCarry, OutOfRangeNativeIsAlsoBounded)
@@ -119,19 +119,127 @@ TEST(HandoverCarry, OneTimeConstantLeavesAboutAThird)
     EXPECT_NEAR(seeded.y * expf(-1.0f), carry.offset().y, 1.0e-3f);
 }
 
-TEST(HandoverCarry, AShortConstantIsGoneWithinATenthOfASecond)
+TEST(HandoverCarry, TheRecommendedConstantIsSpentWithinAThirdOfASecond)
 {
-    // The guidance is 0.1 to 0.2 s, because what the washout decays toward --
-    // the persistent difference between the two controllers -- is already near
-    // zero, and a long constant holds stale fast content open loop instead.
+    // 0.1 s is the suggested starting value, chosen against a measured
+    // transient envelope of 50 to 100 ms. Pin what it actually does rather
+    // than a constant nobody is told to use: a third of the seed is still
+    // applied at 0.1 s, and the correction is spent by 0.3 s.
     AC_Geometric_HandoverCarry carry;
-    carry.set_config(config_with(0.02f));
+    carry.set_config(config_with(0.1f));
     const float seeded = carry.seed(NATIVE, GEOMETRIC).length();
 
     for (int i = 0; i < 40; i++) {         // 0.1 s at 400 Hz
         carry.update(DT);
     }
-    EXPECT_LT(carry.offset().length(), 0.01f * seeded);
+    EXPECT_NEAR(seeded * expf(-1.0f), carry.offset().length(), 0.1f * seeded);
+
+    for (int i = 0; i < 80; i++) {         // to 0.3 s
+        carry.update(DT);
+    }
+    EXPECT_LT(carry.offset().length(), 0.06f * seeded);
+}
+
+// ---------------------------------------------------------------------------
+// apply(): turning an offset into the command the motors receive. Both
+// defects found in review lived here, in code no test reached.
+
+TEST(HandoverCarryApply, TheFirstFrameReproducesTheNativeCommand)
+{
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+    const Vector3f raw { 0.30f, -0.20f, 0.05f };
+    const Vector3f offset = carry.seed(NATIVE, raw);
+
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(raw, offset, false);
+
+    EXPECT_NEAR(NATIVE.x, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_NEAR(NATIVE.y, applied.rpy_norm.y, TOLERANCE);
+    EXPECT_NEAR(NATIVE.z, applied.rpy_norm.z, TOLERANCE);
+    EXPECT_FALSE(applied.limited);
+}
+
+TEST(HandoverCarryApply, ASaturatedLawStillLandsOnTheNativeCommand)
+{
+    // The case that broke: the offset was computed against the limited command
+    // and added to the unlimited one, so a law demanding 1.5 against a native
+    // -0.5 produced 0.0 -- neither continuous nor the law's intent -- and
+    // reported the rail as clean.
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+    const Vector3f raw { 1.5f, 0.0f, 0.0f };
+    const Vector3f native { -0.5f, 0.0f, 0.0f };
+    const Vector3f offset = carry.seed(native, raw);
+
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(raw, offset, true);
+
+    EXPECT_NEAR(-0.5f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_TRUE(applied.limited);
+}
+
+TEST(HandoverCarryApply, BeyondTheOffsetBoundTheCommandLandsOnTheRailNotBetween)
+{
+    // Further out than the offset can reach. The carry does not pretend: the
+    // command goes to the rail, and the flag says so.
+    AC_Geometric_HandoverCarry carry;
+    carry.set_config(config_with(0.1f));
+    const Vector3f raw { 3.0f, 0.0f, 0.0f };
+    const Vector3f native { 0.4f, 0.0f, 0.0f };
+    const Vector3f offset = carry.seed(native, raw);
+
+    EXPECT_NEAR(-2.0f, offset.x, TOLERANCE);
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(raw, offset, true);
+    EXPECT_NEAR(1.0f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_TRUE(applied.limited);
+}
+
+TEST(HandoverCarryApply, TheMappersLimitFlagSurvives)
+{
+    // The law asked for more than the mapper could give. That stays true even
+    // when the carry brings the command back inside the range.
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(Vector3f{2.0f, 0.0f, 0.0f},
+                                          Vector3f{-1.5f, 0.0f, 0.0f}, true);
+    EXPECT_NEAR(0.5f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_TRUE(applied.limited);
+}
+
+TEST(HandoverCarryApply, ACarryThatPushesPastTheRailIsReported)
+{
+    // The mapper was happy; the carry is what reaches the limit. The gate that
+    // watches for a handover made worse has to see this.
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(Vector3f{0.9f, 0.0f, 0.0f},
+                                          Vector3f{0.4f, 0.0f, 0.0f}, false);
+    EXPECT_NEAR(1.0f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_TRUE(applied.limited);
+}
+
+TEST(HandoverCarryApply, AnInRangeCarryReportsNothing)
+{
+    const AC_Geometric_HandoverCarry::Applied applied =
+        AC_Geometric_HandoverCarry::apply(Vector3f{0.2f, -0.3f, 0.1f},
+                                          Vector3f{0.1f, 0.1f, -0.05f}, false);
+    EXPECT_NEAR(0.3f, applied.rpy_norm.x, TOLERANCE);
+    EXPECT_NEAR(-0.2f, applied.rpy_norm.y, TOLERANCE);
+    EXPECT_NEAR(0.05f, applied.rpy_norm.z, TOLERANCE);
+    EXPECT_FALSE(applied.limited);
+}
+
+TEST(HandoverCarryApply, EveryAxisIsCheckedForTheRail)
+{
+    for (int axis = 0; axis < 3; axis++) {
+        Vector3f raw, offset;
+        raw[axis] = 0.9f;
+        offset[axis] = 0.5f;
+        const AC_Geometric_HandoverCarry::Applied applied =
+            AC_Geometric_HandoverCarry::apply(raw, offset, false);
+        EXPECT_TRUE(applied.limited) << "轴 " << axis;
+        EXPECT_NEAR(1.0f, applied.rpy_norm[axis], TOLERANCE) << "轴 " << axis;
+    }
 }
 
 TEST(HandoverCarry, DecaysToNothingAndStaysThere)
