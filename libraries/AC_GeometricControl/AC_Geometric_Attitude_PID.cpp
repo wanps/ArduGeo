@@ -487,12 +487,6 @@ void AC_Geometric_Attitude_PID::update(const AC_Geometric_State& state,
                       _gains.omega_d.z * output.omega_error_derivative_radss.z +
                       feedforward.z;
 
-    output.integral_moment = Vector3f{
-        -_gains.attitude_i.x * output.integral_error.x,
-        -_gains.attitude_i.y * output.integral_error.y,
-        -_gains.attitude_i.z * output.integral_error.z
-    };
-
     // Legacy diagnostic rate-target proxy retained for geometric logging. It
     // adds the moment proxy M to transported Omega_ref, so it is not a physical
     // angular-rate reference and is not fed into the native rate PID.

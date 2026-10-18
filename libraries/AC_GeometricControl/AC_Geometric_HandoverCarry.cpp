@@ -4,8 +4,8 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
 
     // @Param: HAND_TC
     // @DisplayName: Geometric output handover washout time constant
-    // @Description: Time constant for carrying the native controller's trim across the frame the geometric controller takes the outputs. The native rate loop holds a steady command against wind in its integrator; the geometric roll and pitch channels have no integrator, so without this the command steps by that trim and the aircraft receives a kick. The offset is seeded at the handover and decays with this time constant, so the geometric controller takes the trim over through its own attitude error rather than all at once. Zero disables the carry and reproduces the behaviour measured on the aircraft.
-    // @Range: 0 5
+    // @Description: Washout time constant for smoothing the command discontinuity on the frame the geometric controller takes the outputs. The two logged handovers jumped 0.050 and 0.059 of full scale; the carry cancels that jump on the first frame and decays the correction with this time constant. Keep it short. The jump is fast content, not a trim the geometric law lacks: the difference in mean command over a second either side of those same handovers was 0.002 to 0.022, so what the washout decays toward is already near zero and a long constant only holds stale content open loop. Start around 0.1 to 0.2 s. Zero disables the carry and reproduces the behaviour measured on the aircraft.
+    // @Range: 0 2
     // @Units: s
     // @User: Advanced
     AP_GROUPINFO("HAND_TC", 1, AC_Geometric_HandoverCarry_Params, _time_constant_s, 0.0f),
@@ -13,42 +13,35 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
     AP_GROUPEND
 };
 
-// Bounds one axis by the native integrator's own limit. A limit that is zero,
-// negative or not finite leaves the axis at zero rather than unbounded: an
-// integrator that cannot wind up is holding no trim worth carrying, and an
-// unusable limit is not grounds for trusting the difference it failed to bound.
-static float bounded_trim(float difference, float limit)
+// AP_Motors documents set_roll/pitch/yaw as -1..+1 but does not enforce it, and
+// the geometric side of the subtraction is the command before the mapper's own
+// limiting. Clamping both to the realizable range is what bounds the offset.
+static Vector3f realizable(const Vector3f& command)
 {
-    if (!isfinite(limit) || !is_positive(limit)) {
-        return 0.0f;
-    }
-    return constrain_float(difference, -limit, limit);
+    return Vector3f {
+        constrain_float(command.x, -1.0f, 1.0f),
+        constrain_float(command.y, -1.0f, 1.0f),
+        constrain_float(command.z, -1.0f, 1.0f)
+    };
 }
 
-const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_trim_norm,
-                                                 const Vector3f& geometric_trim_norm,
-                                                 const Vector3f& limit_norm)
+const Vector3f& AC_Geometric_HandoverCarry::seed(const Vector3f& native_rpy_norm,
+                                                 const Vector3f& geometric_rpy_norm)
 {
     _offset.zero();
     if (!is_positive(_config.time_constant_s)) {
         return _offset;
     }
-    if (native_trim_norm.is_nan() || native_trim_norm.is_inf() ||
-        geometric_trim_norm.is_nan() || geometric_trim_norm.is_inf() ||
-        limit_norm.is_nan() || limit_norm.is_inf()) {
+    if (native_rpy_norm.is_nan() || native_rpy_norm.is_inf() ||
+        geometric_rpy_norm.is_nan() || geometric_rpy_norm.is_inf()) {
         return _offset;
     }
 
-    const Vector3f difference = native_trim_norm - geometric_trim_norm;
-    const Vector3f bounded {
-        bounded_trim(difference.x, limit_norm.x),
-        bounded_trim(difference.y, limit_norm.y),
-        bounded_trim(difference.z, limit_norm.z)
-    };
-    if (bounded.length() < NEGLIGIBLE) {
+    const Vector3f difference = realizable(native_rpy_norm) - realizable(geometric_rpy_norm);
+    if (difference.length() < NEGLIGIBLE) {
         return _offset;
     }
-    _offset = bounded;
+    _offset = difference;
     return _offset;
 }
 

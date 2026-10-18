@@ -80,21 +80,21 @@ void Copter::run_rate_controller_main()
             // running the native rate PIDs or writing native motor commands.
             attitude_control->rate_controller_update_throttle_mix();
             if (!geometric_motor_output_was_active) {
-                // Rising edge. Hand over the native rate loop's trim, which is
-                // its integrator -- not motors->get_roll(), which is the whole
-                // output and carries P, D and any SystemID injection that the
-                // geometric law is answering for itself this frame.
+                // Rising edge. AP_Motors still holds what the native rate
+                // controller wrote last frame, which is what the motors are
+                // actually getting, so that is what the first geometric frame
+                // has to reproduce.
                 //
-                // imax goes with it as the bound: no trim can exceed it, so a
-                // difference that does is a transient or a saturated geometric
-                // command, and holding one for the washout would be worse than
-                // the step the carry replaces.
-                const AC_PID &roll_pid = attitude_control->get_rate_roll_pid();
-                const AC_PID &pitch_pid = attitude_control->get_rate_pitch_pid();
-                const AC_PID &yaw_pid = attitude_control->get_rate_yaw_pid();
-                geometric_control.begin_output_ownership(
-                    Vector3f{roll_pid.get_i(), pitch_pid.get_i(), yaw_pid.get_i()},
-                    Vector3f{roll_pid.imax(), pitch_pid.imax(), yaw_pid.imax()});
+                // Not the rate loop's integrator alone: decomposing the two
+                // logged handovers, the integrator is larger than the
+                // persistent difference between the two controllers on four of
+                // six axes and carries the opposite sign, so transferring it
+                // enlarged the step on five of six. The persistent difference
+                // is near zero because any controller holding the aircraft has
+                // to supply the same mean moment; what the handover produces is
+                // a fast discontinuity, and that is what this cancels.
+                geometric_control.begin_output_ownership(Vector3f{
+                    motors->get_roll(), motors->get_pitch(), motors->get_yaw()});
 #if HAL_LOGGING_ENABLED
                 Log_Write_Geometric_Handover_Carry(
                     geometric_control.handover_carry_offset(),

@@ -297,17 +297,15 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     _last_update_ms = AP_HAL::millis();
 }
 
-void AC_GeometricControl::begin_output_ownership(const Vector3f& native_integrator_norm,
-                                                 const Vector3f& native_integrator_limit_norm)
+void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm)
 {
     _handover_carry.set_config(_handover_carry_params.config());
-    // Against this law's own trim, not its whole command. Roll and pitch
-    // default to K_I 0 and contribute nothing here; yaw does not, and carrying
-    // the native integrator onto an axis already holding its own would count
-    // the same trim twice.
-    apply_handover_carry(_handover_carry.seed(native_integrator_norm,
-                                              _output.mapped.integral_norm,
-                                              native_integrator_limit_norm));
+    // Against rpy_norm, the limited command, not rpy_norm_raw. The raw value
+    // is unbounded, so a saturated law would seed an offset several times full
+    // scale and the washout would hold the command down for seconds. Using the
+    // limited value still makes the first frame continuous, because that is
+    // what the previous frames were writing.
+    apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm));
 }
 
 void AC_GeometricControl::end_output_ownership()

@@ -242,11 +242,6 @@ struct AC_Geometric_Attitude_Output {
     Vector3f moment;
     // Geometric integral state e_I^R = integral(e_Omega + C_R*e_R).
     Vector3f integral_error;
-    // The integral term's own share of M, -K_I*e_I^R. Separated out because
-    // the handover carry transfers the native loop's trim and must not hand
-    // over trim this law is already holding. Roll and pitch default to K_I 0
-    // and yaw does not, so the distinction is live on a default aircraft.
-    Vector3f integral_moment;
     // Legacy diagnostic rate-target proxy. It is not a physical angular-rate
     // reference and the active geometric path does not feed it to the native
     // rate PID.
@@ -277,10 +272,6 @@ struct AC_Geometric_Mapped_Output {
     // Mapper saturation precedes AP_Motors and does not report per-motor
     // saturation or remaining mixer authority.
     bool rpy_limited = false;
-    // The integral share of the command, normalized by the same scales as
-    // rpy_norm_raw. The handover carry subtracts it so the trim it transfers
-    // is the part the geometric law is not already supplying.
-    Vector3f integral_norm;
 };
 
 // Snapshot of the three shared-cascade stages:
