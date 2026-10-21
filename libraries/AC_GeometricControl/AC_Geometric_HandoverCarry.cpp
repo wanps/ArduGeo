@@ -10,6 +10,13 @@ const AP_Param::GroupInfo AC_Geometric_HandoverCarry_Params::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("HAND_TC", 1, AC_Geometric_HandoverCarry_Params, _time_constant_s, 0.0f),
 
+    // @Param: HAND_PRE
+    // @DisplayName: Preload the native rate loop when geometric output ends
+    // @Description: When the geometric controller gives the outputs back, the native rate loop is relaxed, which resets its integrators and leaves it commanding zero. Both logged handoffs show the native output resuming at exactly 0.0000 against a geometric command of 0.041/0.052/0.003 and 0.013/0.017/0.017, so the step is the whole command. With this enabled the rate integrators are seeded with that command instead, which makes the handoff continuous because the relax leaves the proportional, derivative and feedforward terms at zero on that frame. This is the fail-closed path and no flight has used it; default is off.
+    // @Values: 0:Disabled,1:Enabled
+    // @User: Advanced
+    AP_GROUPINFO("HAND_PRE", 2, AC_Geometric_HandoverCarry_Params, _preload_on_fallback, 0),
+
     AP_GROUPEND
 };
 

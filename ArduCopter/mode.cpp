@@ -29,9 +29,35 @@ void Mode::handle_geometric_motor_output_fallback()
     // State-transfer half of the atomic handoff selected in Attitude.cpp. Use
     // the current AP_Motors collective to seed the native throttle cache and
     // rebuild the frozen native attitude/rate state from the latest gyro.
+    //
+    // Read the geometric command before the relax: AP_Motors still holds what
+    // it wrote last frame, which is what the motors are currently getting.
     const float handoff_throttle = motors->get_throttle();
+    const Vector3f geometric_command { motors->get_roll(), motors->get_pitch(),
+                                       motors->get_yaw() };
+
     attitude_control->set_throttle_out(handoff_throttle, false, g.throttle_filt);
     attitude_control->relax_attitude_controllers(ahrs.get_gyro_latest());
+
+    // The relax leaves the rate loop commanding zero. It sets the rate target
+    // to the current gyro, resets the PID filters and zeroes the integrators,
+    // so on this frame the proportional, derivative and feedforward terms are
+    // all zero and the output is the integrator alone -- both logged handoffs
+    // show the native command resuming at exactly 0.0000 against a geometric
+    // command of 0.041/0.052/0.003 and 0.013/0.017/0.017. Seeding the
+    // integrator with that command makes the handoff continuous instead.
+    //
+    // set_integrator constrains to ATC_RAT_*_IMAX, so an implausible command
+    // cannot wind the loop up. An axis with ATC_RAT_*_I at zero is unaffected:
+    // AC_PID::update_i forces the integrator back to zero on the next step,
+    // which is correct, since a loop with no integrator has nowhere to hold a
+    // handoff value.
+    if (copter.geometric_control.handover_preload_on_fallback() &&
+        !geometric_command.is_nan() && !geometric_command.is_inf()) {
+        attitude_control->get_rate_roll_pid().set_integrator(geometric_command.x);
+        attitude_control->get_rate_pitch_pid().set_integrator(geometric_command.y);
+        attitude_control->get_rate_yaw_pid().set_integrator(geometric_command.z);
+    }
 
     copter.geometric_control.set_enabled(false);
 }

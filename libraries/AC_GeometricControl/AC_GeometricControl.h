@@ -81,6 +81,9 @@ public:
     void end_output_ownership();
 
     const Vector3f& handover_carry_offset() const { return _handover_carry.offset(); }
+    bool handover_preload_on_fallback() const {
+        return _handover_carry_params.preload_on_fallback();
+    }
     float handover_carry_time_constant_s() const { return _handover_carry_params.config().time_constant_s; }
 
     static bool reference_to_target(const AC_TrajectoryReference& reference,
