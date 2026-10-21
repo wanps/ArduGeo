@@ -172,11 +172,24 @@ struct AC_Geometric_L1_Observer_Config {
     // Cut-off for the estimate's low-pass [Hz]. Zero bypasses it, matching the
     // convention used by every other optional filter in this library.
     float filter_hz = 0.0f;
-    // Magnitude at which the estimate is treated as out of range [m/s/s]. The
-    // value that belongs here is still an open question for the algorithm side;
-    // the mechanism is present so that the bound can be set without a code
-    // change once it is decided.
+    // Backstop on the raw estimate [m/s/s]. The raw piecewise-constant law
+    // multiplies EKF velocity noise by roughly 1/dt, so on log_20 the raw
+    // magnitude has a median of 9.8 and a maximum of 54.9 while the filtered
+    // one has 0.88 and 4.86. A bound here can only guard against numerical
+    // blow-up; it cannot be the overrun criterion, which is
+    // sigma_filtered_max. Zero disables it.
     float sigma_max = 0.0f;
+    // Overrun criterion on the filtered estimate [m/s/s] (architecture 8.4,
+    // decision one). It flags; it does not clamp, so the log keeps what the
+    // estimator actually produced. Zero disables the flag and, because
+    // admission needs it, also makes admission impossible.
+    float sigma_filtered_max = 0.0f;
+    // Engage-time admission (architecture 8.4, decision three): the estimate
+    // must have been valid for this long without a break [s] ...
+    float admit_valid_s = 0.0f;
+    // ... and no re-seed may have been counted for this long [s]. Both values
+    // are order-of-magnitude choices, not measured ones.
+    float admit_quiet_s = 0.0f;
 };
 
 // Everything the L1 observer produces. No field is consumed by the control
@@ -196,8 +209,15 @@ struct AC_Geometric_L1_Observer_Output {
     // Nominal acceleration the predictor was advanced with, kept so that a log
     // can separate a modelling error from an estimator one.
     Vector3f nominal_accel_ned_mss;
-    // True when the raw estimate hit sigma_max on this step.
+    // True when the raw estimate hit the sigma_max backstop on this step.
     bool saturated = false;
+    // True when the filtered estimate exceeds sigma_filtered_max on this step.
+    // This, not saturated, is the overrun criterion.
+    bool filtered_over_limit = false;
+    // True when L1 could be engaged on this step: valid continuously for
+    // admit_valid_s, no re-seed for admit_quiet_s, and the filtered estimate
+    // inside sigma_filtered_max. Computed only; nothing engages on it yet.
+    bool admissible = false;
     // Counts re-seeds, so a log shows whether an estimate had time to converge.
     uint32_t resets = 0;
 };

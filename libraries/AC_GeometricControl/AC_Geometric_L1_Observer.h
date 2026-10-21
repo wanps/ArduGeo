@@ -19,6 +19,9 @@ private:
     AP_Float _predictor_gain;
     AP_Float _filter_hz;
     AP_Float _sigma_max;
+    AP_Float _sigma_filtered_max;
+    AP_Float _admit_valid_s;
+    AP_Float _admit_quiet_s;
 };
 
 // Observer-only L1 adaptive estimator for the translational channel.
@@ -72,4 +75,10 @@ private:
     Vector3f _sigma_hat_ned_mss;
     Vector3f _sigma_filtered_ned_mss;
     bool _initialised;
+
+    // Admission bookkeeping. Kept outside _output because reset() rebuilds
+    // _output, and the quiet timer has to survive exactly that.
+    float _valid_time_s;
+    float _quiet_time_s;
+    uint32_t _resets_seen;
 };

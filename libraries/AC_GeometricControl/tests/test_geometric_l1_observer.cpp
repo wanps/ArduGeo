@@ -240,4 +240,139 @@ TEST(GeometricL1Observer, ResetClearsTheEstimateButKeepsTheResetCount)
     EXPECT_EQ(observer.get_output().resets, resets);
 }
 
+// ---------------------------------------------------------------------------
+// Architecture 8.4, decisions one and three: overrun criterion on the filtered
+// estimate, and engage-time admission. Computed only.
+
+namespace {
+
+constexpr uint16_t STEPS_PER_S = 400;
+
+AC_Geometric_L1_Observer_Config decided_config(float sigma_filtered_max = 5.0f,
+                                               float admit_valid_s = 2.0f,
+                                               float admit_quiet_s = 5.0f)
+{
+    AC_Geometric_L1_Observer_Config config = config_with(5.0f, 2.0f, 60.0f);
+    config.sigma_filtered_max = sigma_filtered_max;
+    config.admit_valid_s = admit_valid_s;
+    config.admit_quiet_s = admit_quiet_s;
+    return config;
+}
+
+// Keeps the plant's velocity across calls, so a second stretch continues the
+// first instead of jumping back to rest and injecting a prediction error.
+struct Plant {
+    Vector3f velocity_ned_ms;
+    void fly(AC_Geometric_L1_Observer& observer, const Vector3f& disturbance_mss, float seconds)
+    {
+        const uint32_t steps = uint32_t(seconds * STEPS_PER_S);
+        for (uint32_t i = 0; i < steps; i++) {
+            observer.update(state_with(velocity_ned_ms), position_with(GRAVITY_MSS), DT);
+            velocity_ned_ms += disturbance_mss * DT;
+        }
+    }
+};
+
+const Vector3f SMALL {1.0f, 0.0f, 0.0f};
+
+} // namespace
+
+TEST(GeometricL1ObserverDecisions, ParameterDefaultsAreTheApprovedValues)
+{
+    AC_Geometric_L1_Observer_Params params;
+    const AC_Geometric_L1_Observer_Config config = params.config();
+    EXPECT_FLOAT_EQ(60.0f, config.sigma_max);
+    EXPECT_FLOAT_EQ(5.0f, config.sigma_filtered_max);
+    EXPECT_FLOAT_EQ(2.0f, config.admit_valid_s);
+    EXPECT_FLOAT_EQ(5.0f, config.admit_quiet_s);
+}
+
+TEST(GeometricL1ObserverDecisions, TheBackstopDoesNotFireOnARealisticDisturbance)
+{
+    AC_Geometric_L1_Observer observer;
+    observer.set_config(decided_config());
+    Plant plant;
+    plant.fly(observer, Vector3f{3.0f, 0.0f, 0.0f}, 4.0f);
+    EXPECT_TRUE(observer.get_output().valid);
+    EXPECT_FALSE(observer.get_output().saturated);
+    EXPECT_FALSE(observer.get_output().filtered_over_limit);
+}
+
+TEST(GeometricL1ObserverDecisions, OverrunIsFlaggedNotClamped)
+{
+    AC_Geometric_L1_Observer observer;
+    observer.set_config(decided_config());
+    Plant plant;
+    plant.fly(observer, Vector3f{7.0f, 0.0f, 0.0f}, 4.0f);
+    const AC_Geometric_L1_Observer_Output& out = observer.get_output();
+    EXPECT_TRUE(out.filtered_over_limit);
+    // The log has to keep what the estimator produced.
+    EXPECT_GT(out.sigma_filtered_ned_mss.length(), 5.0f);
+    EXPECT_FALSE(out.admissible);
+}
+
+TEST(GeometricL1ObserverDecisions, NotAdmittedBeforeBothTimersHaveRun)
+{
+    AC_Geometric_L1_Observer observer;
+    observer.set_config(decided_config());
+    Plant plant;
+    plant.fly(observer, SMALL, 1.0f);
+    EXPECT_FALSE(observer.get_output().admissible) << "inside the 2 s validity window";
+    plant.fly(observer, SMALL, 2.0f);
+    EXPECT_FALSE(observer.get_output().admissible) << "valid long enough, but the quiet timer starts at power-up";
+    plant.fly(observer, SMALL, 2.5f);
+    EXPECT_TRUE(observer.get_output().admissible);
+}
+
+TEST(GeometricL1ObserverDecisions, ACountedResetHoldsAdmissionForTheQuietTime)
+{
+    AC_Geometric_L1_Observer observer;
+    observer.set_config(decided_config(5.0f, 0.1f, 5.0f));
+    Plant plant;
+    plant.fly(observer, SMALL, 6.0f);
+    ASSERT_TRUE(observer.get_output().admissible);
+
+    // A non-positive timestep is one of the observer's own fault paths: it
+    // re-seeds and counts.
+    const uint32_t before = observer.get_output().resets;
+    observer.update(state_with(plant.velocity_ned_ms), position_with(GRAVITY_MSS), -1.0f);
+    ASSERT_GT(observer.get_output().resets, before);
+    EXPECT_FALSE(observer.get_output().admissible);
+
+    plant.fly(observer, SMALL, 3.0f);
+    EXPECT_FALSE(observer.get_output().admissible) << "3 s after a counted reset";
+    plant.fly(observer, SMALL, 2.5f);
+    EXPECT_TRUE(observer.get_output().admissible);
+}
+
+TEST(GeometricL1ObserverDecisions, ACallersReseedRestartsValidityButNotTheQuietTimer)
+{
+    // Approved wording: "no new Rst in the last 5 s". A mode change or a
+    // fallback re-seeds through reset() without counting, and must not cost
+    // an extra five seconds before the next engage.
+    AC_Geometric_L1_Observer observer;
+    observer.set_config(decided_config());
+    Plant plant;
+    plant.fly(observer, SMALL, 6.0f);
+    ASSERT_TRUE(observer.get_output().admissible);
+
+    observer.reset();
+    plant.fly(observer, SMALL, 1.0f);
+    EXPECT_FALSE(observer.get_output().admissible) << "validity restarts";
+    plant.fly(observer, SMALL, 1.5f);
+    EXPECT_TRUE(observer.get_output().admissible) << "quiet timer carried over";
+}
+
+TEST(GeometricL1ObserverDecisions, WithoutALimitNothingIsAdmitted)
+{
+    // The third condition cannot be evaluated, so admission fails closed.
+    AC_Geometric_L1_Observer observer;
+    observer.set_config(decided_config(0.0f, 0.1f, 0.1f));
+    Plant plant;
+    plant.fly(observer, SMALL, 6.0f);
+    EXPECT_TRUE(observer.get_output().valid);
+    EXPECT_FALSE(observer.get_output().filtered_over_limit);
+    EXPECT_FALSE(observer.get_output().admissible);
+}
+
 AP_GTEST_MAIN()

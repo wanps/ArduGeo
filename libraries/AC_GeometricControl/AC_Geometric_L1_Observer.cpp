@@ -28,12 +28,36 @@ const AP_Param::GroupInfo AC_Geometric_L1_Observer_Params::var_info[] = {
     AP_GROUPINFO("L1_OBS_FLT", 3, AC_Geometric_L1_Observer_Params, _filter_hz, 2.0f),
 
     // @Param: L1_OBS_SMAX
-    // @DisplayName: L1 observer estimate limit
-    // @Description: Magnitude at which the estimate is treated as out of range and clamped. Zero disables the limit. The value this should take has not been decided; the parameter exists so the decision does not require a code change.
+    // @DisplayName: L1 observer raw estimate backstop
+    // @Description: Clamp on the raw, unfiltered estimate. It is a guard against numerical blow-up and should never fire in flight: the raw law amplifies velocity noise by about 1/dt, so its magnitude routinely reaches tens of m/s/s while the filtered estimate stays under 5. The overrun criterion is L1_OBS_SFMAX, not this. Zero disables the clamp.
+    // @Range: 0 100
+    // @Units: m/s/s
+    // @User: Advanced
+    AP_GROUPINFO("L1_OBS_SMAX", 4, AC_Geometric_L1_Observer_Params, _sigma_max, 60.0f),
+
+    // @Param: L1_OBS_SFMAX
+    // @DisplayName: L1 observer overrun limit
+    // @Description: Magnitude of the filtered estimate above which it is flagged as out of range, and below which L1 may be admitted. 5.0 is 1.03 times the largest filtered value seen in a nominal-load flight; it is a starting point and must be recalibrated before any offset-load flight. Zero disables the flag and makes admission impossible.
     // @Range: 0 50
     // @Units: m/s/s
     // @User: Advanced
-    AP_GROUPINFO("L1_OBS_SMAX", 4, AC_Geometric_L1_Observer_Params, _sigma_max, 0.0f),
+    AP_GROUPINFO("L1_OBS_SFMAX", 5, AC_Geometric_L1_Observer_Params, _sigma_filtered_max, 5.0f),
+
+    // @Param: L1_OBS_ADMV
+    // @DisplayName: L1 admission: continuous validity
+    // @Description: How long the estimate must have been valid without a break before L1 may be admitted. Excludes the first moments after power-up or a re-seed. An order-of-magnitude choice, not a measured one.
+    // @Range: 0 30
+    // @Units: s
+    // @User: Advanced
+    AP_GROUPINFO("L1_OBS_ADMV", 6, AC_Geometric_L1_Observer_Params, _admit_valid_s, 2.0f),
+
+    // @Param: L1_OBS_ADMQ
+    // @DisplayName: L1 admission: time since last re-seed
+    // @Description: How long since the predictor was last re-seeded before L1 may be admitted. Excludes an estimator that keeps resetting. An order-of-magnitude choice, not a measured one.
+    // @Range: 0 60
+    // @Units: s
+    // @User: Advanced
+    AP_GROUPINFO("L1_OBS_ADMQ", 7, AC_Geometric_L1_Observer_Params, _admit_quiet_s, 5.0f),
 
     AP_GROUPEND
 };
@@ -54,6 +78,9 @@ AC_Geometric_L1_Observer_Config AC_Geometric_L1_Observer_Params::config() const
     config.predictor_gain = _predictor_gain;
     config.filter_hz = _filter_hz;
     config.sigma_max = _sigma_max;
+    config.sigma_filtered_max = _sigma_filtered_max;
+    config.admit_valid_s = _admit_valid_s;
+    config.admit_quiet_s = _admit_quiet_s;
     return config;
 }
 
@@ -81,7 +108,10 @@ bool is_finite(const Vector3f& v)
 
 } // namespace
 
-AC_Geometric_L1_Observer::AC_Geometric_L1_Observer()
+AC_Geometric_L1_Observer::AC_Geometric_L1_Observer() :
+    _valid_time_s(0.0f),
+    _quiet_time_s(0.0f),
+    _resets_seen(0)
 {
     reset();
 }
@@ -97,6 +127,12 @@ void AC_Geometric_L1_Observer::reset()
     _sigma_hat_ned_mss.zero();
     _sigma_filtered_ned_mss.zero();
     _initialised = false;
+    // A re-seed breaks continuity, so the validity timer restarts. The quiet
+    // timer does not: it answers "has the estimator been resetting itself",
+    // which is what the reset count records, and a caller re-seeding on a
+    // mode change or a fallback is not that. Admission still waits out the
+    // validity timer after any re-seed.
+    _valid_time_s = 0.0f;
 
     const uint32_t resets = _output.resets;
     _output = AC_Geometric_L1_Observer_Output {};
@@ -109,6 +145,8 @@ void AC_Geometric_L1_Observer::update(const AC_Geometric_State& state,
 {
     _output.valid = false;
     _output.saturated = false;
+    _output.filtered_over_limit = false;
+    _output.admissible = false;
 
     const float a_s = _config.predictor_gain;
     if (!is_positive(a_s) || !is_positive(dt) || !isfinite(dt)) {
@@ -172,6 +210,7 @@ void AC_Geometric_L1_Observer::update(const AC_Geometric_State& state,
         // Only reachable if a_s*dt underflows the exponential; holding the
         // previous estimate is safer than dividing by it.
         _output.velocity_error_ned_ms = velocity_error_ned_ms;
+        _valid_time_s = 0.0f;
         return;
     }
     Vector3f sigma_hat_ned_mss = velocity_error_ned_ms * (-decay / phi);
@@ -208,4 +247,24 @@ void AC_Geometric_L1_Observer::update(const AC_Geometric_State& state,
     _output.sigma_hat_ned_mss = _sigma_hat_ned_mss;
     _output.sigma_filtered_ned_mss = _sigma_filtered_ned_mss;
     _output.valid = true;
+
+    // Overrun criterion, on the filtered estimate (8.4 decision one).
+    const float filtered_mag = _sigma_filtered_ned_mss.length();
+    const bool limit_set = is_positive(_config.sigma_filtered_max);
+    _output.filtered_over_limit = limit_set && filtered_mag > _config.sigma_filtered_max;
+
+    // Admission (8.4 decision three). A reset counted since the last valid
+    // step restarts the quiet timer even if reset() was not what counted it.
+    if (_output.resets != _resets_seen) {
+        _resets_seen = _output.resets;
+        _quiet_time_s = 0.0f;
+    }
+    _valid_time_s += dt;
+    _quiet_time_s += dt;
+    // Fails closed: without a configured limit the third condition cannot be
+    // evaluated, so nothing is admitted.
+    _output.admissible = limit_set &&
+                         !_output.filtered_over_limit &&
+                         _valid_time_s >= _config.admit_valid_s &&
+                         _quiet_time_s >= _config.admit_quiet_s;
 }
