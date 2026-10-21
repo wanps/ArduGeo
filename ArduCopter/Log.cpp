@@ -611,6 +611,8 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Field: Vld: True when the estimate may be read
 // @Field: Sat: True when the raw estimate hit its limit this step
 // @Field: Rst: Cumulative re-seeds of the predictor
+// @Field: Ovr: True when the filtered estimate exceeds L1_OBS_SFMAX (the overrun criterion)
+// @Field: Adm: True when L1 could be engaged now (valid, quiet, inside the limit); computed only
 
 // The observer never contributes to a command, so these messages are the only
 // way its behaviour reaches anyone.  Both carry the same TimeUS, taken once
@@ -668,7 +670,7 @@ void Copter::Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_fl
 void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer)
 {
     GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");
-    GEOMETRIC_LOG_MSG(GEL2, "TimeUS,VPx,VPy,VPz,NAx,NAy,NAz,Vld,Sat,Rst", "QffffffBBI");
+    GEOMETRIC_LOG_MSG(GEL2, "TimeUS,VPx,VPy,VPz,NAx,NAy,NAz,Vld,Sat,Rst,Ovr,Adm", "QffffffBBIBB");
 
     const uint64_t now_us = AP_HAL::micros64();
 
@@ -694,7 +696,9 @@ void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Outp
                           (double)observer.nominal_accel_ned_mss.z,
                           (uint8_t)observer.valid,
                           (uint8_t)observer.saturated,
-                          observer.resets);
+                          observer.resets,
+                          (uint8_t)observer.filtered_over_limit,
+                          (uint8_t)observer.admissible);
 }
 
 // GEOR, GEOA, GEOD, GEOX, GEFR and the GEL1/GEL2 pair are emitted by Guided, Loiter, Circle, AUTO-WP and
