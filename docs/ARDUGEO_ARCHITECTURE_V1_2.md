@@ -642,7 +642,7 @@ L1 的目标场景破坏这个前提。非对称载荷下 L1 补偿的恰好是 
 
 | 层 | 触发 | 去向 | 依据 |
 |---|---|---|---|
-| 1 | L1 自身故障 | **Geo nominal，保留姿态积分状态** | `integral_error` 能吸收定常扰动，是离 L1 最近的可用状态 |
+| 1 | L1 自身故障 | **Geo nominal；σ̂ 健康时交接给位置环积分器** | 位置积分器能吸收定常扰动，且与 σ̂ 同量纲（见下文决定二） |
 | 2 | Geo 故障（陈旧 / 非有限 / 模式不支持） | Native，**带速率环积分器预装** | 维持 I-05，同时消除交接瞬态 |
 | 3 | L1 接管许可 | engage 时检查，**不是连续门** | 见下 |
 
@@ -703,18 +703,59 @@ L1 下同样的推理不成立 —— 闩锁意味着长期停留在能力更弱
 
 | Scenario | Required result |
 |---|---|
-| L1 fault, Geo healthy | same-frame degrade to Geo nominal; geometric integral state retained; zero L1 contribution |
+| L1 fault, Geo healthy | same-frame degrade to Geo nominal; healthy σ̂ handed to the position-loop integrator, unhealthy σ̂ discarded; zero L1 contribution |
 | Geo fault with L1 active | same-frame handoff to Native with rate-loop integrator preload; handoff logged |
 | L1 engage request | refused unless the engage-time admission check passes |
 | L1 latched | L1 contribution stays zero for the rest of the flight; Geo ownership unaffected |
 | Non-zero Rate_Only heading | mode owns an integrated yaw reference; Geo ownership retained |
 
-#### 本节未决（需要算法侧输入）
+#### 本节决定（2026-10-21 定案）
 
-- L1 "超界"的具体判据：`σ̂` 的幅值上限与变化率上限
-- 第 1 层降级时，Geo 积分项的初值是否继承 L1 的 `σ̂` 估计
-- engage-time 准入检查的具体可观测量
+三项原先标为「需要算法侧输入」，依据 log_20（X400-B，观测器首次真机运行，
+492 s，标称载荷）定案。决策材料见 `notes/L1契约三项未决-决策材料-20261018.md`。
 
+**贯穿三项的前提：原始 σ̂ 是噪声。** 分段常值律的系数在 `a_s=5, dt=0.0025` 时为
+−397.6，所以原始 σ̂ = EKF 速度噪声 × 约 400，实测中位 9.8、最大 54.9 m/s²；
+经 L1 自身的低通 C(s)（2 Hz）后中位 0.88、最大 4.86。**任何判据都必须加在滤波后。**
+
+**决定一　σ̂ 的超界判据：两处限幅，只定幅值。**
+
+```text
+原始处    GEO_L1_OBS_SMAX = 60 m/s²     兜底：防非有限与数值爆炸，正常飞行不应触发
+滤波后    上限 5.0 m/s²                 真正的判据，标称载荷 p100 的 1.03 倍
+变化率    暂不定                         仅一个标称架次，偏载下时间尺度会变
+```
+
+5.0 是起点而非结论，**偏载试飞前必须重新标定**。
+
+**决定二　第 1 层降级时 σ̂ 是否继承：继承，但只在 σ̂ 健康时，且接收方是位置环积分器。**
+
+此前本节写的是「保留姿态积分状态」，**那是错的通道**：σ̂ 是平动加速度（力通道），
+而横滚/俯仰的 `ATT_IMAX` 默认为 0，姿态通道上没有积分态可接。
+同量纲的接收方是位置环积分器 `e_I^x`（经 `−K_I·e_I^x` 进合力，单位 m/s²）：
+
+```text
+e_I^x += σ̂_filtered / K_I         标称中位 σ̂ 对应水平 0.88 m、垂直 0.18 m，远在 IMAX=10 m 内
+```
+
+健康前提的理由：第 1 层降级发生在 L1 故障时，而故障中的 σ̂ 正是最不该被写进
+一个要靠位置误差才能排空的状态里的东西。健康判据复用决定三。
+实现依赖第 1 层降级路径，随 S3（force 侧接管）一起做。
+
+**决定三　engage-time 准入的可观测量：三条，全用观测器自己的量。**
+
+```text
+①  Vld == 1 且已连续有效 ≥ 2 s
+②  过去 5 s 内 Rst 无新增
+③  |σ̂_filtered| < 决定一的上限
+```
+
+2 s 与 5 s 是量级估计，不是实测得出。**不把「Native 在当前工况可飞」做成准入量** ——
+它不可直接观测，只能用代理量，那是把一个判据的不确定性换成另一个的。
+按 R-23，准入判据先以 observer 形式实现：只计算并记日志，不接管。
+
+**连带更正：** R-23 观测器验收证据中的 `GEL2.Sat = 0%` 不构成信息 ——
+判据当时未启用（`SMAX` 默认 0）。该项状态为**未检验**，待决定一落地后以一个架次补上。
 
 ---
 
