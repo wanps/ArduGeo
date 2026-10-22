@@ -44,6 +44,12 @@ void Copter::run_rate_controller_main()
         const uint8_t mode_number = flightmode == nullptr ?
                                     UINT8_MAX :
                                     uint8_t(flightmode->mode_number());
+        // Both are read before the fallback relaxes anything, for the log:
+        // what the last frame wrote, and the trim the preload will load.
+        const Vector3f last_geometric_command { motors->get_roll(), motors->get_pitch(),
+                                                motors->get_yaw() };
+        const Vector3f handover_trim = geometric_handover_trim.valid() ?
+                                       geometric_handover_trim.value() : last_geometric_command;
         if (flightmode != nullptr) {
             flightmode->handle_geometric_motor_output_fallback();
         }
@@ -60,8 +66,11 @@ void Copter::run_rate_controller_main()
                                         attitude_control->get_rate_roll_pid().get_i(),
                                         attitude_control->get_rate_pitch_pid().get_i(),
                                         attitude_control->get_rate_yaw_pid().get_i()
-                                    });
+                                    },
+                                    last_geometric_command,
+                                    handover_trim);
 #endif
+        geometric_handover_trim.reset();
     }
 
     if (!using_rate_thread) {
@@ -82,15 +91,20 @@ void Copter::run_rate_controller_main()
                 // carried that, which against the measured jumps left a
                 // residual of 0.009 to 0.215 where the whole difference leaves
                 // none by construction.
-                geometric_control.begin_output_ownership(Vector3f{
-                    motors->get_roll(), motors->get_pitch(), motors->get_yaw()});
+                const Vector3f native_command {
+                    motors->get_roll(), motors->get_pitch(), motors->get_yaw()};
+                // The trim starts from what the motors are getting now, the
+                // native command, and follows the geometric one from here.
+                geometric_handover_trim.reset();
+                geometric_handover_trim.seed(native_command);
+                geometric_control.begin_output_ownership(native_command);
 #if HAL_LOGGING_ENABLED
                 Log_Write_Geometric_Handover_Carry(
                     geometric_control.handover_carry_offset(),
                     geometric_control.handover_carry_time_constant_s());
 #endif
             }
-            geometric_motor_output_to_motors();
+            geometric_motor_output_to_motors(last_loop_time_s);
             geometric_motor_output_frame_count++;
             geometric_motor_output_was_active = true;
         } else {
@@ -175,7 +189,7 @@ uint32_t Copter::geometric_motor_output_age_ms(uint32_t now_ms) const
     return now_ms - geometric_motor_output_last_ms;
 }
 
-void Copter::geometric_motor_output_to_motors()
+void Copter::geometric_motor_output_to_motors(float dt)
 {
     const AC_Geometric_Mapped_Output& mapped = geometric_control.get_output().mapped;
 
@@ -192,6 +206,9 @@ void Copter::geometric_motor_output_to_motors()
     motors->set_pitch_ff(0.0f);
     motors->set_yaw(mapped.rpy_norm.z);
     motors->set_yaw_ff(0.0f);
+    // What was just written, low-passed, is the trim a fallback preload loads.
+    geometric_handover_trim.update(mapped.rpy_norm, dt,
+                                   geometric_control.handover_preload_filter_hz());
     // Geometry remains the sole collective command source, but use the
     // attitude-control throttle sink for AP_Motors bookkeeping (throttle-in,
     // throttle-mix headroom and landing/takeoff consumers).  This does not run

@@ -648,11 +648,20 @@ void Copter::Log_Write_Geometric_Handover_Carry(const Vector3f &offset, float ti
 // @Field: Px: Native roll rate integrator after the handoff
 // @Field: Py: Native pitch rate integrator after the handoff
 // @Field: Pz: Native yaw rate integrator after the handoff
+// @Field: Ix: Geometric roll command on the last frame it owned
+// @Field: Iy: Geometric pitch command on the last frame it owned
+// @Field: Iz: Geometric yaw command on the last frame it owned
+// @Field: Tx: Low-passed geometric roll command (the trim GEO_HAND_PRE loads)
+// @Field: Ty: Low-passed geometric pitch command (the trim GEO_HAND_PRE loads)
+// @Field: Tz: Low-passed geometric yaw command (the trim GEO_HAND_PRE loads)
 void Copter::Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_flags,
                                          bool rate_thread_active,
-                                         const Vector3f &rate_integrator)
+                                         const Vector3f &rate_integrator,
+                                         const Vector3f &last_command,
+                                         const Vector3f &trim)
 {
-    GEOMETRIC_LOG_MSG(GEOH, "TimeUS,Mode,Fail,Prev,Act,Hand,RT,Px,Py,Pz", "QBBBBBBfff");
+    GEOMETRIC_LOG_MSG(GEOH, "TimeUS,Mode,Fail,Prev,Act,Hand,RT,Px,Py,Pz,Ix,Iy,Iz,Tx,Ty,Tz",
+                      "QBBBBBBfffffffff");
 
     AP::logger().Write("GEOH", GEOH_LABELS, GEOH_FMT,
                        AP_HAL::micros64(),
@@ -664,7 +673,13 @@ void Copter::Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_fl
                        uint8_t(rate_thread_active),
                        (double)rate_integrator.x,
                        (double)rate_integrator.y,
-                       (double)rate_integrator.z);
+                       (double)rate_integrator.z,
+                       (double)last_command.x,
+                       (double)last_command.y,
+                       (double)last_command.z,
+                       (double)trim.x,
+                       (double)trim.y,
+                       (double)trim.z);
 }
 
 void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer)

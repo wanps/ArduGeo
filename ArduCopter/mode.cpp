@@ -33,8 +33,12 @@ void Mode::handle_geometric_motor_output_fallback()
     // Read the geometric command before the relax: AP_Motors still holds what
     // it wrote last frame, which is what the motors are currently getting.
     const float handoff_throttle = motors->get_throttle();
-    const Vector3f geometric_command { motors->get_roll(), motors->get_pitch(),
-                                       motors->get_yaw() };
+    // The trim, not the last frame. On x400b the last frame carried noise of
+    // 0.06 against a roll trim of 0.04, so loading it loaded a noise sample;
+    // GEO_HAND_PFLT at zero restores that behaviour for comparison.
+    const Vector3f geometric_command = copter.geometric_handover_trim.valid() ?
+        copter.geometric_handover_trim.value() :
+        Vector3f { motors->get_roll(), motors->get_pitch(), motors->get_yaw() };
 
     attitude_control->set_throttle_out(handoff_throttle, false, g.throttle_filt);
     attitude_control->relax_attitude_controllers(ahrs.get_gyro_latest());

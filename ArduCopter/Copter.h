@@ -488,6 +488,10 @@ private:
     uint32_t geometric_motor_output_frame_count = 0;
     uint32_t native_rate_controller_frame_count = 0;
     bool geometric_motor_output_was_active = false;
+    // Trim of the geometric command while it owns the outputs; the fallback
+    // preload loads this. Lives here, not in the controller, because a mode
+    // change can reset the controller before the fallback runs.
+    AC_Geometric_HandoverTrim geometric_handover_trim;
     AC_WPNav *wp_nav;
     AC_Loiter *loiter_nav;
 
@@ -757,7 +761,7 @@ private:
     uint32_t main_rate_controller_frames() const { return main_rate_controller_frame_count; }
     uint32_t geometric_motor_output_frames() const { return geometric_motor_output_frame_count; }
     uint32_t native_rate_controller_frames() const { return native_rate_controller_frame_count; }
-    void geometric_motor_output_to_motors();
+    void geometric_motor_output_to_motors(float dt);
 
     // geometric_control.cpp
     bool update_geometric_controller(const AC_TrajectoryReference& trajectory_reference,
@@ -955,7 +959,8 @@ private:
     void Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Output &attitude);
     void Log_Write_Geometric_Handover_Carry(const Vector3f &offset, float time_constant_s);
     void Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_flags,
-                                     bool rate_thread_active, const Vector3f &rate_integrator);
+                                     bool rate_thread_active, const Vector3f &rate_integrator,
+                                     const Vector3f &last_command, const Vector3f &trim);
     void Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer);
     void Log_Write_Geometric_Output_State(bool motor_output_allowed,
                                           bool geometric_output_enabled,

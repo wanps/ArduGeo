@@ -639,4 +639,123 @@ TEST(HandoverCarryWiring, AnInRangeDecayFrameIsNotReportedAsRailed)
     EXPECT_FALSE(mapped.rpy_limited);
 }
 
+// ---------------------------------------------------------------------------
+// Fallback preload trim (GEO_HAND_PFLT). The preload used to load the last
+// frame; on x400b that frame carried roll noise of 0.06 against a trim of 0.04.
+
+namespace {
+
+constexpr float TRIM_DT = 0.0025f;
+
+// Deterministic noise, so a pass is not luck.
+float noise(uint32_t& state)
+{
+    state = state * 1664525u + 1013904223u;
+    return (float(state >> 8) / float(1u << 24)) * 2.0f - 1.0f;   // -1..1, std ~0.577
+}
+
+}  // namespace
+
+TEST(HandoverTrim, StartsInvalidAndSeedsOnTheFirstFrame)
+{
+    AC_Geometric_HandoverTrim trim;
+    EXPECT_FALSE(trim.valid());
+    trim.update(Vector3f{0.1f, -0.2f, 0.3f}, TRIM_DT, 1.0f);
+    EXPECT_TRUE(trim.valid());
+    EXPECT_TRUE(trim.value() == Vector3f(0.1f, -0.2f, 0.3f));
+}
+
+TEST(HandoverTrim, RecoversTheTrimUnderNoiseLargerThanTheTrim)
+{
+    // The real case: trim 0.04, noise std 0.06. Two seconds at 400 Hz.
+    const float trim_true = 0.04f;
+    AC_Geometric_HandoverTrim trim;
+    trim.seed(Vector3f{});
+    uint32_t st = 12345u;
+    float worst_last = 0.0f;
+    for (int i = 0; i < 800; i++) {
+        const float n = noise(st) * 0.104f;          // std ~0.06
+        trim.update(Vector3f{trim_true + n, 0, 0}, TRIM_DT, 1.0f);
+        worst_last = fabsf(trim_true + n - trim_true);
+    }
+    // The last frame is off by a noise sample; the trim is not.
+    EXPECT_NEAR(trim.value().x, trim_true, 0.015f);
+    (void)worst_last;
+}
+
+TEST(HandoverTrim, TheFilterBeatsTheLastFrameOnAverage)
+{
+    // Over many independent handoffs, the error of loading the trim must be
+    // well under the error of loading the frame, or the change is pointless.
+    const float trim_true = 0.04f;
+    uint32_t st = 777u;
+    float err_trim = 0.0f, err_frame = 0.0f;
+    const int trials = 200;
+    for (int k = 0; k < trials; k++) {
+        AC_Geometric_HandoverTrim trim;
+        trim.seed(Vector3f{});
+        float last = 0.0f;
+        for (int i = 0; i < 800; i++) {
+            last = trim_true + noise(st) * 0.104f;
+            trim.update(Vector3f{last, 0, 0}, TRIM_DT, 1.0f);
+        }
+        err_trim += fabsf(trim.value().x - trim_true);
+        err_frame += fabsf(last - trim_true);
+    }
+    EXPECT_LT(err_trim / trials, 0.25f * err_frame / trials);
+}
+
+TEST(HandoverTrim, ZeroCutoffLoadsTheLastFrame)
+{
+    // GEO_HAND_PFLT = 0 reproduces what #27 shipped, for comparison.
+    AC_Geometric_HandoverTrim trim;
+    trim.seed(Vector3f{});
+    trim.update(Vector3f{0.2f, 0.0f, 0.0f}, TRIM_DT, 0.0f);
+    trim.update(Vector3f{-0.3f, 0.1f, 0.0f}, TRIM_DT, 0.0f);
+    EXPECT_TRUE(trim.value() == Vector3f(-0.3f, 0.1f, 0.0f));
+}
+
+TEST(HandoverTrim, ANonFiniteFrameIsIgnored)
+{
+    AC_Geometric_HandoverTrim trim;
+    trim.seed(Vector3f{0.05f, 0.0f, 0.0f});
+    trim.update(Vector3f{NAN, 0.0f, 0.0f}, TRIM_DT, 1.0f);
+    trim.update(Vector3f{INFINITY, 0.0f, 0.0f}, TRIM_DT, 0.0f);
+    EXPECT_FLOAT_EQ(0.05f, trim.value().x);
+}
+
+TEST(HandoverTrim, ANonPositiveTimestepHoldsTheValue)
+{
+    AC_Geometric_HandoverTrim trim;
+    trim.seed(Vector3f{0.05f, 0.0f, 0.0f});
+    trim.update(Vector3f{0.5f, 0.0f, 0.0f}, 0.0f, 1.0f);
+    trim.update(Vector3f{0.5f, 0.0f, 0.0f}, -1.0f, 1.0f);
+    EXPECT_FLOAT_EQ(0.05f, trim.value().x);
+}
+
+TEST(HandoverTrim, ResetInvalidates)
+{
+    AC_Geometric_HandoverTrim trim;
+    trim.seed(Vector3f{0.05f, 0.0f, 0.0f});
+    trim.reset();
+    EXPECT_FALSE(trim.valid());
+}
+
+TEST(HandoverCarryWiring, ThePreloadFilterDefaultsToOneHertz)
+{
+    AC_GeometricControl control;
+    EXPECT_FLOAT_EQ(1.0f, control.handover_preload_filter_hz());
+}
+
+TEST(HandoverCarryWiring, ThePreloadFilterReachesTheAccessorAndIsBounded)
+{
+    AC_GeometricControl control;
+    ASSERT_TRUE(set_param(control, "HAND_PFLT", 0.5f));
+    EXPECT_FLOAT_EQ(0.5f, control.handover_preload_filter_hz());
+    ASSERT_TRUE(set_param(control, "HAND_PFLT", 100.0f));
+    EXPECT_FLOAT_EQ(20.0f, control.handover_preload_filter_hz());
+    ASSERT_TRUE(set_param(control, "HAND_PFLT", NAN));
+    EXPECT_FLOAT_EQ(0.0f, control.handover_preload_filter_hz());
+}
+
 AP_GTEST_MAIN()
