@@ -21,6 +21,16 @@ struct AC_Geometric_State {
     // Current body-to-NED attitude R and body-frame angular velocity Omega.
     Quaternion attitude_body_to_ned;
     Vector3f omega_body_rads;
+    // The land detector's early verdict. L1 pauses on it: once the aircraft
+    // may be on the ground, the ground carries weight the model does not know.
+    bool land_complete_maybe = false;
+    // AP_Motors reported collective at its upper or lower limit last frame.
+    // The controller cannot see that saturation itself (spin floor, rpy
+    // priority), and L1 must not mistake the shortfall for a disturbance.
+    bool thrust_limited = false;
+    // Collective AP_Motors actually produced last frame, same units as the
+    // mapped throttle; negative when unknown. Read only while thrust_limited.
+    float applied_throttle_norm = -1.0f;
 };
 
 struct AC_Geometric_Target {
@@ -163,7 +173,7 @@ struct AC_Geometric_Attitude_Integral_Limits {
     Vector3f integral_error;
 };
 
-// Configuration for the observer-only L1 translational estimator.
+// Configuration for the L1 translational estimator.
 struct AC_Geometric_L1_Observer_Config {
     // Predictor convergence rate a_s in A_s = -a_s*I [1/s]. Larger values make
     // the predictor follow the measurement harder, which moves uncertainty out

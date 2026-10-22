@@ -24,13 +24,13 @@ private:
     AP_Float _admit_quiet_s;
 };
 
-// Observer-only L1 adaptive estimator for the translational channel.
+// L1 adaptive estimator for the translational channel.
 //
 // It estimates the matched uncertainty sigma that the nominal geometric model
-// does not account for, and it does nothing else: the class exposes no command
-// and the controller never reads its output into a force, moment or motor
-// value.  R-23 requires an independent observer stage before any new active
-// path, and this is that stage for the L1 work.
+// does not account for. The class itself exposes no command. It began as the
+// R-23 observer stage, in which nothing read its output; with GEO_L1_EN set,
+// AC_GeometricControl now feeds the vertical component of its estimate into
+// the position channel through AC_Geometric_L1_Augment (S3a).
 //
 // Structure (Hovakimyan/Cao piecewise-constant adaptive law, velocity channel):
 //

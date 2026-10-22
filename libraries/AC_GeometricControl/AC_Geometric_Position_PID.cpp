@@ -514,3 +514,22 @@ void AC_Geometric_Position_PID::update(const AC_Geometric_State& state,
         output.thrust = -(output.specific_force_ned_mss * attitude.colz());
     }
 }
+
+Vector3f AC_Geometric_Position_PID::add_integral_acceleration(const Vector3f& accel_mss)
+{
+    if (accel_mss.is_nan() || accel_mss.is_inf()) {
+        return Vector3f{};
+    }
+    const Vector3f before = _integral_error_m;
+    for (uint8_t i = 0; i < 3; i++) {
+        if (is_positive(_gains.i[i])) {
+            _integral_error_m[i] += accel_mss[i] / _gains.i[i];
+        }
+    }
+    constrain_integral(_integral_error_m, _integral_limits.integral_error_m);
+    Vector3f applied;
+    for (uint8_t i = 0; i < 3; i++) {
+        applied[i] = (_integral_error_m[i] - before[i]) * _gains.i[i];
+    }
+    return applied;
+}

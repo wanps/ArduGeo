@@ -39,11 +39,16 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     // SANM storage nor changes LREF_ persistent identity across compatible
     // geometric-controller branch variants.
 
-    // Indices 45 through 61 stay reserved by the note above; 63 is left as the
-    // final slot, so the observer takes the first index after the yaw shaper.
+    // Indices 45 through 61 stay reserved by the note above. The observer took
+    // the first index after the yaw shaper; 63, the last top-level slot, now
+    // holds the L1 augmentation group, so this table has no free index left.
     // @Group:
     // @Path: AC_Geometric_L1_Observer.cpp
     AP_SUBGROUPINFO(_l1_observer_params, "", 37, AC_GeometricControl, AC_Geometric_L1_Observer_Params),
+
+    // @Group:
+    // @Path: AC_Geometric_L1_Augment.cpp
+    AP_SUBGROUPINFO(_l1_augment_params, "", 63, AC_GeometricControl, AC_Geometric_L1_Augment_Params),
 
     // @Group:
     // @Path: AC_Geometric_HandoverCarry.cpp
@@ -77,6 +82,16 @@ void AC_GeometricControl::reset()
     _position_pid.reset();
     _attitude_pid.reset();
     _l1_observer.reset();
+    // The integrator and the observer are being reset, so L1 leaves without
+    // a handover and re-enters through admission; a latch survives.
+    //
+    // Ownership is not touched. Only the vehicle's ownership edges decide it,
+    // and reset() is not one: Loiter resets the controller during its ground
+    // and takeoff lifecycle while geometry keeps writing the motors, and no
+    // new rising edge follows. Clearing ownership here left L1 unable to
+    // engage for the rest of the flight in SITL.
+    _l1_augment.drop(AC_Geometric_L1_Reason::RESET);
+    _l1_injection_used_z = 0.0f;
     // The second door into "no stale carry survives ownership", which
     // end_output_ownership's comment claims. set_enabled(false) arrives here
     // rather than there.
@@ -260,7 +275,16 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     // The shared translational stage always computes (A,f). With
     // build_attitude_from_position it also derives (R_c,Omega_c,dot(Omega_c));
     // otherwise it passes through the supplied direct attitude reference.
-    _position_pid.update(state, position_target, dt, _output.position);
+    //
+    // L1 (S3a) enters as feed-forward acceleration. Adding it here rather
+    // than to the resultant keeps it inside every later use of a_d, including
+    // the vertical anti-windup's analytic recomputation, which would otherwise
+    // drop it. The shaped target is logged without it.
+    AC_Geometric_Target pid_target = position_target;
+    const Vector3f l1_injection = _l1_augment.injection_ned_mss();
+    pid_target.accel_ned_mss += l1_injection;
+    _l1_injection_used_z = l1_injection.z;
+    _position_pid.update(state, pid_target, dt, _output.position);
 
     // The derived or pass-through attitude state becomes R_ref, Omega_ref and
     // dot(Omega_ref) for the SO(3) attitude layer.
@@ -284,16 +308,63 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     // GEO_HAND_TC is not positive, because the offset is zero in both cases.
     _handover_carry.set_config(_handover_carry_params.config());
     apply_handover_carry(_handover_carry.update(dt));
-    // Observer stage, deliberately after the mapper. It reads the state and
-    // the already-computed nominal force and produces an estimate that nothing
-    // downstream consumes, so no ordering change here can alter a command.
+    // Observer stage, deliberately after the mapper, so it can be given the
+    // collective the mapper actually produced. With GEO_L1_EN off nothing
+    // consumes its estimate. With it on, the estimate drives next frame's
+    // injection and the handover below lands on the same frame as the
+    // injection change it balances; this order is part of that alignment.
+    //
+    // The observer's nominal model takes the applied specific force, not the
+    // commanded one. When the mapper clamps, those differ, and an observer
+    // fed the command would read the shortfall as a disturbance; with L1
+    // closing the loop on it, that is positive feedback.
     if (_l1_observer_params.enabled()) {
         _l1_observer.set_config(_l1_observer_params.config());
-        _l1_observer.update(state, _output.position, dt);
+        AC_Geometric_Position_Output applied = _output.position;
+        const float hover = hover_throttle_norm();
+        if (is_positive(hover)) {
+            if (state.thrust_limited && state.applied_throttle_norm >= 0.0f) {
+                // AP_Motors is downstream of the mapper, so when it reports a
+                // limit (rpy priority, current limit) its own output is what
+                // was applied, whatever the mapper did. One frame old, the
+                // same age as the flag.
+                applied.thrust = state.applied_throttle_norm * GRAVITY_MSS / hover;
+            } else if (_output.mapped.throttle_limited) {
+                applied.thrust = _output.mapped.throttle_norm * GRAVITY_MSS / hover;
+            }
+        }
+        _l1_observer.update(state, applied, dt);
     } else {
         // Clearing while disabled stops a stale estimate from being logged as
         // if it were current, and makes a later enable start from the state.
         _l1_observer.reset();
+    }
+
+    // L1 decides on this frame's observer verdict what next frame injects.
+    // A clean exit's handover goes into the integrator now, which is the same
+    // frame the injection it replaces stops.
+    {
+        const AC_Geometric_L1_Observer_Output& obs = _l1_observer.get_output();
+        AC_Geometric_L1_Augment_Inputs in {};
+        in.observer_valid = obs.valid;
+        in.observer_over_limit = obs.filtered_over_limit;
+        in.observer_admissible = obs.admissible;
+        in.observer_resets = obs.resets;
+        in.sigma_filtered_ned_mss = obs.sigma_filtered_ned_mss;
+        in.owns_output = _owns_output;
+        in.land_complete_maybe = state.land_complete_maybe;
+        in.throttle = _output.mapped.throttle_norm;
+        in.thrust_limited = _output.mapped.throttle_limited || state.thrust_limited;
+        AC_Geometric_L1_Augment_Config cfg = _l1_augment_params.config();
+        // No observer, no L1; and switching the observer off is an operator
+        // action, so it exits cleanly rather than looking like a fault.
+        cfg.enabled = cfg.enabled && _l1_observer_params.enabled();
+        _l1_augment.set_config(cfg);
+        _l1_augment.update(in, dt);
+        if (!_l1_augment.handover_ned_mss().is_zero()) {
+            _l1_handover_applied_z +=
+                _position_pid.add_integral_acceleration(_l1_augment.handover_ned_mss()).z;
+        }
     }
 
     // This timestamp marks computation freshness only. Vehicle code performs
@@ -303,6 +374,7 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
 
 void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm)
 {
+    _owns_output = true;
     _handover_carry.set_config(_handover_carry_params.config());
     apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm_raw));
 }
@@ -310,6 +382,10 @@ void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm
 void AC_GeometricControl::end_output_ownership()
 {
     _handover_carry.reset();
+    // Native takes over; the geometric integrator is out of the loop, so
+    // there is nothing to hand to. A latch survives.
+    _owns_output = false;
+    _l1_augment.drop(AC_Geometric_L1_Reason::OWNERSHIP);
 }
 
 void AC_GeometricControl::apply_handover_carry(const Vector3f& offset)

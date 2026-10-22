@@ -26,6 +26,11 @@ void Copter::run_rate_controller_main()
 {
     main_rate_controller_frame_count++;
 
+    // An L1 latch lasts for the flight. Disarmed is between flights.
+    if (!motors->armed()) {
+        geometric_control.l1_clear_latch();
+    }
+
     // set attitude and position controller loop time
     const float last_loop_time_s = AP::scheduler().get_last_loop_time_s();
     pos_control->set_dt_s(last_loop_time_s);

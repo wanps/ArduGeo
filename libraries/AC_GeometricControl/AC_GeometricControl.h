@@ -6,6 +6,7 @@
 
 #include "AC_Geometric_Attitude_PID.h"
 #include "AC_Geometric_HandoverCarry.h"
+#include "AC_Geometric_L1_Augment.h"
 #include "AC_Geometric_L1_Observer.h"
 #include "AC_Geometric_LoiterReference.h"
 #include "AC_Geometric_OutputMapper.h"
@@ -103,12 +104,22 @@ public:
     const AC_Geometric_Target& get_shaped_target() const { return _shaped_target; }
     bool shaper_active() const { return _shaper_active; }
 
-    // Observer-only L1 estimate. Reading this cannot change any command: the
-    // cascade above never consumes it, which R-23 requires of an observer
-    // stage and which the unit tests assert.
+    // L1 estimate. With GEO_L1_EN at zero, the default, the cascade never
+    // consumes it, which R-23 required of the observer stage; the closed-loop
+    // tests assert the commands are bit-identical with and without the
+    // observer in that configuration. With GEO_L1_EN set, its vertical
+    // component enters the position channel through _l1_augment.
     const AC_Geometric_L1_Observer_Output& get_l1_observer_output() const {
         return _l1_observer.get_output();
     }
+    const AC_Geometric_L1_Augment& l1_augment() const { return _l1_augment; }
+    // What this frame's position PID actually received, and the cumulative
+    // handover the integrator actually took, for the log.
+    float l1_injection_used_z() const { return _l1_injection_used_z; }
+    float l1_handover_applied_z() const { return _l1_handover_applied_z; }
+    // The latch is for the flight, so it survives reset() and ownership
+    // changes; the vehicle clears it while disarmed.
+    void l1_clear_latch() { _l1_augment.clear_latch(); }
     AC_Geometric_LoiterReference_Profile get_loiter_reference_profile() const { return _loiter_reference_params.get(); }
 
 private:
@@ -137,6 +148,13 @@ private:
     AC_Geometric_HandoverCarry_Params _handover_carry_params;
     AC_Geometric_HandoverCarry _handover_carry;
     AC_Geometric_L1_Observer _l1_observer;
+    AC_Geometric_L1_Augment_Params _l1_augment_params;
+    AC_Geometric_L1_Augment _l1_augment;
+    // Between begin_output_ownership and end_output_ownership. L1 only
+    // engages while geometry is actually flying the aircraft.
+    bool _owns_output = false;
+    float _l1_injection_used_z = 0.0f;
+    float _l1_handover_applied_z = 0.0f;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_YawShaper _yaw_shaper;
     AC_Geometric_Output _output;
