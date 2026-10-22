@@ -46,6 +46,10 @@ const AP_Param::GroupInfo AC_GeometricControl::var_info[] = {
     AP_SUBGROUPINFO(_l1_observer_params, "", 37, AC_GeometricControl, AC_Geometric_L1_Observer_Params),
 
     // @Group:
+    // @Path: AC_Geometric_L1_Augment.cpp
+    AP_SUBGROUPINFO(_l1_augment_params, "", 63, AC_GeometricControl, AC_Geometric_L1_Augment_Params),
+
+    // @Group:
     // @Path: AC_Geometric_HandoverCarry.cpp
     AP_SUBGROUPINFO(_handover_carry_params, "", 18, AC_GeometricControl, AC_Geometric_HandoverCarry_Params),
 
@@ -77,6 +81,15 @@ void AC_GeometricControl::reset()
     _position_pid.reset();
     _attitude_pid.reset();
     _l1_observer.reset();
+    // The integrator and the observer are being reset, so L1 leaves without
+    // a handover and re-enters through admission; a latch survives.
+    //
+    // Ownership is not touched. Only the vehicle's ownership edges decide it,
+    // and reset() is not one: Loiter resets the controller during its ground
+    // and takeoff lifecycle while geometry keeps writing the motors, and no
+    // new rising edge follows. Clearing ownership here left L1 unable to
+    // engage for the rest of the flight in SITL.
+    _l1_augment.drop();
     // The second door into "no stale carry survives ownership", which
     // end_output_ownership's comment claims. set_enabled(false) arrives here
     // rather than there.
@@ -260,7 +273,14 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
     // The shared translational stage always computes (A,f). With
     // build_attitude_from_position it also derives (R_c,Omega_c,dot(Omega_c));
     // otherwise it passes through the supplied direct attitude reference.
-    _position_pid.update(state, position_target, dt, _output.position);
+    //
+    // L1 (S3a) enters as feed-forward acceleration. Adding it here rather
+    // than to the resultant keeps it inside every later use of a_d, including
+    // the vertical anti-windup's analytic recomputation, which would otherwise
+    // drop it. The shaped target is logged without it.
+    AC_Geometric_Target pid_target = position_target;
+    pid_target.accel_ned_mss += _l1_augment.injection_ned_mss();
+    _position_pid.update(state, pid_target, dt, _output.position);
 
     // The derived or pass-through attitude state becomes R_ref, Omega_ref and
     // dot(Omega_ref) for the SO(3) attitude layer.
@@ -296,6 +316,27 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         _l1_observer.reset();
     }
 
+    // L1 decides on this frame's observer verdict what next frame injects.
+    // A clean exit's handover goes into the integrator now, which is the same
+    // frame the injection it replaces stops.
+    {
+        const AC_Geometric_L1_Observer_Output& obs = _l1_observer.get_output();
+        AC_Geometric_L1_Augment_Inputs in {};
+        in.observer_valid = obs.valid;
+        in.observer_over_limit = obs.filtered_over_limit;
+        in.observer_admissible = obs.admissible;
+        in.observer_resets = obs.resets;
+        in.sigma_filtered_ned_mss = obs.sigma_filtered_ned_mss;
+        in.owns_output = _owns_output;
+        in.land_complete_maybe = state.land_complete_maybe;
+        in.throttle = _output.mapped.throttle_norm;
+        _l1_augment.set_config(_l1_augment_params.config());
+        _l1_augment.update(in, dt);
+        if (!_l1_augment.handover_ned_mss().is_zero()) {
+            _position_pid.add_integral_acceleration(_l1_augment.handover_ned_mss());
+        }
+    }
+
     // This timestamp marks computation freshness only. Vehicle code performs
     // the separate geometric/native ownership decision and motor write.
     _last_update_ms = AP_HAL::millis();
@@ -303,6 +344,7 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
 
 void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm)
 {
+    _owns_output = true;
     _handover_carry.set_config(_handover_carry_params.config());
     apply_handover_carry(_handover_carry.seed(native_rpy_norm, _output.mapped.rpy_norm_raw));
 }
@@ -310,6 +352,10 @@ void AC_GeometricControl::begin_output_ownership(const Vector3f& native_rpy_norm
 void AC_GeometricControl::end_output_ownership()
 {
     _handover_carry.reset();
+    // Native takes over; the geometric integrator is out of the loop, so
+    // there is nothing to hand to. A latch survives.
+    _owns_output = false;
+    _l1_augment.drop();
 }
 
 void AC_GeometricControl::apply_handover_carry(const Vector3f& offset)

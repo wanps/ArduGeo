@@ -614,6 +614,15 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Field: Ovr: True when the filtered estimate exceeds L1_OBS_SFMAX (the overrun criterion)
 // @Field: Adm: True when L1 could be engaged now (valid, quiet, inside the limit); computed only
 
+// @LoggerMessage: GEL3
+// @Description: L1 force augmentation (vertical, S3a): state, ramp and what it injected
+// @Field: TimeUS: Time since system startup
+// @Field: St: 0 off, 1 ramping in, 2 engaged, 3 clean exit, 4 paused, 5 latched
+// @Field: Rsn: Why it last left engagement: 1 disabled, 2 ownership, 3 low collective, 4 possible landing, 5 overrun, 6 invalid, 7 observer reset, 8 non-finite
+// @Field: Lam: Ramp factor lambda, 0 to 1
+// @Field: IJz: Vertical acceleration added to the feed-forward
+// @Field: HOz: Vertical acceleration handed to the position integrator this frame
+
 // The observer never contributes to a command, so these messages are the only
 // way its behaviour reaches anyone.  Both carry the same TimeUS, taken once
 // below, so the pair joins exactly on that column.
@@ -686,6 +695,7 @@ void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Outp
 {
     GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");
     GEOMETRIC_LOG_MSG(GEL2, "TimeUS,VPx,VPy,VPz,NAx,NAy,NAz,Vld,Sat,Rst,Ovr,Adm", "QffffffBBIBB");
+    GEOMETRIC_LOG_MSG(GEL3, "TimeUS,St,Rsn,Lam,IJz,HOz", "QBBfff");
 
     const uint64_t now_us = AP_HAL::micros64();
 
@@ -714,6 +724,15 @@ void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Outp
                           observer.resets,
                           (uint8_t)observer.filtered_over_limit,
                           (uint8_t)observer.admissible);
+
+    const AC_Geometric_L1_Augment& l1 = geometric_control.l1_augment();
+    logger.WriteStreaming("GEL3", GEL3_LABELS, GEL3_FMT,
+                          now_us,
+                          (uint8_t)l1.state(),
+                          (uint8_t)l1.reason(),
+                          (double)l1.lambda(),
+                          (double)l1.injection_ned_mss().z,
+                          (double)l1.handover_ned_mss().z);
 }
 
 // GEOR, GEOA, GEOD, GEOX, GEFR and the GEL1/GEL2 pair are emitted by Guided, Loiter, Circle, AUTO-WP and

@@ -40,6 +40,7 @@ bool Copter::update_geometric_controller(const AC_TrajectoryReference& trajector
     state.velocity_ned_ms = pos_control->get_vel_estimate_NED_ms();
     ahrs.get_quat_body_to_ned(state.attitude_body_to_ned);
     state.omega_body_rads = ahrs.get_gyro_latest();
+    state.land_complete_maybe = ap.land_complete_maybe;
 
     geometric_control.set_hover_throttle_reference(motors->get_throttle_hover());
     geometric_control.update(state, target, G_Dt);

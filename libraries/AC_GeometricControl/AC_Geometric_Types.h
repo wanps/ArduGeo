@@ -21,6 +21,9 @@ struct AC_Geometric_State {
     // Current body-to-NED attitude R and body-frame angular velocity Omega.
     Quaternion attitude_body_to_ned;
     Vector3f omega_body_rads;
+    // The land detector's early verdict. L1 pauses on it: once the aircraft
+    // may be on the ground, the ground carries weight the model does not know.
+    bool land_complete_maybe = false;
 };
 
 struct AC_Geometric_Target {
