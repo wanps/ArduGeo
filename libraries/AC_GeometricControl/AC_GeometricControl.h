@@ -105,13 +105,18 @@ public:
     bool shaper_active() const { return _shaper_active; }
 
     // L1 estimate. With GEO_L1_EN at zero, the default, the cascade never
-    // consumes it, which R-23 required of the observer stage and the unit
-    // tests still assert for that configuration. With GEO_L1_EN set, its
-    // vertical component enters the position channel through _l1_augment.
+    // consumes it, which R-23 required of the observer stage; the closed-loop
+    // tests assert the commands are bit-identical with and without the
+    // observer in that configuration. With GEO_L1_EN set, its vertical
+    // component enters the position channel through _l1_augment.
     const AC_Geometric_L1_Observer_Output& get_l1_observer_output() const {
         return _l1_observer.get_output();
     }
     const AC_Geometric_L1_Augment& l1_augment() const { return _l1_augment; }
+    // What this frame's position PID actually received, and the cumulative
+    // handover the integrator actually took, for the log.
+    float l1_injection_used_z() const { return _l1_injection_used_z; }
+    float l1_handover_applied_z() const { return _l1_handover_applied_z; }
     // The latch is for the flight, so it survives reset() and ownership
     // changes; the vehicle clears it while disarmed.
     void l1_clear_latch() { _l1_augment.clear_latch(); }
@@ -148,6 +153,8 @@ private:
     // Between begin_output_ownership and end_output_ownership. L1 only
     // engages while geometry is actually flying the aircraft.
     bool _owns_output = false;
+    float _l1_injection_used_z = 0.0f;
+    float _l1_handover_applied_z = 0.0f;
     AC_Geometric_SetpointShaper _setpoint_shaper;
     AC_Geometric_YawShaper _yaw_shaper;
     AC_Geometric_Output _output;

@@ -24,6 +24,10 @@ struct AC_Geometric_State {
     // The land detector's early verdict. L1 pauses on it: once the aircraft
     // may be on the ground, the ground carries weight the model does not know.
     bool land_complete_maybe = false;
+    // AP_Motors reported collective at its upper or lower limit last frame.
+    // The controller cannot see that saturation itself (spin floor, rpy
+    // priority), and L1 must not mistake the shortfall for a disturbance.
+    bool thrust_limited = false;
 };
 
 struct AC_Geometric_Target {

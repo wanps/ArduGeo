@@ -60,7 +60,9 @@ public:
     // Moves an acceleration into the integral term: e_I += accel / K_I on each
     // axis with a positive K_I, then the integral limits apply. Used when L1
     // hands its estimate over, so the resultant force is unchanged.
-    void add_integral_acceleration(const Vector3f& accel_mss);
+    // Returns what the integral term actually moved by, as K_I*delta(e_I),
+    // which differs from the request when an axis has no K_I or hits IMAX.
+    Vector3f add_integral_acceleration(const Vector3f& accel_mss);
 
     void update(const AC_Geometric_State& state,
                 const AC_Geometric_Target& target,

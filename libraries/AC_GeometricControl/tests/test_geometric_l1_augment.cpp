@@ -273,4 +273,113 @@ TEST(PositionPidHandover, AnAxisWithoutIntegralGainIgnoresIt)
     EXPECT_FLOAT_EQ(0.0f, out.integral_error_m.z);
 }
 
+TEST(L1Augment, RampInIsForceNeutral)
+{
+    // B1: during the ramp-in, what enters the feed-forward leaves the integrator.
+    AC_Geometric_L1_Augment a;
+    a.set_config(enabled_config());
+    float taken = 0.0f, worst = 0.0f;
+    for (int i = 0; i < 600; i++) {
+        a.update(healthy(), DT);
+        taken += a.handover_ned_mss().z;      // integrator contribution to A is -taken
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - taken));
+    }
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_LT(worst, 1.0e-4f);
+    EXPECT_NEAR(-SIGMA.z, taken, 1.0e-4f);
+}
+
+TEST(L1Augment, SaturationHoldsInsteadOfFaulting)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    const float lam = a.lambda();
+    const Vector3f inj = a.injection_ned_mss();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.thrust_limited = true;
+    in.observer_over_limit = true;
+    in.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
+    run(a, in, 2.0f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_FLOAT_EQ(lam, a.lambda());
+    EXPECT_TRUE(inj == a.injection_ned_mss()) << "the estimate is held, not followed";
+}
+
+TEST(L1Augment, ADisableWinsOverAnInvalidObserver)
+{
+    // Switching the observer off arrives as disabled plus invalid on the same
+    // frame; it must be a clean exit with handover, not a latch.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Config off = enabled_config();
+    off.enabled = false;
+    a.set_config(off);
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.observer_valid = false;
+    a.update(in, DT);
+    EXPECT_EQ(AC_Geometric_L1_State::RAMP_OUT, a.state());
+    EXPECT_FALSE(a.handover_ned_mss().is_zero());
+}
+
+TEST(L1Augment, AFaultDuringRampInLatchesFromPartialLambda)
+{
+    AC_Geometric_L1_Augment a;
+    a.set_config(enabled_config());
+    run(a, healthy(), 0.3f);
+    ASSERT_EQ(AC_Geometric_L1_State::RAMP_IN, a.state());
+    const float partial = a.lambda();
+    AC_Geometric_L1_Augment_Inputs bad = healthy();
+    bad.observer_resets = 99;
+    a.update(bad, DT);
+    EXPECT_EQ(AC_Geometric_L1_State::LATCHED, a.state());
+    EXPECT_LT(a.lambda(), partial);
+    EXPECT_TRUE(a.handover_ned_mss().is_zero());
+}
+
+TEST(L1Augment, ADropOnlyRecordsAReasonWhenLeavingAnActiveState)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.land_complete_maybe = true;
+    run(a, in, 1.0f);
+    ASSERT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    ASSERT_EQ(AC_Geometric_L1_Reason::PAUSE_LANDED, a.reason());
+    a.drop(AC_Geometric_L1_Reason::RESET);       // Loiter's ground-safe reset
+    EXPECT_EQ(AC_Geometric_L1_Reason::PAUSE_LANDED, a.reason());
+    AC_Geometric_L1_Augment b = engaged();
+    b.drop(AC_Geometric_L1_Reason::RESET);
+    EXPECT_EQ(AC_Geometric_L1_Reason::RESET, b.reason());
+}
+
+TEST(L1Augment, ParameterBoundsAndNaN)
+{
+    AC_Geometric_L1_Augment_Params p;
+    const AP_Param::GroupInfo* g = AC_Geometric_L1_Augment_Params::var_info;
+    ASSERT_TRUE(AP_Param::set_object_value(&p, g, "L1_RIN", 0.0f));
+    EXPECT_FLOAT_EQ(1.0f, p.config().ramp_in_s);
+    ASSERT_TRUE(AP_Param::set_object_value(&p, g, "L1_RIN", NAN));
+    EXPECT_FLOAT_EQ(1.0f, p.config().ramp_in_s);
+    ASSERT_TRUE(AP_Param::set_object_value(&p, g, "L1_RIN", 10.0f));
+    EXPECT_FLOAT_EQ(5.0f, p.config().ramp_in_s);
+    ASSERT_TRUE(AP_Param::set_object_value(&p, g, "L1_ROUT", -1.0f));
+    EXPECT_FLOAT_EQ(0.5f, p.config().ramp_out_s);
+    ASSERT_TRUE(AP_Param::set_object_value(&p, g, "L1_PTHR", -0.2f));
+    EXPECT_FLOAT_EQ(0.0f, p.config().pause_throttle);
+    ASSERT_TRUE(AP_Param::set_object_value(&p, g, "L1_PTHR", NAN));
+    EXPECT_FLOAT_EQ(0.12f, p.config().pause_throttle);
+}
+
+TEST(PositionPidHandover, ReportsWhatWasActuallyApplied)
+{
+    AC_Geometric_Position_PID pid;
+    AC_Geometric_Position_Gains g {};
+    g.i = Vector3f{0.0f, 1.0f, 5.0f};
+    pid.set_gains(g);
+    AC_Geometric_Position_Integral_Limits lim {};
+    lim.integral_error_m = Vector3f{10.0f, 10.0f, 0.1f};
+    pid.set_integral_limits(lim);
+    const Vector3f applied = pid.add_integral_acceleration(Vector3f{2.0f, 0.5f, 3.0f});
+    EXPECT_FLOAT_EQ(0.0f, applied.x) << "no K_I, nothing taken";
+    EXPECT_FLOAT_EQ(0.5f, applied.y);
+    EXPECT_NEAR(0.5f, applied.z, 1e-6f) << "clipped at IMAX 0.1 m * K_I 5";
+}
+
 AP_GTEST_MAIN()

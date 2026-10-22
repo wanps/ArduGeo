@@ -6,7 +6,7 @@ const AP_Param::GroupInfo AC_Geometric_L1_Observer_Params::var_info[] = {
 
     // @Param: L1_OBS_EN
     // @DisplayName: L1 translational observer enable
-    // @Description: Runs the L1 adaptive estimator for the translational channel in observer-only mode. The estimate is computed and logged; it never contributes to any force, moment or motor command. Enabling it cannot change how the aircraft flies.
+    // @Description: Runs the L1 adaptive estimator for the translational channel. On its own the estimate is computed and logged and never contributes to any command, so enabling it does not change how the aircraft flies. With GEO_L1_EN also set, its vertical component enters the position loop.
     // @Values: 0:Disable,1:Enable
     // @User: Advanced
     AP_GROUPINFO("L1_OBS_EN", 1, AC_Geometric_L1_Observer_Params, _enable, 0),

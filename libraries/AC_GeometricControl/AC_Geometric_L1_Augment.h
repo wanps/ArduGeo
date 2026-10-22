@@ -20,8 +20,13 @@
 //  - admission is checked once, at engage, using the observer's own verdict;
 //  - an observer fault latches L1 off for the rest of the flight, while the
 //    geometric controller carries on, and the estimate is discarded;
-//  - a clean exit hands the estimate to the position integrator frame by
-//    frame as lambda ramps down, so the resultant force does not step;
+//  - engaging and a clean exit both move lambda*sigma between the
+//    feed-forward and the position integrator frame by frame, so the
+//    resultant force does not step: the integrator already holds whatever
+//    deficit sigma reports, and engaging without the transfer would command
+//    it twice;
+//  - while collective is at a limit the estimate is held, because what was
+//    commanded is not what was applied;
 //  - low collective or a possible landing pauses L1 without counting as a
 //    fault, because both are ordinary pilot actions under which the nominal
 //    thrust model is known to be wrong; it re-enters through admission.
@@ -45,6 +50,7 @@ enum class AC_Geometric_L1_Reason : uint8_t {
     FAULT_INVALID = 6,
     FAULT_RESET = 7,
     FAULT_NONFINITE = 8,
+    RESET = 9,          // controller reset (integrator and observer cleared)
 };
 
 struct AC_Geometric_L1_Augment_Config {
@@ -64,6 +70,10 @@ struct AC_Geometric_L1_Augment_Inputs {
     bool owns_output = false;
     bool land_complete_maybe = false;
     float throttle = 0.0f;
+    // Collective is at a limit, in the mapper or in AP_Motors. What was
+    // commanded is then not what was applied, and the estimate cannot be
+    // trusted to separate the two.
+    bool thrust_limited = false;
 };
 
 class AC_Geometric_L1_Augment {
@@ -80,12 +90,13 @@ public:
     Vector3f injection_ned_mss() const { return _held_ned_mss * -_lambda; }
 
     // Acceleration to hand to the position integrator on this frame
-    // (e_I += handover / K_I). Non-zero only while ramping out cleanly.
+    // (e_I += handover / K_I). Negative while ramping in (taken out of the
+    // integrator), positive while ramping out cleanly, zero otherwise.
     const Vector3f& handover_ned_mss() const { return _handover_ned_mss; }
 
     // Ownership lost or controller reset: geometry is no longer flying, so
     // there is nothing to hand over and nothing to ramp. The latch survives.
-    void drop();
+    void drop(AC_Geometric_L1_Reason reason = AC_Geometric_L1_Reason::OWNERSHIP);
 
     // Only the vehicle clears a latch, on disarm.
     void clear_latch();
@@ -95,7 +106,7 @@ public:
     float lambda() const { return _lambda; }
 
 private:
-    void ramp_down(float dt, float ramp_s, bool hand_over);
+    void move_lambda(float target, float rate_per_s, float dt, bool hand_over);
 
     AC_Geometric_L1_Augment_Config _config {};
     AC_Geometric_L1_State _state = AC_Geometric_L1_State::OFF;

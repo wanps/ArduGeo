@@ -703,7 +703,7 @@ L1 下同样的推理不成立 —— 闩锁意味着长期停留在能力更弱
 
 | Scenario | Required result |
 |---|---|
-| L1 fault, Geo healthy | same-frame degrade to Geo nominal; healthy σ̂ handed to the position-loop integrator, unhealthy σ̂ discarded; zero L1 contribution |
+| L1 fault, Geo healthy | degrade to Geo nominal, removing the last healthy L1 contribution over 0.2 s; the faulted σ̂ is discarded, not handed over; L1 latched until disarm |
 | Geo fault with L1 active | same-frame handoff to Native with rate-loop integrator preload; handoff logged |
 | L1 engage request | refused unless the engage-time admission check passes |
 | L1 latched | L1 contribution stays zero for the rest of the flight; Geo ownership unaffected |
@@ -772,7 +772,23 @@ e_I^x += σ̂_filtered / K_I         标称中位 σ̂ 对应水平 0.88 m、垂
   恢复后重新走准入。依据：猛收油门时模型推力失真，σ̂ 可达 6-10（log_25）。
 - **输出权只由车辆的接管/交还边沿决定。** `reset()` 让 L1 退出但不改输出权 ——
   Loiter 在起降生命周期中会在几何仍写电机时重置控制器。
-- 日志 `GEL3`：状态、原因、λ、竖直注入量、本帧交接量。
+- 日志 `GEL3`：状态、原因、λ、本帧位置环实际收到的注入量、积分器实际接收的累计交接量、饱和标志。
+
+**评审后补充（2026-10-22，PR #31 评审）：**
+
+- **接入也要交接。** σ̂ 报告的是模型与实际的推力差，与积分器是否已经吃住无关。
+  起飞时就挂着的载荷，积分器早已顶住，此时直接把 −σ̂ 斜坡加进来等于补偿两次。
+  所以接入斜坡期间每帧把 Δλ·σ̂ 从积分器移出，与清洁退出对称。
+- **饱和期间冻结。** 观测器改用限幅后的集体推力（`油门·g/h`）作为施加推力；
+  映射器或 AP_Motors 报告饱和时，L1 冻结 λ 与估计、不判超限。否则饱和下
+  「指令了却没施加」的部分会被当作扰动，L1 闭环后形成正反馈，最终超限闩锁。
+- **关观测器 = 清洁退出。** `GEO_L1_OBS_EN` 关掉视同 `GEO_L1_EN` 关，带交接退出，不判故障。
+- 只在接入中/已接管时判故障；退出中、暂停、关闭状态下的观测器异常不处理，
+  重新接入由观测器自身的准入计时把关。
+- 超限判据用的是 σ̂ 的三维模长，水平方向的大扰动也会闩锁只作用于竖直的 L1 —— 偏保守，暂保留。
+- `GEO_L1_PTHR` 是绝对油门。只有当它不低于约 0.49 × 悬停油门时，触地才一定先暂停后超限；
+  x400b（悬停约 0.19）满足，悬停油门高于约 0.25 的机型不满足，需相应调高。
+- 回退到原生（第 2 层）时，竖直方向由 L1 与积分器承担的补偿不会转给原生高度环 —— 第 2 层只预装姿态速率积分器。
 
 ---
 
