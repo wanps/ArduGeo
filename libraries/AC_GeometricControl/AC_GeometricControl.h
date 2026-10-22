@@ -84,6 +84,9 @@ public:
     bool handover_preload_on_fallback() const {
         return _handover_carry_params.preload_on_fallback();
     }
+    float handover_preload_filter_hz() const {
+        return _handover_carry_params.preload_filter_hz();
+    }
     float handover_carry_time_constant_s() const { return _handover_carry_params.config().time_constant_s; }
 
     static bool reference_to_target(const AC_TrajectoryReference& reference,

@@ -143,6 +143,18 @@ public:
     // edges of the handover are configured in one place.
     bool preload_on_fallback() const { return _preload_on_fallback.get() != 0; }
 
+    // Cut-off for the trim the preload carries. A non-finite value is treated
+    // as off, which falls back to loading the last frame; anything above the
+    // declared range is clamped, since at that point it is no longer a trim.
+    static constexpr float MAX_PRELOAD_FILTER_HZ = 20.0f;
+    float preload_filter_hz() const {
+        const float hz = _preload_filter_hz.get();
+        if (!isfinite(hz)) {
+            return 0.0f;
+        }
+        return constrain_float(hz, 0.0f, MAX_PRELOAD_FILTER_HZ);
+    }
+
     static float clamped_time_constant(float requested) {
         // A non-finite value is corruption, not a request, and is treated as
         // off. A finite one, however large, is treated as a request and
@@ -163,4 +175,30 @@ public:
 private:
     AP_Float _time_constant_s;
     AP_Int8 _preload_on_fallback;
+    AP_Float _preload_filter_hz;
+};
+
+// Low-passed record of the command the geometric controller writes to the
+// motors while it owns them. The fallback preload loads this rather than the
+// last frame: the rate integrator holds a trim, and on a real aircraft the
+// last frame is the trim plus whatever noise that frame happened to carry.
+//
+// Pure arithmetic, so it can be tested here; the vehicle owns the instance,
+// because a mode change can reset the geometric controller before the
+// fallback runs and the trim has to survive that.
+class AC_Geometric_HandoverTrim {
+public:
+    // Start from a known command, normally the native one on the engage frame.
+    void seed(const Vector3f& command);
+    // One frame of the command actually written. cutoff_hz <= 0 holds the
+    // frame as written.
+    void update(const Vector3f& command, float dt, float cutoff_hz);
+    void reset();
+
+    bool valid() const { return _valid; }
+    const Vector3f& value() const { return _value; }
+
+private:
+    Vector3f _value;
+    bool _valid = false;
 };
