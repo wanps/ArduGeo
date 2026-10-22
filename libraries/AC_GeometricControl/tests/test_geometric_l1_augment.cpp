@@ -193,9 +193,14 @@ TEST(L1Augment, LowCollectivePausesWithoutLatching)
     a.update(in, DT);
     EXPECT_EQ(AC_Geometric_L1_State::PAUSED, a.state());
     EXPECT_EQ(AC_Geometric_L1_Reason::PAUSE_THROTTLE, a.reason());
-    EXPECT_TRUE(a.handover_ned_mss().is_zero());
+    // A pause hands over like a clean exit: the integrator carries the
+    // deficit through it, as it would with L1 off.
+    float handed = a.handover_ned_mss().z;
     run(a, in, 0.6f);
     EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    // (run() only reports the last frame; the per-frame sum is checked in
+    // APauseIsForceNeutral.)
+    (void)handed;
     // Collective back: it re-enters through admission, not by itself.
     AC_Geometric_L1_Augment_Inputs back = healthy();
     back.observer_admissible = false;
@@ -380,6 +385,67 @@ TEST(PositionPidHandover, ReportsWhatWasActuallyApplied)
     EXPECT_FLOAT_EQ(0.0f, applied.x) << "no K_I, nothing taken";
     EXPECT_FLOAT_EQ(0.5f, applied.y);
     EXPECT_NEAR(0.5f, applied.z, 1e-6f) << "clipped at IMAX 0.1 m * K_I 5";
+}
+
+TEST(L1Augment, APauseIsForceNeutral)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.throttle = 0.07f;
+    float handed = 0.0f, worst = 0.0f;
+    const float start = a.injection_ned_mss().z;
+    for (int i = 0; i < 400; i++) {
+        a.update(in, DT);
+        handed += a.handover_ned_mss().z;
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - handed - start));
+    }
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    EXPECT_LT(worst, 1.0e-4f);
+    EXPECT_NEAR(SIGMA.z, handed, 1.0e-4f);
+}
+
+TEST(L1Augment, ASaturationReleaseSettlesThenWalksBack)
+{
+    // Review F1/F3: the estimate is still polluted for a while after the
+    // limit clears. Neither latch on it nor step to it.
+    AC_Geometric_L1_Augment a = engaged();
+    const float before = a.injection_ned_mss().z;
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    lim.observer_over_limit = true;
+    lim.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
+    run(a, lim, 1.0f);
+    AC_Geometric_L1_Augment_Inputs released = lim;
+    released.thrust_limited = false;          // the flag clears, the estimate has not
+    run(a, released, 0.45f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state()) << "no latch inside the settle window";
+    EXPECT_FLOAT_EQ(before, a.injection_ned_mss().z);
+    // Settled, and the disturbance really did change while saturated: the
+    // held value walks to the new estimate at the rejoin rate, never steps.
+    AC_Geometric_L1_Augment_Inputs moved = healthy();
+    moved.sigma_filtered_ned_mss.z = SIGMA.z - 1.0f;
+    float last = a.injection_ned_mss().z, worst = 0.0f;
+    for (int i = 0; i < 400; i++) {
+        a.update(moved, DT);
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - last));
+        last = a.injection_ned_mss().z;
+    }
+    EXPECT_FALSE(a.state() == AC_Geometric_L1_State::LATCHED);
+    EXPECT_LE(worst, AC_Geometric_L1_Augment::REJOIN_RATE_MSS_PER_S * DT + 1.0e-5f);
+    EXPECT_FLOAT_EQ(-moved.sigma_filtered_ned_mss.z, a.injection_ned_mss().z);
+}
+
+TEST(L1Augment, NoAdmissionInsideTheSettleWindow)
+{
+    AC_Geometric_L1_Augment a;
+    a.set_config(enabled_config());
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    run(a, lim, 0.2f);
+    run(a, healthy(), 0.4f);
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    run(a, healthy(), 0.2f);
+    EXPECT_EQ(AC_Geometric_L1_State::RAMP_IN, a.state());
 }
 
 AP_GTEST_MAIN()

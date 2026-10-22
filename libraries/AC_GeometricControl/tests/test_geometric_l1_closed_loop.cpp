@@ -33,6 +33,13 @@ struct Loop {
     float t = 0.0f;
     bool motor_limited = false;
     bool ever_latched = false;
+    // AP_Motors-side cap on collective, below the mapper's own limit. Its
+    // flag and applied value reach the controller one frame late, as they do
+    // on the vehicle. Negative disables it.
+    float motor_cap = -1.0f;
+    float applied_last = -1.0f;
+    float worst_ij_step = 0.0f;
+    float last_ij = 0.0f;
 
     Loop(float hover, float gain, bool observer, bool l1) : h(hover), k(gain)
     {
@@ -53,8 +60,16 @@ struct Loop {
         st.velocity_ned_ms = vel;
         st.attitude_body_to_ned.initialise();
         st.thrust_limited = motor_limited;
+        st.applied_throttle_norm = applied_last;
         c.update(st, tgt, DT);
-        const float thr = c.get_output().mapped.throttle_norm;
+        float thr = c.get_output().mapped.throttle_norm;
+        if (motor_cap >= 0.0f) {
+            motor_limited = thr > motor_cap;
+            thr = MIN(thr, motor_cap);
+        }
+        applied_last = thr;
+        worst_ij_step = MAX(worst_ij_step, fabsf(c.l1_injection_used_z() - last_ij));
+        last_ij = c.l1_injection_used_z();
         const float az = GRAVITY_MSS - k * GRAVITY_MSS * thr / h;
         vel.z += az * DT;
         pos.z += vel.z * DT;
@@ -197,6 +212,51 @@ TEST(L1ClosedLoop, MotorSaturationReportedByTheVehicleHolds)
     EXPECT_FLOAT_EQ(lam, l.c.l1_augment().lambda());
     EXPECT_FLOAT_EQ(inj, l.c.l1_injection_used_z());
     EXPECT_FALSE(l.ever_latched);
+}
+
+TEST(L1ClosedLoop, MotorSideSaturationWithRealShortfallDoesNotLatchOrStep)
+{
+    // Review F1: AP_Motors limits collective (rpy priority, current limit)
+    // where the mapper cannot see it. The reviewer's harness latched in every
+    // case, on the release frame for two of them.
+    for (const float cap : {0.40f, 0.45f, 0.55f}) {
+        Loop l(0.30f, 1.0f, true, true);
+        l.motor_cap = cap;
+        l.run(10.0f);
+        ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, l.st()) << "cap " << cap;
+        l.worst_ij_step = 0.0f;
+        l.tgt.position_ned_m.z = -15.0f;
+        bool limited = false;
+        float worst_sigma = 0.0f;
+        for (int i = 0; i < int(20.0f / DT); i++) {
+            l.step();
+            limited |= l.motor_limited;
+            worst_sigma = MAX(worst_sigma, fabsf(l.c.get_l1_observer_output().sigma_filtered_ned_mss.z));
+        }
+        ASSERT_TRUE(limited) << "cap " << cap << " must actually limit";
+        // The plant matches the model (k = 1), so there is no disturbance to
+        // find. Fed what AP_Motors actually applied, the observer must not
+        // invent one out of the cap; the reviewer saw 14.5 to 19.4 without.
+        EXPECT_LT(worst_sigma, 2.0f) << "cap " << cap;
+        EXPECT_FALSE(l.ever_latched) << "cap " << cap;
+        EXPECT_LT(l.worst_ij_step, 0.05f) << "cap " << cap;
+    }
+}
+
+TEST(L1ClosedLoop, ChatteringMotorLimitDoesNotStepTheInjection)
+{
+    // Review F1, second scenario: the flag at 40 % duty through a deficit step.
+    Loop l(0.30f, 1.0f, true, true);
+    l.run(10.0f);
+    ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, l.st());
+    l.worst_ij_step = 0.0f;
+    l.k = 0.87f;
+    for (int i = 0; i < int(10.0f / DT); i++) {
+        l.motor_limited = (i % 40) < 16;
+        l.step();
+    }
+    EXPECT_FALSE(l.ever_latched);
+    EXPECT_LT(l.worst_ij_step, 0.05f);
 }
 
 AP_GTEST_MAIN()

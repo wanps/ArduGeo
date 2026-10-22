@@ -25,8 +25,12 @@
 //    resultant force does not step: the integrator already holds whatever
 //    deficit sigma reports, and engaging without the transfer would command
 //    it twice;
-//  - while collective is at a limit the estimate is held, because what was
-//    commanded is not what was applied;
+//  - while collective is at a limit, and for HOLD_SETTLE_S after, the
+//    estimate is held and overrun is not judged, because what was commanded
+//    is not what was applied; the held value then walks back, never steps;
+//  - a pause (low collective, possible landing) hands over like a clean
+//    exit, so the integrator carries the deficit through it, as it would
+//    with L1 off, and the force-neutral re-entry has something to take back;
 //  - low collective or a possible landing pauses L1 without counting as a
 //    fault, because both are ordinary pilot actions under which the nominal
 //    thrust model is known to be wrong; it re-enters through admission.
@@ -81,6 +85,13 @@ public:
     // Removes the estimate faster than a clean exit: the value being removed
     // is the last healthy one, held, but there is no reason to keep it.
     static constexpr float FAULT_RAMP_S = 0.2f;
+    // After collective leaves its limit, the estimate is still settling out
+    // of what the saturation put into it (predictor plus the 2 Hz filter), so
+    // the hold, and the suspension of the overrun check, outlast the flag.
+    static constexpr float HOLD_SETTLE_S = 0.5f;
+    // Then the held value walks back to the estimate at this rate rather than
+    // stepping: 0.01 m/s^2 per frame at 400 Hz.
+    static constexpr float REJOIN_RATE_MSS_PER_S = 4.0f;
 
     void set_config(const AC_Geometric_L1_Augment_Config& config) { _config = config; }
 
@@ -91,7 +102,8 @@ public:
 
     // Acceleration to hand to the position integrator on this frame
     // (e_I += handover / K_I). Negative while ramping in (taken out of the
-    // integrator), positive while ramping out cleanly, zero otherwise.
+    // integrator), positive while ramping out cleanly or pausing, zero
+    // otherwise.
     const Vector3f& handover_ned_mss() const { return _handover_ned_mss; }
 
     // Ownership lost or controller reset: geometry is no longer flying, so
@@ -117,6 +129,8 @@ private:
     Vector3f _held_ned_mss;
     Vector3f _handover_ned_mss;
     uint32_t _resets_seen = 0;
+    float _hold_s = 0.0f;
+    bool _rejoining = false;
 };
 
 class AC_Geometric_L1_Augment_Params {

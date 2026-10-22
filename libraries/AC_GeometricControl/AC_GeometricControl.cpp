@@ -322,8 +322,16 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         _l1_observer.set_config(_l1_observer_params.config());
         AC_Geometric_Position_Output applied = _output.position;
         const float hover = hover_throttle_norm();
-        if (_output.mapped.throttle_limited && is_positive(hover)) {
-            applied.thrust = _output.mapped.throttle_norm * GRAVITY_MSS / hover;
+        if (is_positive(hover)) {
+            if (state.thrust_limited && state.applied_throttle_norm >= 0.0f) {
+                // AP_Motors is downstream of the mapper, so when it reports a
+                // limit (rpy priority, current limit) its own output is what
+                // was applied, whatever the mapper did. One frame old, the
+                // same age as the flag.
+                applied.thrust = state.applied_throttle_norm * GRAVITY_MSS / hover;
+            } else if (_output.mapped.throttle_limited) {
+                applied.thrust = _output.mapped.throttle_norm * GRAVITY_MSS / hover;
+            }
         }
         _l1_observer.update(state, applied, dt);
     } else {

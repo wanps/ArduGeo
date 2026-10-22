@@ -110,6 +110,13 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
     const Vector3f sigma_v { 0.0f, 0.0f, in.sigma_filtered_ned_mss.z };
     const bool finite = isfinite(in.sigma_filtered_ned_mss.z);
 
+    if (in.thrust_limited) {
+        _hold_s = HOLD_SETTLE_S;
+    } else {
+        _hold_s = MAX(0.0f, _hold_s - dt);
+    }
+    const bool holding = is_positive(_hold_s);
+
     const bool pause_landed = in.land_complete_maybe;
     const bool pause_throttle = in.throttle < _config.pause_throttle;
     const float rate_in = 1.0f / _config.ramp_in_s;
@@ -120,8 +127,9 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         _lambda = 0.0f;
         _resets_seen = in.observer_resets;
         if (_config.enabled && in.owns_output && !pause_landed && !pause_throttle &&
-            !in.thrust_limited && in.observer_admissible && finite) {
+            !holding && in.observer_admissible && finite) {
             _held_ned_mss = sigma_v;
+            _rejoining = false;
             _state = AC_Geometric_L1_State::RAMP_IN;
             _reason = AC_Geometric_L1_Reason::NONE;
         }
@@ -145,7 +153,7 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         } else if (in.observer_resets != _resets_seen) {
             fault = AC_Geometric_L1_Reason::FAULT_RESET;
         } else if (in.observer_over_limit && !pause_throttle && !pause_landed &&
-                   !in.thrust_limited) {
+                   !holding) {
             fault = AC_Geometric_L1_Reason::FAULT_OVERRUN;
         }
         if (fault != AC_Geometric_L1_Reason::NONE) {
@@ -163,16 +171,28 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
             _state = AC_Geometric_L1_State::PAUSED;
             _reason = pause_landed ? AC_Geometric_L1_Reason::PAUSE_LANDED
                                    : AC_Geometric_L1_Reason::PAUSE_THROTTLE;
-            move_lambda(0.0f, rate_out, dt, false);
+            // The held value is the last one with collective above the
+            // pause threshold, as healthy as a clean exit's, and the
+            // integrator carries it from here as it would with L1 off.
+            move_lambda(0.0f, rate_out, dt, true);
             break;
         }
-        if (in.thrust_limited) {
-            // Saturated: what was commanded is not what was applied, so the
-            // estimate is about to absorb the shortfall. Hold the last value
-            // and lambda where they are; neither a fault nor a reason to leave.
+        if (holding) {
+            // Saturated, or just out of it: what was commanded is not what
+            // was applied, and the estimate has absorbed some of the
+            // shortfall. Hold the last value and lambda where they are;
+            // neither a fault nor a reason to leave.
+            _rejoining = true;
             break;
         }
-        _held_ned_mss = sigma_v;
+        if (_rejoining) {
+            const float step = REJOIN_RATE_MSS_PER_S * dt;
+            const float gap = sigma_v.z - _held_ned_mss.z;
+            _held_ned_mss.z += constrain_float(gap, -step, step);
+            _rejoining = fabsf(gap) > step;
+        } else {
+            _held_ned_mss = sigma_v;
+        }
         move_lambda(1.0f, rate_in, dt, true);
         _state = (_lambda >= 1.0f) ? AC_Geometric_L1_State::ENGAGED : AC_Geometric_L1_State::RAMP_IN;
         break;
@@ -190,7 +210,11 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         break;
 
     case AC_Geometric_L1_State::PAUSED:
-        move_lambda(0.0f, rate_out, dt, false);
+        if (!in.owns_output) {
+            drop(AC_Geometric_L1_Reason::OWNERSHIP);
+            break;
+        }
+        move_lambda(0.0f, rate_out, dt, true);
         if (!is_positive(_lambda)) {
             _state = AC_Geometric_L1_State::OFF;
         }

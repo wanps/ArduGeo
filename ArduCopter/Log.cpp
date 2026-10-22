@@ -622,11 +622,8 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Field: Lam: Ramp factor lambda, 0 to 1
 // @Field: IJz: Vertical acceleration this frame's position PID received from L1
 // @Field: HOc: Cumulative vertical acceleration the position integrator actually took from L1 (negative while engaging, positive on clean exits)
-// @Field: Lim: True when collective was at a limit and L1 held its estimate
+// @Field: Lim: True when collective was at a limit, in the mapper or in AP_Motors (logged in every state)
 
-// The observer never contributes to a command, so these messages are the only
-// way its behaviour reaches anyone.  Both carry the same TimeUS, taken once
-// below, so the pair joins exactly on that column.
 // @LoggerMessage: GEHC
 // @Description: Geometric handover trim carry, logged once per rising edge of output ownership
 // @Field: TimeUS: Time since system startup
@@ -692,6 +689,8 @@ void Copter::Log_Write_Geometric_Handoff(uint8_t mode_number, uint8_t failure_fl
                        (double)trim.z);
 }
 
+// GEL1, GEL2 and GEL3 carry the same TimeUS, taken once below, so the three
+// join exactly on that column.
 void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Output &observer)
 {
     GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");

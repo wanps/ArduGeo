@@ -28,6 +28,9 @@ struct AC_Geometric_State {
     // The controller cannot see that saturation itself (spin floor, rpy
     // priority), and L1 must not mistake the shortfall for a disturbance.
     bool thrust_limited = false;
+    // Collective AP_Motors actually produced last frame, same units as the
+    // mapped throttle; negative when unknown. Read only while thrust_limited.
+    float applied_throttle_norm = -1.0f;
 };
 
 struct AC_Geometric_Target {
@@ -170,7 +173,7 @@ struct AC_Geometric_Attitude_Integral_Limits {
     Vector3f integral_error;
 };
 
-// Configuration for the observer-only L1 translational estimator.
+// Configuration for the L1 translational estimator.
 struct AC_Geometric_L1_Observer_Config {
     // Predictor convergence rate a_s in A_s = -a_s*I [1/s]. Larger values make
     // the predictor follow the measurement harder, which moves uncertainty out
