@@ -17,6 +17,7 @@ constexpr float reference_jerk_z_default_msss = 5.0f;
 constexpr float reference_brake_accel_z_default_mss = 2.5f;
 constexpr float reference_brake_jerk_z_default_msss = 5.0f;
 constexpr float reference_drag_feedforward_default = 0.0f;
+constexpr float reference_drag_feedforward_slew_per_s = 1.0f;
 constexpr float reference_yaw_accel_default_radss = 1.0f;
 constexpr float reference_yaw_jerk_default_radsss = 2.0f;
 constexpr float reference_yaw_brake_accel_default_radss = 2.0f;
@@ -176,7 +177,7 @@ const AP_Param::GroupInfo AC_Geometric_LoiterReference_Params::var_info[] = {
 
     // @Param: DFF
     // @DisplayName: Geometric Loiter drag feed-forward
-    // @Description: Fraction of the reference's speed-proportional drag (LREF_AXY * speed / LREF_VXY) that is added to the acceleration feed-forward while the reference itself still decelerates by it. 1 matches native Loiter, whose lean in steady flight then covers airframe drag; at 0 the position loop has to produce that lean from tracking error, its integral holds it when the vehicle stops, and the vehicle overshoots the stopping point.
+    // @Description: Fraction of the reference's speed-proportional drag (LREF_AXY * speed / LREF_VXY) that is added to the acceleration feed-forward while the reference itself still decelerates by it. 1 matches native Loiter when LREF_AXY and LREF_VXY do not limit below the native values, and its lean in steady flight then covers airframe drag; at 0 the position loop has to produce that lean from tracking error, its integral holds it when the vehicle stops, and the vehicle overshoots the stopping point. In-flight changes are slewed at 1 per second.
     // @Range: 0 1
     // @Increment: 0.1
     // @User: Advanced
@@ -217,6 +218,8 @@ void AC_Geometric_LoiterReference::reset()
     _accel_ref_ned_mss.zero();
     _accel_shaper_ned_mss.zero();
     _drag_feedforward_ne_mss.zero();
+    _drag_feedforward_scale = 0.0f;
+    _drag_feedforward_scale_valid = false;
     _yaw_ref_rad = 0.0f;
     _yaw_rate_ref_rads = 0.0f;
     _yaw_accel_ref_radss = 0.0f;
@@ -332,23 +335,41 @@ void AC_Geometric_LoiterReference::write_target(AC_Geometric_Target& target) con
 // is left holding it when the vehicle stops, and the vehicle overshoots the
 // stopping point.  The term follows the reference velocity written this
 // frame, so an avoidance constraint or a settled reference removes it.
-void AC_Geometric_LoiterReference::update_drag_feedforward(const AC_Geometric_LoiterReference_Limits& limits)
+void AC_Geometric_LoiterReference::update_drag_feedforward(const AC_Geometric_LoiterReference_Limits& limits,
+                                                           float dt_s)
 {
+    // An in-flight parameter change is slewed so it cannot step the commanded
+    // acceleration.  The first frame after a reset takes the value directly,
+    // which is the feed-forward native Loiter was already giving.
+    if (!_drag_feedforward_scale_valid) {
+        _drag_feedforward_scale = limits.drag_feedforward;
+        _drag_feedforward_scale_valid = true;
+    } else if (is_positive(dt_s)) {
+        const float step = reference_drag_feedforward_slew_per_s * dt_s;
+        _drag_feedforward_scale += constrain_float(limits.drag_feedforward - _drag_feedforward_scale, -step, step);
+    }
+
     _drag_feedforward_ne_mss.zero();
     const Vector2f velocity_xy_ms = _velocity_ref_ned_ms.xy();
     const float speed_xy_ms = velocity_xy_ms.length();
-    if (!is_positive(limits.drag_feedforward) || speed_xy_ms <= reference_epsilon) {
+    if (!is_positive(_drag_feedforward_scale) || speed_xy_ms <= reference_epsilon) {
         return;
     }
-    const float drag_accel_mss = constrain_float(limits.accel_xy_max_mss * speed_xy_ms / limits.speed_xy_max_ms,
+    const float drag_accel_mss = _drag_feedforward_scale *
+                                 constrain_float(limits.accel_xy_max_mss * speed_xy_ms / limits.speed_xy_max_ms,
                                                  0.0f,
                                                  limits.accel_xy_max_mss);
-    // The reference already respects the physical lean bound; keep the
-    // commanded sum inside it as well.
-    Vector2f accel_total_ne_mss = _accel_ref_ned_mss.xy() +
-                                  velocity_xy_ms * (limits.drag_feedforward * drag_accel_mss / speed_xy_ms);
-    accel_total_ne_mss.limit_length(limits.accel_xy_total_max_mss);
-    _drag_feedforward_ne_mss = accel_total_ne_mss - _accel_ref_ned_mss.xy();
+    // Keep the commanded sum inside the physical lean bound by shortening
+    // the term along the velocity only, so the reference's own acceleration
+    // (turns, avoidance) is never reduced.
+    const Vector2f velocity_unit = velocity_xy_ms / speed_xy_ms;
+    const Vector2f accel_ref_xy_mss = _accel_ref_ned_mss.xy();
+    const float accel_along_mss = accel_ref_xy_mss * velocity_unit;
+    const float discriminant = sq(accel_along_mss) - accel_ref_xy_mss.length_squared() +
+                               sq(limits.accel_xy_total_max_mss);
+    const float headroom_mss = is_positive(discriminant) ?
+                               MAX(sqrtf(discriminant) - accel_along_mss, 0.0f) : 0.0f;
+    _drag_feedforward_ne_mss = velocity_unit * MIN(drag_accel_mss, headroom_mss);
 }
 
 bool AC_Geometric_LoiterReference::update(const AC_Geometric_LoiterReference_Input& input,
@@ -508,7 +529,7 @@ bool AC_Geometric_LoiterReference::update(const AC_Geometric_LoiterReference_Inp
     }
     status.braking = _brake_accel_mss > reference_epsilon;
     status.xy_settled = xy_settled;
-    update_drag_feedforward(limits);
+    update_drag_feedforward(limits, dt_s);
 
     // Vertical pilot trajectory. A takeoff target adds a position boundary;
     // normal flying follows the Up-positive climb-rate input directly. Stick
@@ -862,7 +883,7 @@ bool AC_Geometric_LoiterReference::apply_velocity_constraint(
         _z_brake_settled = false;
         status.z_settled = false;
     }
-    update_drag_feedforward(_last_limits);
+    update_drag_feedforward(_last_limits, 0.0f);
     write_target(target);
     return true;
 }

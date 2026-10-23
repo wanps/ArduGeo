@@ -934,7 +934,6 @@ TEST(AC_Geometric_LoiterReference, InitialYawOverspeedReturnsWithoutRateJump)
     EXPECT_NEAR(target.yaw_rate_rads, limits.yaw_rate_max_rads, 1.0e-3f);
 }
 
-AP_GTEST_MAIN()
 
 TEST(AC_Geometric_LoiterReference, DragFeedForwardDefaultsOffAndRejectsOutOfRange)
 {
@@ -1029,10 +1028,15 @@ TEST(AC_Geometric_LoiterReference, DragFeedForwardIsContinuousAndClearsWhenStopp
     input.pilot_accel_ne_mss.zero();
     input.pilot_xy_active = false;
     bool saw_settled = false;
+    // Braking raises the shaper jerk to the brake jerk.
+    const float max_brake_step_mss = MAX(limits.jerk_xy_max_msss, limits.brake_jerk_max_msss) * dt_s +
+                                     limits.accel_xy_max_mss / limits.speed_xy_max_ms *
+                                     limits.accel_xy_total_max_mss * dt_s + 1.0e-5f;
     for (uint16_t i = 0; i < 1000; i++) {
         ASSERT_TRUE(update_reference(reference, input, limits, target, status));
-        if (!status.braking && !status.xy_settled) {
-            EXPECT_LE((target.accel_ned_mss.xy() - previous_accel.xy()).length(), max_step_mss);
+        if (!status.xy_settled) {
+            EXPECT_LE((target.accel_ned_mss.xy() - previous_accel.xy()).length(),
+                      status.braking ? max_brake_step_mss : max_step_mss);
         }
         EXPECT_LE(target.accel_ned_mss.xy().length(), limits.accel_xy_total_max_mss + 1.0e-4f);
         EXPECT_GE(reference.drag_feedforward_ne_mss().x, -1.0e-6f);
@@ -1060,7 +1064,8 @@ TEST(AC_Geometric_LoiterReference, DragFeedForwardFollowsExternalVelocityConstra
     }
     ASSERT_GT(reference.drag_feedforward_ne_mss().x, 0.1f);
 
-    // An avoidance stop must not keep pushing toward the obstacle.
+    // After an avoidance constraint the term follows the constrained
+    // velocity rather than the one the pilot asked for.
     ASSERT_TRUE(update_reference(reference, input, limits, target, status));
     Vector3f constrained_velocity = target.velocity_ned_ms;
     constrained_velocity.x = 0.5f * constrained_velocity.x;
@@ -1072,3 +1077,89 @@ TEST(AC_Geometric_LoiterReference, DragFeedForwardFollowsExternalVelocityConstra
     EXPECT_NEAR((target.accel_ned_mss.xy() - reference.accel_ref_ned_mss().xy() -
                  reference.drag_feedforward_ne_mss()).length(), 0.0f, 1.0e-6f);
 }
+
+TEST(AC_Geometric_LoiterReference, DragFeedForwardLeanLimitKeepsReferenceAcceleration)
+{
+    AC_Geometric_LoiterReference reference;
+    ASSERT_TRUE(reference.reset(state_at_origin(), 0.0f));
+    auto limits = default_limits();
+    limits.drag_feedforward = 1.0f;
+    // Pilot profile at the physical lean bound, as on an airframe whose
+    // LREF_AXY is not below its lean-angle acceleration.
+    limits.accel_xy_total_max_mss = limits.accel_xy_max_mss;
+    AC_Geometric_LoiterReference_Input input;
+    input.pilot_accel_ne_mss.x = limits.accel_xy_max_mss;
+    input.pilot_xy_active = true;
+    AC_Geometric_Target target;
+    AC_Geometric_LoiterReference_Status status;
+    for (uint16_t i = 0; i < 300; i++) {
+        ASSERT_TRUE(update_reference(reference, input, limits, target, status));
+    }
+
+    // A sideways command gives the reference an acceleration across the
+    // velocity; the lean bound may only shorten the drag term.
+    input.pilot_accel_ne_mss = Vector2f{0.0f, limits.accel_xy_max_mss};
+    bool saw_limited = false;
+    for (uint16_t i = 0; i < 300; i++) {
+        ASSERT_TRUE(update_reference(reference, input, limits, target, status));
+        const Vector2f velocity_xy = target.velocity_ned_ms.xy();
+        const float speed = velocity_xy.length();
+        ASSERT_GT(speed, 0.1f);
+        const Vector2f velocity_unit = velocity_xy / speed;
+        const Vector2f ff = reference.drag_feedforward_ne_mss();
+        EXPECT_NEAR((target.accel_ned_mss.xy() - reference.accel_ref_ned_mss().xy() - ff).length(), 0.0f, 1.0e-6f);
+        EXPECT_NEAR(ff % velocity_unit, 0.0f, 1.0e-5f);
+        EXPECT_GE(ff * velocity_unit, -1.0e-6f);
+        EXPECT_LE(target.accel_ned_mss.xy().length(), limits.accel_xy_total_max_mss + 1.0e-4f);
+        const float unlimited = limits.accel_xy_max_mss * speed / limits.speed_xy_max_ms;
+        saw_limited |= ff.length() < unlimited - 1.0e-3f;
+    }
+    EXPECT_TRUE(saw_limited);
+}
+
+TEST(AC_Geometric_LoiterReference, DragFeedForwardChangeIsSlewedButEntryIsImmediate)
+{
+    auto limits = default_limits();
+    AC_Geometric_State moving = state_at_origin();
+    moving.velocity_ned_ms.x = 1.5f;
+    AC_Geometric_LoiterReference_Input input;
+    input.pilot_accel_ne_mss.x = limits.accel_xy_max_mss;
+    input.pilot_xy_active = true;
+    AC_Geometric_Target target;
+    AC_Geometric_LoiterReference_Status status;
+
+    // Entry: the first frame already carries the configured term.
+    AC_Geometric_LoiterReference entered;
+    ASSERT_TRUE(entered.reset(moving, 0.0f));
+    limits.drag_feedforward = 1.0f;
+    ASSERT_TRUE(update_reference(entered, input, limits, target, status));
+    EXPECT_NEAR(entered.drag_feedforward_ne_mss().x,
+                target.velocity_ned_ms.x * limits.accel_xy_max_mss / limits.speed_xy_max_ms, 1.0e-5f);
+
+    // In flight: 0 -> 1 takes one second and never steps.
+    AC_Geometric_LoiterReference reference;
+    ASSERT_TRUE(reference.reset(moving, 0.0f));
+    limits.drag_feedforward = 0.0f;
+    ASSERT_TRUE(update_reference(reference, input, limits, target, status));
+    EXPECT_TRUE(reference.drag_feedforward_ne_mss().is_zero());
+    limits.drag_feedforward = 1.0f;
+    const float max_step_mss = limits.jerk_xy_max_msss * dt_s +
+                               limits.accel_xy_max_mss * dt_s +
+                               limits.accel_xy_max_mss / limits.speed_xy_max_ms *
+                               limits.accel_xy_total_max_mss * dt_s + 1.0e-5f;
+    Vector3f previous_accel = target.accel_ned_mss;
+    for (uint16_t i = 0; i < 150; i++) {
+        ASSERT_TRUE(update_reference(reference, input, limits, target, status));
+        EXPECT_LE((target.accel_ned_mss.xy() - previous_accel.xy()).length(), max_step_mss);
+        previous_accel = target.accel_ned_mss;
+        const float full = target.velocity_ned_ms.x * limits.accel_xy_max_mss / limits.speed_xy_max_ms;
+        if (i == 48) {
+            EXPECT_NEAR(reference.drag_feedforward_ne_mss().x, 0.49f * full, 1.0e-3f);
+        }
+        if (i >= 100) {
+            EXPECT_NEAR(reference.drag_feedforward_ne_mss().x, full, 1.0e-5f);
+        }
+    }
+}
+
+AP_GTEST_MAIN()

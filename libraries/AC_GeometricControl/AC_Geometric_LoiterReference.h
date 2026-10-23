@@ -169,13 +169,15 @@ public:
 private:
     bool limits_valid(const AC_Geometric_LoiterReference_Limits& limits) const;
     void write_target(AC_Geometric_Target& target) const;
-    void update_drag_feedforward(const AC_Geometric_LoiterReference_Limits& limits);
+    void update_drag_feedforward(const AC_Geometric_LoiterReference_Limits& limits, float dt_s);
 
     Vector3p _position_ref_ned_m;
     Vector3f _velocity_ref_ned_ms;
     Vector3f _accel_ref_ned_mss;
     Vector3f _accel_shaper_ned_mss;
     Vector2f _drag_feedforward_ne_mss;
+    float _drag_feedforward_scale = 0.0f;
+    bool _drag_feedforward_scale_valid = false;
 
     float _yaw_ref_rad = 0.0f;
     float _yaw_rate_ref_rads = 0.0f;
