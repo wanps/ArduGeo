@@ -448,4 +448,88 @@ TEST(L1Augment, NoAdmissionInsideTheSettleWindow)
     EXPECT_EQ(AC_Geometric_L1_State::RAMP_IN, a.state());
 }
 
+TEST(L1Augment, AHoldEndsInACleanExitAfterHoldMax)
+{
+    // #13: a hold has a ceiling, and leaving through it is a clean exit.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    const float start = a.injection_ned_mss().z;
+    const int n_max = int(AC_Geometric_L1_Augment::HOLD_MAX_S / DT);
+    float handed = 0.0f, worst = 0.0f;
+    bool left_early = false;
+    for (int i = 0; i < n_max + 400; i++) {
+        a.update(lim, DT);
+        if (i < n_max - 2 && a.state() != AC_Geometric_L1_State::ENGAGED) {
+            left_early = true;
+        }
+        handed += a.handover_ned_mss().z;
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - handed - start));
+    }
+    EXPECT_FALSE(left_early);
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    EXPECT_EQ(AC_Geometric_L1_Reason::HOLD_TIMEOUT, a.reason());
+    EXPECT_LT(worst, 1.0e-4f) << "the exit hands over; force stays continuous";
+    EXPECT_NEAR(SIGMA.z, handed, 1.0e-4f);
+}
+
+TEST(L1Augment, AFlickeringLimitStillTimesOutAndBlocksReentryUntilQuiet)
+{
+    // The case the ceiling exists for: 10 ms of limit every 300 ms keeps the
+    // 0.5 s settle window re-arming for ever.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    int i = 0;
+    auto flicker = [&](float seconds) {
+        for (int n = int(seconds / DT + 0.5f); n > 0; n--, i++) {
+            in.thrust_limited = (i % 120) < 4;
+            a.update(in, DT);
+        }
+    };
+    flicker(2.4f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    flicker(0.8f);
+    EXPECT_EQ(AC_Geometric_L1_Reason::HOLD_TIMEOUT, a.reason());
+    flicker(3.0f);
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state()) << "no re-entry while the limit keeps flickering";
+    run(a, healthy(), 0.6f);
+    EXPECT_NE(AC_Geometric_L1_State::OFF, a.state()) << "re-admitted once the limit is quiet";
+    EXPECT_NE(AC_Geometric_L1_State::LATCHED, a.state());
+}
+
+TEST(L1Augment, SeparateHoldsDoNotAddUp)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    // The ceiling counts the whole hold, settle window included, so each of
+    // these holds lasts 1.5 + 0.5 = 2.0 s: under the ceiling separately,
+    // over it if they were added together.
+    run(a, lim, 1.5f);
+    run(a, healthy(), 1.0f);      // past the settle window: the hold ends
+    run(a, lim, 1.5f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_EQ(AC_Geometric_L1_Reason::NONE, a.reason());
+}
+
+TEST(L1Augment, HoldStatusSaysWhatTheEstimateIsDoing)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    EXPECT_EQ(0, a.hold_status());
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    run(a, lim, 0.2f);
+    EXPECT_EQ(1, a.hold_status());
+    AC_Geometric_L1_Augment_Inputs moved = healthy();
+    moved.sigma_filtered_ned_mss.z = SIGMA.z - 1.0f;
+    run(a, moved, 0.6f);          // settle window over, 1 m/s^2 still to walk
+    EXPECT_EQ(2, a.hold_status());
+    run(a, moved, 0.5f);
+    EXPECT_EQ(0, a.hold_status());
+    AC_Geometric_L1_Augment off;
+    off.set_config(enabled_config());
+    run(off, lim, 0.2f);
+    EXPECT_EQ(0, off.hold_status()) << "only meaningful while engaged";
+}
+
 AP_GTEST_MAIN()

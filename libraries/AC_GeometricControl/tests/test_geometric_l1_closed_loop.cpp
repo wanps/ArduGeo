@@ -259,4 +259,41 @@ TEST(L1ClosedLoop, ChatteringMotorLimitDoesNotStepTheInjection)
     EXPECT_LT(l.worst_ij_step, 0.05f);
 }
 
+TEST(L1ClosedLoop, AFlickeringLimitEndsInACleanExitThatFliesLikeL1Off)
+{
+    // #13, the reviewer's scenario: the limit flag flickers (10 ms in every
+    // 300 ms) and, 10 s in, the deficit goes away. Before the ceiling, L1
+    // stayed "engaged" on its frozen value and that value became the
+    // disturbance. Now it leaves cleanly and flies as L1 off would.
+    Loop on(0.30f, 0.87f, true, true), off(0.30f, 0.87f, true, false);
+    on.run(20.0f);
+    off.run(20.0f);
+    ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, on.st());
+    on.worst_ij_step = 0.0f;
+    const float z_on = on.pos.z, z_off = off.pos.z;
+    float worst_on = 0.0f, worst_off = 0.0f;
+    const int change = int(10.0f / DT);
+    for (int i = 0; i < int(40.0f / DT); i++) {
+        const bool flick = (i % 120) < 4;
+        on.motor_limited = flick;
+        off.motor_limited = flick;
+        if (i == change) {
+            on.k = 1.0f;
+            off.k = 1.0f;
+        }
+        on.step();
+        off.step();
+        if (i >= change) {
+            worst_on = MAX(worst_on, fabsf(on.pos.z - z_on));
+            worst_off = MAX(worst_off, fabsf(off.pos.z - z_off));
+        }
+    }
+    EXPECT_FALSE(on.ever_latched);
+    EXPECT_EQ(AC_Geometric_L1_Reason::HOLD_TIMEOUT, on.c.l1_augment().reason());
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, on.st());
+    EXPECT_LT(on.worst_ij_step, 0.05f);
+    EXPECT_LT(worst_on, worst_off + 0.01f) << "on " << worst_on << " off " << worst_off;
+    printf("flicker scenario: L1 on %.3f m, L1 off %.3f m\n", worst_on, worst_off);
+}
+
 AP_GTEST_MAIN()
