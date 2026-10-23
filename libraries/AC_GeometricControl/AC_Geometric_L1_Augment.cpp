@@ -57,6 +57,15 @@ AC_Geometric_L1_Augment_Config AC_Geometric_L1_Augment_Params::config() const
     return c;
 }
 
+// Out-of-class definitions: under -std=gnu++11 a static constexpr member that
+// is bound to a reference (MIN/MAX take their arguments by reference) needs
+// one, and an unoptimised build otherwise fails to link.
+constexpr float AC_Geometric_L1_Augment::FAULT_RAMP_S;
+constexpr float AC_Geometric_L1_Augment::HOLD_SETTLE_S;
+constexpr float AC_Geometric_L1_Augment::REJOIN_RATE_MSS_PER_S;
+constexpr float AC_Geometric_L1_Augment::HOLD_MAX_S;
+constexpr float AC_Geometric_L1_Augment::HOLD_RESET_QUIET_S;
+
 void AC_Geometric_L1_Augment::drop(AC_Geometric_L1_Reason reason)
 {
     // Only a departure from an active state is worth a reason; Loiter's
