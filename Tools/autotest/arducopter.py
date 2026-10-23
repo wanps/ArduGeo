@@ -15853,6 +15853,7 @@ class AutoTestCopter(vehicle_test_suite.TestSuite):
             'GEO_LREF_YBJRK': 6.0,
             'GEO_LREF_ZBACC': 2.5,
             'GEO_LREF_ZBJRK': 5.0,
+            'GEO_LREF_DFF': 0.0,
         }
 
         parameters, _ = self.download_parameters(self.sysid_thismav(), 1)

@@ -21,6 +21,7 @@ struct AC_Geometric_LoiterReference_Profile {
     float yaw_jerk_max_radsss = 0.0f;
     float yaw_brake_accel_max_radss = 0.0f;
     float yaw_brake_jerk_max_radsss = 0.0f;
+    float drag_feedforward = 0.0f;
 };
 
 class AC_Geometric_LoiterReference_Params {
@@ -44,6 +45,7 @@ private:
     AP_Float _yaw_jerk_max_radsss;
     AP_Float _yaw_brake_accel_max_radss;
     AP_Float _yaw_brake_jerk_max_radsss;
+    AP_Float _drag_feedforward;
 };
 
 // Controller-independent pilot Loiter reference limits. All limits are
@@ -56,6 +58,9 @@ struct AC_Geometric_LoiterReference_Limits {
     float accel_xy_max_mss = 0.0f;
     float accel_xy_total_max_mss = 0.0f;
     float jerk_xy_max_msss = 0.0f;
+    // Fraction [0,1] of the speed-proportional drag term that is added back
+    // to the acceleration feed-forward.  1 matches native AC_Loiter.
+    float drag_feedforward = 0.0f;
 
     float brake_delay_s = 0.0f;
     float brake_accel_max_mss = 0.0f;
@@ -113,7 +118,10 @@ struct AC_Geometric_LoiterReference_Status {
 };
 
 // Generates one internally consistent Loiter PVA/yaw reference from pilot
-// motion requests, including dedicated neutral/reversal braking. It owns no
+// motion requests, including dedicated neutral/reversal braking.  The only
+// deliberate departure from PVA consistency is the optional drag
+// feed-forward, which is added to the written target acceleration and kept
+// out of the integrated reference. It owns no
 // feedback-controller state and has no dependency on AC_PosControl,
 // AC_AttitudeControl or AP_Motors.
 class AC_Geometric_LoiterReference {
@@ -154,17 +162,20 @@ public:
     const Vector3p& position_ref_ned_m() const { return _position_ref_ned_m; }
     const Vector3f& velocity_ref_ned_ms() const { return _velocity_ref_ned_ms; }
     const Vector3f& accel_ref_ned_mss() const { return _accel_ref_ned_mss; }
+    const Vector2f& drag_feedforward_ne_mss() const { return _drag_feedforward_ne_mss; }
     float yaw_ref_rad() const { return _yaw_ref_rad; }
     float yaw_rate_ref_rads() const { return _yaw_rate_ref_rads; }
 
 private:
     bool limits_valid(const AC_Geometric_LoiterReference_Limits& limits) const;
     void write_target(AC_Geometric_Target& target) const;
+    void update_drag_feedforward(const AC_Geometric_LoiterReference_Limits& limits);
 
     Vector3p _position_ref_ned_m;
     Vector3f _velocity_ref_ned_ms;
     Vector3f _accel_ref_ned_mss;
     Vector3f _accel_shaper_ned_mss;
+    Vector2f _drag_feedforward_ne_mss;
 
     float _yaw_ref_rad = 0.0f;
     float _yaw_rate_ref_rads = 0.0f;

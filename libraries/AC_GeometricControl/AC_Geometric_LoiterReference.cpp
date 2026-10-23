@@ -16,6 +16,7 @@ constexpr float reference_brake_jerk_default_msss = 5.0f;
 constexpr float reference_jerk_z_default_msss = 5.0f;
 constexpr float reference_brake_accel_z_default_mss = 2.5f;
 constexpr float reference_brake_jerk_z_default_msss = 5.0f;
+constexpr float reference_drag_feedforward_default = 0.0f;
 constexpr float reference_yaw_accel_default_radss = 1.0f;
 constexpr float reference_yaw_jerk_default_radsss = 2.0f;
 constexpr float reference_yaw_brake_accel_default_radss = 2.0f;
@@ -173,6 +174,14 @@ const AP_Param::GroupInfo AC_Geometric_LoiterReference_Params::var_info[] = {
     // @User: Advanced
     AP_GROUPINFO("ZBJRK", 13, AC_Geometric_LoiterReference_Params, _brake_jerk_z_max_msss, reference_brake_jerk_z_default_msss),
 
+    // @Param: DFF
+    // @DisplayName: Geometric Loiter drag feed-forward
+    // @Description: Fraction of the reference's speed-proportional drag (LREF_AXY * speed / LREF_VXY) that is added to the acceleration feed-forward while the reference itself still decelerates by it. 1 matches native Loiter, whose lean in steady flight then covers airframe drag; at 0 the position loop has to produce that lean from tracking error, its integral holds it when the vehicle stops, and the vehicle overshoots the stopping point.
+    // @Range: 0 1
+    // @Increment: 0.1
+    // @User: Advanced
+    AP_GROUPINFO("DFF", 14, AC_Geometric_LoiterReference_Params, _drag_feedforward, reference_drag_feedforward_default),
+
     AP_GROUPEND
 };
 
@@ -197,6 +206,7 @@ AC_Geometric_LoiterReference_Profile AC_Geometric_LoiterReference_Params::get() 
     profile.yaw_jerk_max_radsss = _yaw_jerk_max_radsss.get();
     profile.yaw_brake_accel_max_radss = _yaw_brake_accel_max_radss.get();
     profile.yaw_brake_jerk_max_radsss = _yaw_brake_jerk_max_radsss.get();
+    profile.drag_feedforward = _drag_feedforward.get();
     return profile;
 }
 
@@ -206,6 +216,7 @@ void AC_Geometric_LoiterReference::reset()
     _velocity_ref_ned_ms.zero();
     _accel_ref_ned_mss.zero();
     _accel_shaper_ned_mss.zero();
+    _drag_feedforward_ne_mss.zero();
     _yaw_ref_rad = 0.0f;
     _yaw_rate_ref_rads = 0.0f;
     _yaw_accel_ref_radss = 0.0f;
@@ -243,6 +254,11 @@ bool AC_Geometric_LoiterReference::reset(const AC_Geometric_State& state,
 
 bool AC_Geometric_LoiterReference::limits_valid(const AC_Geometric_LoiterReference_Limits& limits) const
 {
+    if (!isfinite(limits.drag_feedforward) ||
+        is_negative(limits.drag_feedforward) ||
+        limits.drag_feedforward > 1.0f) {
+        return false;
+    }
     const float values[] {
         limits.speed_xy_max_ms,
         limits.accel_xy_max_mss,
@@ -295,6 +311,8 @@ void AC_Geometric_LoiterReference::write_target(AC_Geometric_Target& target) con
     target.position_ned_m = _position_ref_ned_m.tofloat();
     target.velocity_ned_ms = _velocity_ref_ned_ms;
     target.accel_ned_mss = _accel_ref_ned_mss;
+    target.accel_ned_mss.x += _drag_feedforward_ne_mss.x;
+    target.accel_ned_mss.y += _drag_feedforward_ne_mss.y;
     target.build_attitude_from_position = true;
     target.shape_position_target = false;
     target.shape_yaw_target = false;
@@ -303,6 +321,34 @@ void AC_Geometric_LoiterReference::write_target(AC_Geometric_Target& target) con
     target.yaw_rate_rads = _yaw_rate_ref_rads;
     target.omega_body_rads.z = _yaw_rate_ref_rads;
     target.omega_dot_body_radss.z = _yaw_accel_ref_radss;
+}
+
+// Native AC_Loiter integrates its target velocity with a speed-proportional
+// drag term but feeds forward only the pilot and brake acceleration, so its
+// commanded lean exceeds the target's own acceleration by AXY*v/VXY.  On an
+// airframe that surplus is what holds speed against aerodynamic drag.  When
+// the geometric controller is fed the PVA-consistent acceleration instead,
+// its position loop has to build that lean from tracking error; the integral
+// is left holding it when the vehicle stops, and the vehicle overshoots the
+// stopping point.  The term follows the reference velocity written this
+// frame, so an avoidance constraint or a settled reference removes it.
+void AC_Geometric_LoiterReference::update_drag_feedforward(const AC_Geometric_LoiterReference_Limits& limits)
+{
+    _drag_feedforward_ne_mss.zero();
+    const Vector2f velocity_xy_ms = _velocity_ref_ned_ms.xy();
+    const float speed_xy_ms = velocity_xy_ms.length();
+    if (!is_positive(limits.drag_feedforward) || speed_xy_ms <= reference_epsilon) {
+        return;
+    }
+    const float drag_accel_mss = constrain_float(limits.accel_xy_max_mss * speed_xy_ms / limits.speed_xy_max_ms,
+                                                 0.0f,
+                                                 limits.accel_xy_max_mss);
+    // The reference already respects the physical lean bound; keep the
+    // commanded sum inside it as well.
+    Vector2f accel_total_ne_mss = _accel_ref_ned_mss.xy() +
+                                  velocity_xy_ms * (limits.drag_feedforward * drag_accel_mss / speed_xy_ms);
+    accel_total_ne_mss.limit_length(limits.accel_xy_total_max_mss);
+    _drag_feedforward_ne_mss = accel_total_ne_mss - _accel_ref_ned_mss.xy();
 }
 
 bool AC_Geometric_LoiterReference::update(const AC_Geometric_LoiterReference_Input& input,
@@ -462,6 +508,7 @@ bool AC_Geometric_LoiterReference::update(const AC_Geometric_LoiterReference_Inp
     }
     status.braking = _brake_accel_mss > reference_epsilon;
     status.xy_settled = xy_settled;
+    update_drag_feedforward(limits);
 
     // Vertical pilot trajectory. A takeoff target adds a position boundary;
     // normal flying follows the Up-positive climb-rate input directly. Stick
@@ -815,6 +862,7 @@ bool AC_Geometric_LoiterReference::apply_velocity_constraint(
         _z_brake_settled = false;
         status.z_settled = false;
     }
+    update_drag_feedforward(_last_limits);
     write_target(target);
     return true;
 }

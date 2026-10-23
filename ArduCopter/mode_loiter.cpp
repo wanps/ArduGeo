@@ -503,6 +503,7 @@ AC_Geometric_LoiterReference_Limits ModeLoiter::geometric_reference_limits() con
     limits.brake_accel_max_mss = MIN(profile.brake_accel_max_mss,
                                      physical_accel_xy_max_mss);
     limits.brake_jerk_max_msss = profile.brake_jerk_max_msss;
+    limits.drag_feedforward = profile.drag_feedforward;
     limits.speed_up_max_ms = get_pilot_speed_up_ms();
     limits.speed_down_max_ms = get_pilot_speed_dn_ms();
     limits.accel_z_max_mss = get_pilot_accel_D_mss();
@@ -1164,9 +1165,9 @@ bool ModeLoiter::update_geometric_observer(
     // @Field: VX: Selected Loiter velocity reference, X-Axis
     // @Field: VY: Selected Loiter velocity reference, Y-Axis
     // @Field: VZ: Selected Loiter velocity reference, Z-Axis
-    // @Field: AX: Selected Loiter acceleration reference, X-Axis
-    // @Field: AY: Selected Loiter acceleration reference, Y-Axis
-    // @Field: AZ: Selected Loiter acceleration reference, Z-Axis
+    // @Field: AX: Selected Loiter acceleration reference as fed to the controller (includes LREF_DFF), X-Axis
+    // @Field: AY: Selected Loiter acceleration reference as fed to the controller (includes LREF_DFF), Y-Axis
+    // @Field: AZ: Selected Loiter acceleration reference as fed to the controller (includes LREF_DFF), Z-Axis
     // @Field: Yaw: Selected Loiter yaw reference
     // @Field: YRN: Selected Loiter yaw-rate reference
 
@@ -1185,9 +1186,9 @@ bool ModeLoiter::update_geometric_observer(
     // @Field: VX: Dedicated reference velocity, X-Axis
     // @Field: VY: Dedicated reference velocity, Y-Axis
     // @Field: VZ: Dedicated reference velocity, Z-Axis
-    // @Field: AX: Dedicated reference acceleration, X-Axis
-    // @Field: AY: Dedicated reference acceleration, Y-Axis
-    // @Field: AZ: Dedicated reference acceleration, Z-Axis
+    // @Field: AX: Dedicated reference acceleration, PVA-consistent (excludes LREF_DFF), X-Axis
+    // @Field: AY: Dedicated reference acceleration, PVA-consistent (excludes LREF_DFF), Y-Axis
+    // @Field: AZ: Dedicated reference acceleration, PVA-consistent (excludes LREF_DFF), Z-Axis
 
     // @LoggerMessage: GELO
     // @Description: Controller-independent geometric Loiter yaw reference and ownership counters
@@ -1274,9 +1275,9 @@ bool ModeLoiter::update_geometric_observer(
                                         (double)target.velocity_ned_ms.x,
                                         (double)target.velocity_ned_ms.y,
                                         (double)target.velocity_ned_ms.z,
-                                        (double)target.accel_ned_mss.x,
-                                        (double)target.accel_ned_mss.y,
-                                        (double)target.accel_ned_mss.z);
+                                        (double)_geometric_reference.accel_ref_ned_mss().x,
+                                        (double)_geometric_reference.accel_ref_ned_mss().y,
+                                        (double)_geometric_reference.accel_ref_ned_mss().z);
             AP::logger().WriteStreaming("GELO", "TimeUS,YL,YB,ZB,ZS,NER,DR,NEN,DN,Yaw,YR,TFrm,GFrm,NFrm", "QBBBBBBBBffIII",
                                         AP_HAL::micros64(),
                                         (uint8_t)_geometric_reference_status.yaw_rate_limited,

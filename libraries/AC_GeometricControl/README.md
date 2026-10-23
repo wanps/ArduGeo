@@ -365,6 +365,7 @@ All parameters use the `GEO_` prefix in Copter.
 | `GEO_LREF_YBJRK` | Dedicated yaw brake-jerk limit. Default `6 rad/s/s/s`. |
 | `GEO_LREF_ZBACC` | Dedicated no-delay vertical brake-acceleration limit for throttle release and reversal. The effective value is also bounded by `PILOT_ACC_Z`. Default `2.5 m/s/s`. |
 | `GEO_LREF_ZBJRK` | Dedicated vertical brake-jerk limit for the finite-time S-curve. Default `5 m/s/s/s`. |
+| `GEO_LREF_DFF` | Fraction (0 to 1) of the speed-proportional `GEO_LREF_AXY` drag that is added back to the acceleration feed-forward. The reference trajectory is unchanged. At 1 the commanded lean matches native Loiter, which feeds forward pilot and brake acceleration but not its drag term, so steady flight is held by feed-forward instead of by position-loop tracking error. At 0 the position integral builds up that lean during the stick input and keeps it after release, which overshoots the stopping point. `GELR.AX/AY` log the PVA-consistent reference and `GEOL.AX/AY` the acceleration passed to the controller; their difference is this term. Default `0`. |
 | `GEO_HOV_THR` | Hover throttle reference used to normalize geometric thrust. `0` uses the vehicle `MOT_THST_HOVER` estimate; non-zero values override it. |
 | `GEO_MOM_NORM_X` | Body-X moment proxy magnitude that maps to full roll output. |
 | `GEO_MOM_NORM_Y` | Body-Y moment proxy magnitude that maps to full pitch output. |
@@ -384,7 +385,7 @@ consume them:
 | Translational setpoint shaper | 6 | `AC_Geometric_SetpointShaper.cpp` |
 | Yaw shaper | 3 | `AC_Geometric_YawShaper.cpp` |
 | Controller output gate | 1 | `AC_GeometricControl.cpp` |
-| Loiter reference | 13 | `AC_Geometric_LoiterReference.cpp` |
+| Loiter reference | 14 | `AC_Geometric_LoiterReference.cpp` |
 
 `AC_GeometricControl::var_info` uses empty-prefix subgroups, so this ownership
 split does not rename parameters or require a new ground-station setup. The 43
