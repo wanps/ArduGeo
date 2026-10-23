@@ -102,13 +102,12 @@ void AC_Geometric_L1_Augment::move_lambda(float target, float rate_per_s, float 
 
 uint8_t AC_Geometric_L1_Augment::hold_status() const
 {
-    if (_state != AC_Geometric_L1_State::RAMP_IN && _state != AC_Geometric_L1_State::ENGAGED) {
-        return 0;
-    }
-    if (is_positive(_hold_s)) {
+    const bool active = _state == AC_Geometric_L1_State::RAMP_IN ||
+                        _state == AC_Geometric_L1_State::ENGAGED;
+    if (is_positive(_hold_s) && (active || _state == AC_Geometric_L1_State::OFF)) {
         return 1;
     }
-    return _rejoining ? 2 : 0;
+    return (active && _rejoining) ? 2 : 0;
 }
 
 void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, float dt)
@@ -127,7 +126,15 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         _hold_s = MAX(0.0f, _hold_s - dt);
     }
     const bool holding = is_positive(_hold_s);
-    _held_for_s = holding ? _held_for_s + dt : 0.0f;
+    if (holding) {
+        _quiet_s = 0.0f;
+        _held_for_s = MIN(_held_for_s + dt, HOLD_MAX_S);
+    } else {
+        _quiet_s += dt;
+        if (_quiet_s >= HOLD_RESET_QUIET_S) {
+            _held_for_s = 0.0f;
+        }
+    }
 
     const bool pause_landed = in.land_complete_maybe;
     const bool pause_throttle = in.throttle < _config.pause_throttle;

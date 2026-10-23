@@ -506,7 +506,7 @@ TEST(L1Augment, SeparateHoldsDoNotAddUp)
     // these holds lasts 1.5 + 0.5 = 2.0 s: under the ceiling separately,
     // over it if they were added together.
     run(a, lim, 1.5f);
-    run(a, healthy(), 1.0f);      // past the settle window: the hold ends
+    run(a, healthy(), 2.0f);      // 0.5 s settling, then 1.5 s quiet: count cleared
     run(a, lim, 1.5f);
     EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
     EXPECT_EQ(AC_Geometric_L1_Reason::NONE, a.reason());
@@ -529,7 +529,46 @@ TEST(L1Augment, HoldStatusSaysWhatTheEstimateIsDoing)
     AC_Geometric_L1_Augment off;
     off.set_config(enabled_config());
     run(off, lim, 0.2f);
-    EXPECT_EQ(0, off.hold_status()) << "only meaningful while engaged";
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, off.state());
+    EXPECT_EQ(1, off.hold_status()) << "off and refusing admission because of the hold";
+    run(off, healthy(), 0.6f);
+    EXPECT_EQ(0, off.hold_status());
+}
+
+TEST(L1Augment, ShortGapsDoNotClearTheHoldCount)
+{
+    // Review S1 on #33: a flag every 0.52 s leaves 10 ms gaps between holds.
+    // Clearing the count on each gap kept it under the ceiling for ever.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    for (int i = 0; i < int(6.0f / DT); i++) {
+        in.thrust_limited = (i % 208) < 4;
+        a.update(in, DT);
+    }
+    EXPECT_EQ(AC_Geometric_L1_Reason::HOLD_TIMEOUT, a.reason());
+}
+
+TEST(L1Augment, ATimeoutDuringRampInHandsOverWhatWasIn)
+{
+    AC_Geometric_L1_Augment a;
+    a.set_config(enabled_config());
+    run(a, healthy(), 0.3f);
+    ASSERT_EQ(AC_Geometric_L1_State::RAMP_IN, a.state());
+    float handed = 0.0f;
+    // what the ramp-in took from the integrator so far
+    const float start = a.injection_ned_mss().z;
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    float worst = 0.0f;
+    for (int i = 0; i < int(3.5f / DT); i++) {
+        a.update(lim, DT);
+        handed += a.handover_ned_mss().z;
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - handed - start));
+    }
+    EXPECT_EQ(AC_Geometric_L1_Reason::HOLD_TIMEOUT, a.reason());
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    EXPECT_LT(worst, 1.0e-4f);
+    EXPECT_NEAR(-start, handed, 1.0e-4f);
 }
 
 AP_GTEST_MAIN()

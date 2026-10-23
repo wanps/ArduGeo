@@ -102,6 +102,10 @@ public:
     // that keeps flickering would hold for the rest of the flight while
     // reporting engaged.
     static constexpr float HOLD_MAX_S = 2.5f;
+    // The hold time only starts again from zero after this long without a
+    // hold. Clearing it on the first quiet frame let a flag that recurs just
+    // slower than the settle window (every 0.52 s) slip under the ceiling.
+    static constexpr float HOLD_RESET_QUIET_S = 1.0f;
 
     void set_config(const AC_Geometric_L1_Augment_Config& config) { _config = config; }
 
@@ -126,8 +130,9 @@ public:
     AC_Geometric_L1_State state() const { return _state; }
     AC_Geometric_L1_Reason reason() const { return _reason; }
     float lambda() const { return _lambda; }
-    // For the log: 0 tracking, 1 holding through a limit, 2 walking back.
-    // Only meaningful while ramping in or engaged; 0 otherwise.
+    // For the log: 0 tracking, 1 holding through a limit (in OFF: refusing
+    // admission because of it), 2 walking back. 0 while ramping out, paused
+    // or latched.
     uint8_t hold_status() const;
 
 private:
@@ -144,6 +149,7 @@ private:
     uint32_t _resets_seen = 0;
     float _hold_s = 0.0f;
     float _held_for_s = 0.0f;
+    float _quiet_s = 0.0f;
     bool _rejoining = false;
 };
 

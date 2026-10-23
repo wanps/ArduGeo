@@ -296,4 +296,25 @@ TEST(L1ClosedLoop, AFlickeringLimitEndsInACleanExitThatFliesLikeL1Off)
     printf("flicker scenario: L1 on %.3f m, L1 off %.3f m\n", worst_on, worst_off);
 }
 
+TEST(L1ClosedLoop, FlagsJustSlowerThanTheSettleWindowStillReachTheCeiling)
+{
+    // Review S1 on #33: the reviewer's sweep left L1 frozen 74-99 % of the
+    // time at these periods, never timing out.
+    for (const int period : {208, 240, 280}) {          // 520, 600, 700 ms
+        Loop l(0.30f, 0.87f, true, true);
+        l.run(20.0f);
+        ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, l.st());
+        l.worst_ij_step = 0.0f;
+        bool timed_out = false;
+        for (int i = 0; i < int(20.0f / DT); i++) {
+            l.motor_limited = (i % period) < 4;
+            l.step();
+            timed_out |= l.c.l1_augment().reason() == AC_Geometric_L1_Reason::HOLD_TIMEOUT;
+        }
+        EXPECT_TRUE(timed_out) << "period " << period * DT << " s";
+        EXPECT_FALSE(l.ever_latched);
+        EXPECT_LT(l.worst_ij_step, 0.05f);
+    }
+}
+
 AP_GTEST_MAIN()
