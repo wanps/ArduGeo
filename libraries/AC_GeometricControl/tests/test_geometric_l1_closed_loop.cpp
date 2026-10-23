@@ -306,14 +306,29 @@ TEST(L1ClosedLoop, FlagsJustSlowerThanTheSettleWindowStillReachTheCeiling)
         ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, l.st());
         l.worst_ij_step = 0.0f;
         bool timed_out = false;
-        for (int i = 0; i < int(20.0f / DT); i++) {
+        int reentries = 0;
+        AC_Geometric_L1_State prev = l.st();
+        // End on the last limited frame, so the quiet below starts there.
+        const int frames = int(20.0f / DT) / period * period + 4;
+        for (int i = 0; i < frames; i++) {
             l.motor_limited = (i % period) < 4;
             l.step();
             timed_out |= l.c.l1_augment().reason() == AC_Geometric_L1_Reason::HOLD_TIMEOUT;
+            if (timed_out && prev == AC_Geometric_L1_State::OFF && l.st() == AC_Geometric_L1_State::RAMP_IN) {
+                reentries++;
+            }
+            prev = l.st();
         }
         EXPECT_TRUE(timed_out) << "period " << period * DT << " s";
+        EXPECT_EQ(0, reentries) << "period " << period * DT << " s: no re-entry while it flickers";
         EXPECT_FALSE(l.ever_latched);
         EXPECT_LT(l.worst_ij_step, 0.05f);
+        // Quiet: hold drains (0.5 s), count clears (1.0 s), then admission.
+        l.motor_limited = false;
+        l.run(1.4f);
+        EXPECT_EQ(AC_Geometric_L1_State::OFF, l.st());
+        l.run(1.0f);
+        EXPECT_NE(AC_Geometric_L1_State::OFF, l.st()) << "period " << period * DT << " s: back once quiet";
     }
 }
 

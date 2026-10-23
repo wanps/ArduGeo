@@ -130,9 +130,10 @@ public:
     AC_Geometric_L1_State state() const { return _state; }
     AC_Geometric_L1_Reason reason() const { return _reason; }
     float lambda() const { return _lambda; }
-    // For the log: 0 tracking, 1 holding through a limit (in OFF: refusing
-    // admission because of it), 2 walking back. 0 while ramping out, paused
-    // or latched.
+    // For the log: 0 tracking, 1 holding through a limit (in OFF, with L1
+    // enabled: admission refused because of a hold, or because a timeout's
+    // count has not yet been cleared), 2 walking back. 0 while ramping out,
+    // paused or latched.
     uint8_t hold_status() const;
 
 private:

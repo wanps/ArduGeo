@@ -104,7 +104,13 @@ uint8_t AC_Geometric_L1_Augment::hold_status() const
 {
     const bool active = _state == AC_Geometric_L1_State::RAMP_IN ||
                         _state == AC_Geometric_L1_State::ENGAGED;
-    if (is_positive(_hold_s) && (active || _state == AC_Geometric_L1_State::OFF)) {
+    if (active && is_positive(_hold_s)) {
+        return 1;
+    }
+    if (_state == AC_Geometric_L1_State::OFF && _config.enabled &&
+        (is_positive(_hold_s) || _held_for_s >= HOLD_MAX_S)) {
+        // Off, and a hold is what is refusing admission. Gated on enabled
+        // because on the ground AP_Motors keeps the limit flags set.
         return 1;
     }
     return (active && _rejoining) ? 2 : 0;
@@ -145,8 +151,11 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
     case AC_Geometric_L1_State::OFF:
         _lambda = 0.0f;
         _resets_seen = in.observer_resets;
+        // After a timeout the count stays at the ceiling until a quiet
+        // second clears it; admitting before that would time out again on
+        // the next limited frame, once per flicker.
         if (_config.enabled && in.owns_output && !pause_landed && !pause_throttle &&
-            !holding && in.observer_admissible && finite) {
+            !holding && _held_for_s < HOLD_MAX_S && in.observer_admissible && finite) {
             _held_ned_mss = sigma_v;
             _rejoining = false;
             _state = AC_Geometric_L1_State::RAMP_IN;

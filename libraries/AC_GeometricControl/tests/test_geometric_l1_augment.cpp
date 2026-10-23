@@ -492,8 +492,11 @@ TEST(L1Augment, AFlickeringLimitStillTimesOutAndBlocksReentryUntilQuiet)
     EXPECT_EQ(AC_Geometric_L1_Reason::HOLD_TIMEOUT, a.reason());
     flicker(3.0f);
     EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state()) << "no re-entry while the limit keeps flickering";
+    EXPECT_EQ(1, a.hold_status()) << "and the log says why";
     run(a, healthy(), 0.6f);
-    EXPECT_NE(AC_Geometric_L1_State::OFF, a.state()) << "re-admitted once the limit is quiet";
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state()) << "the timeout's count is not cleared yet";
+    run(a, healthy(), 1.0f);
+    EXPECT_NE(AC_Geometric_L1_State::OFF, a.state()) << "re-admitted once the limit has been quiet";
     EXPECT_NE(AC_Geometric_L1_State::LATCHED, a.state());
 }
 
@@ -569,6 +572,20 @@ TEST(L1Augment, ATimeoutDuringRampInHandsOverWhatWasIn)
     EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
     EXPECT_LT(worst, 1.0e-4f);
     EXPECT_NEAR(-start, handed, 1.0e-4f);
+}
+
+TEST(L1Augment, HoldStatusIsQuietWhenL1IsDisabled)
+{
+    // On the ground AP_Motors keeps the limit flags set; with L1 disabled
+    // that must not read as a hold.
+    AC_Geometric_L1_Augment a;
+    AC_Geometric_L1_Augment_Config c = enabled_config();
+    c.enabled = false;
+    a.set_config(c);
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    run(a, lim, 3.0f);
+    EXPECT_EQ(0, a.hold_status());
 }
 
 AP_GTEST_MAIN()
