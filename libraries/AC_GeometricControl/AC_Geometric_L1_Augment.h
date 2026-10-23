@@ -28,6 +28,9 @@
 //  - while collective is at a limit, and for HOLD_SETTLE_S after, the
 //    estimate is held and overrun is not judged, because what was commanded
 //    is not what was applied; the held value then walks back, never steps;
+//  - a hold that runs past HOLD_MAX_S, as a limit flag that keeps re-arming
+//    would make it, ends in a clean exit: past that point the frozen value
+//    is a guess, and L1 off is the baseline the integrator already handles;
 //  - a pause (low collective, possible landing) hands over like a clean
 //    exit, so the integrator carries the deficit through it, as it would
 //    with L1 off, and the force-neutral re-entry has something to take back;
@@ -55,6 +58,7 @@ enum class AC_Geometric_L1_Reason : uint8_t {
     FAULT_RESET = 7,
     FAULT_NONFINITE = 8,
     RESET = 9,          // controller reset (integrator and observer cleared)
+    HOLD_TIMEOUT = 10,  // held through saturation for longer than HOLD_MAX_S
 };
 
 struct AC_Geometric_L1_Augment_Config {
@@ -92,6 +96,16 @@ public:
     // Then the held value walks back to the estimate at this rate rather than
     // stepping: 0.01 m/s^2 per frame at 400 Hz.
     static constexpr float REJOIN_RATE_MSS_PER_S = 4.0f;
+    // Longest continuous hold, settle window included, so a limit that
+    // lasts HOLD_MAX_S - HOLD_SETTLE_S on its own already reaches it. The
+    // window re-arms on every limited frame, so without a ceiling a flag
+    // that keeps flickering would hold for the rest of the flight while
+    // reporting engaged.
+    static constexpr float HOLD_MAX_S = 2.5f;
+    // The hold time only starts again from zero after this long without a
+    // hold. Clearing it on the first quiet frame let a flag that recurs just
+    // slower than the settle window (every 0.52 s) slip under the ceiling.
+    static constexpr float HOLD_RESET_QUIET_S = 1.0f;
 
     void set_config(const AC_Geometric_L1_Augment_Config& config) { _config = config; }
 
@@ -116,6 +130,11 @@ public:
     AC_Geometric_L1_State state() const { return _state; }
     AC_Geometric_L1_Reason reason() const { return _reason; }
     float lambda() const { return _lambda; }
+    // For the log: 0 tracking, 1 holding through a limit (in OFF, with L1
+    // enabled: admission refused because of a hold, or because a timeout's
+    // count has not yet been cleared), 2 walking back. 0 while ramping out,
+    // paused or latched.
+    uint8_t hold_status() const;
 
 private:
     void move_lambda(float target, float rate_per_s, float dt, bool hand_over);
@@ -130,6 +149,8 @@ private:
     Vector3f _handover_ned_mss;
     uint32_t _resets_seen = 0;
     float _hold_s = 0.0f;
+    float _held_for_s = 0.0f;
+    float _quiet_s = 0.0f;
     bool _rejoining = false;
 };
 

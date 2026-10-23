@@ -100,6 +100,22 @@ void AC_Geometric_L1_Augment::move_lambda(float target, float rate_per_s, float 
     }
 }
 
+uint8_t AC_Geometric_L1_Augment::hold_status() const
+{
+    const bool active = _state == AC_Geometric_L1_State::RAMP_IN ||
+                        _state == AC_Geometric_L1_State::ENGAGED;
+    if (active && is_positive(_hold_s)) {
+        return 1;
+    }
+    if (_state == AC_Geometric_L1_State::OFF && _config.enabled &&
+        (is_positive(_hold_s) || _held_for_s >= HOLD_MAX_S)) {
+        // Off, and a hold is what is refusing admission. Gated on enabled
+        // because on the ground AP_Motors keeps the limit flags set.
+        return 1;
+    }
+    return (active && _rejoining) ? 2 : 0;
+}
+
 void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, float dt)
 {
     _handover_ned_mss.zero();
@@ -116,6 +132,15 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         _hold_s = MAX(0.0f, _hold_s - dt);
     }
     const bool holding = is_positive(_hold_s);
+    if (holding) {
+        _quiet_s = 0.0f;
+        _held_for_s = MIN(_held_for_s + dt, HOLD_MAX_S);
+    } else {
+        _quiet_s += dt;
+        if (_quiet_s >= HOLD_RESET_QUIET_S) {
+            _held_for_s = 0.0f;
+        }
+    }
 
     const bool pause_landed = in.land_complete_maybe;
     const bool pause_throttle = in.throttle < _config.pause_throttle;
@@ -126,8 +151,11 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
     case AC_Geometric_L1_State::OFF:
         _lambda = 0.0f;
         _resets_seen = in.observer_resets;
+        // After a timeout the count stays at the ceiling until a quiet
+        // second clears it; admitting before that would time out again on
+        // the next limited frame, once per flicker.
         if (_config.enabled && in.owns_output && !pause_landed && !pause_throttle &&
-            !holding && in.observer_admissible && finite) {
+            !holding && _held_for_s < HOLD_MAX_S && in.observer_admissible && finite) {
             _held_ned_mss = sigma_v;
             _rejoining = false;
             _state = AC_Geometric_L1_State::RAMP_IN;
@@ -178,6 +206,15 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
             break;
         }
         if (holding) {
+            if (_held_for_s >= HOLD_MAX_S) {
+                // The held value was healthy when the hold began, so it is
+                // handed over like any clean exit; re-entry waits for the
+                // limit to go quiet and for admission.
+                _state = AC_Geometric_L1_State::RAMP_OUT;
+                _reason = AC_Geometric_L1_Reason::HOLD_TIMEOUT;
+                move_lambda(0.0f, rate_out, dt, true);
+                break;
+            }
             // Saturated, or just out of it: what was commanded is not what
             // was applied, and the estimate has absorbed some of the
             // shortfall. Hold the last value and lambda where they are;

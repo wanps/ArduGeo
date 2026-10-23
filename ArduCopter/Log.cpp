@@ -618,11 +618,12 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Description: L1 force augmentation (vertical, S3a): state, ramp and what it injected
 // @Field: TimeUS: Time since system startup
 // @Field: St: 0 off, 1 ramping in, 2 engaged, 3 clean exit, 4 paused, 5 latched
-// @Field: Rsn: Why it last left engagement: 1 disabled, 2 ownership, 3 low collective, 4 possible landing, 5 overrun, 6 invalid, 7 observer reset, 8 non-finite, 9 controller reset
+// @Field: Rsn: Why it last left engagement: 1 disabled, 2 ownership, 3 low collective, 4 possible landing, 5 overrun, 6 invalid, 7 observer reset, 8 non-finite, 9 controller reset, 10 held through a limit too long
 // @Field: Lam: Ramp factor lambda, 0 to 1
 // @Field: IJz: Vertical acceleration this frame's position PID received from L1
 // @Field: HOc: Cumulative vertical acceleration the position integrator actually took from L1 (negative while engaging, positive on clean exits)
 // @Field: Lim: True when collective was at a limit, in the mapper or in AP_Motors (logged in every state)
+// @Field: Hld: 0 tracking the estimate, 1 holding it through a limit (when off with L1 enabled: admission refused because of a hold or an uncleared timeout), 2 walking back to it; 0 while ramping out, paused or latched
 
 // @LoggerMessage: GEHC
 // @Description: Geometric handover trim carry, logged once per rising edge of output ownership
@@ -695,7 +696,7 @@ void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Outp
 {
     GEOMETRIC_LOG_MSG(GEL1, "TimeUS,VEx,VEy,VEz,SHx,SHy,SHz,SFx,SFy,SFz", "Qfffffffff");
     GEOMETRIC_LOG_MSG(GEL2, "TimeUS,VPx,VPy,VPz,NAx,NAy,NAz,Vld,Sat,Rst,Ovr,Adm", "QffffffBBIBB");
-    GEOMETRIC_LOG_MSG(GEL3, "TimeUS,St,Rsn,Lam,IJz,HOc,Lim", "QBBfffB");
+    GEOMETRIC_LOG_MSG(GEL3, "TimeUS,St,Rsn,Lam,IJz,HOc,Lim,Hld", "QBBfffBB");
 
     const uint64_t now_us = AP_HAL::micros64();
 
@@ -734,7 +735,8 @@ void Copter::Log_Write_Geometric_L1_Observer(const AC_Geometric_L1_Observer_Outp
                           (double)geometric_control.l1_injection_used_z(),
                           (double)geometric_control.l1_handover_applied_z(),
                           (uint8_t)(geometric_control.get_output().mapped.throttle_limited ||
-                                    motors->limit.throttle_upper || motors->limit.throttle_lower));
+                                    motors->limit.throttle_upper || motors->limit.throttle_lower),
+                          l1.hold_status());
 }
 
 // GEOR, GEOA, GEOD, GEOX, GEFR and the GEL1/GEL2 pair are emitted by Guided, Loiter, Circle, AUTO-WP and
