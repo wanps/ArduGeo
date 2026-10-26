@@ -229,32 +229,41 @@ TEST(L1Augment, APositiveEstimateIsClampedToo)
 
 TEST(L1Augment, EngagingOnARisingEstimateStaysForceNeutralAtTheLimit)
 {
-    // The estimate crosses the limit mid ramp-in. What the integrator gives
-    // up must match what the feed-forward gains, frame by frame, and in total
-    // equal the clamped value, not the estimate.
+    // The estimate crosses the limit mid ramp-in. Each frame the resultant
+    // (feed-forward minus what the integrator took) may change only by the
+    // part that comes from the held value itself moving, which the
+    // integrator is not asked to carry: d(inj - handed) = -lambda_before*dheld.
+    // In total the integrator gives up the clamped value, not the estimate.
     AC_Geometric_L1_Augment a;
     a.set_config(enabled_config());
     AC_Geometric_L1_Augment_Inputs in = healthy();
     in.sigma_filtered_ned_mss = Vector3f{0, 0, -3.0f};
     a.update(in, DT);
     ASSERT_EQ(AC_Geometric_L1_State::RAMP_IN, a.state());
-    float taken = -a.handover_ned_mss().z, worst = 0.0f;
+    float taken = -a.handover_ned_mss().z;
+    float lam = a.lambda(), inj = a.injection_ned_mss().z, held = -inj / lam;
+    float worst = 0.0f, lam_cross = -1.0f;
+    const int cross = int(0.4f / DT);
     for (int i = 0; i < int(1.5f / DT); i++) {
-        in.sigma_filtered_ned_mss.z = (i < int(0.4f / DT)) ? -3.0f : -9.0f;
-        const float before = a.injection_ned_mss().z;
-        const float held_before = -before;          // lambda*held before the frame
+        in.sigma_filtered_ned_mss.z = (i < cross) ? -3.0f : -9.0f;
+        if (i == cross) {
+            lam_cross = lam;
+        }
         a.update(in, DT);
-        taken += -a.handover_ned_mss().z;
-        (void)held_before;
-        // Force-neutral: feed-forward change equals integrator change except
-        // for the part that comes from the held value itself moving, which
-        // the integrator is not asked to carry.
-        worst = MAX(worst, fabsf(a.injection_ned_mss().z) - 5.0f);
+        const float handed = a.handover_ned_mss().z;
+        taken += -handed;
+        const float lam_b = a.lambda(), inj_b = a.injection_ned_mss().z;
+        const float held_b = -inj_b / lam_b;
+        worst = MAX(worst, fabsf((inj_b - inj) - handed + lam * (held_b - held)));
+        EXPECT_LE(fabsf(inj_b), 5.0f + 1.0e-5f) << "never injects past the limit";
+        lam = lam_b; inj = inj_b; held = held_b;
     }
     EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
-    EXPECT_LE(worst, 1.0e-5f) << "never injects past the limit";
+    EXPECT_LT(worst, 1.0e-5f) << "force-neutral apart from the held value's own move";
     EXPECT_NEAR(5.0f, a.injection_ned_mss().z, 1.0e-5f);
-    EXPECT_LE(taken, 5.0f + 1.0e-4f) << "the integrator never gives up more than the clamped value";
+    // sigma is negative here (upward force needed), so what leaves the
+    // integrator is the held value times the lambda it was moved over.
+    EXPECT_NEAR(-3.0f * lam_cross - 5.0f * (1.0f - lam_cross), taken, 1.0e-4f);
 }
 
 TEST(L1Augment, ACleanExitAtTheLimitHandsOverTheClampedValue)
@@ -408,6 +417,7 @@ TEST(L1Augment, ParametersDefaultOffWithTheApprovedRamps)
     EXPECT_FLOAT_EQ(1.0f, c.ramp_in_s);
     EXPECT_FLOAT_EQ(0.5f, c.ramp_out_s);
     EXPECT_FLOAT_EQ(0.12f, c.pause_throttle);
+    EXPECT_FLOAT_EQ(5.0f, c.sigma_limit);
 }
 
 TEST(PositionPidHandover, AddsAccelerationThroughTheIntegralGain)

@@ -624,7 +624,7 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Field: HOc: Cumulative vertical acceleration the position integrator actually took from L1 (negative while engaging, positive on clean exits)
 // @Field: Lim: True when collective was at a limit, in the mapper or in AP_Motors (logged in every state)
 // @Field: Hld: 0 tracking the estimate, 1 holding it through a limit (when off with L1 enabled: admission refused because of a hold or an uncleared timeout), 2 walking back to it; 0 while ramping out, paused or latched
-// @Field: Clp: True when what L1 injects sits at L1_ZMAX
+// @Field: Clp: True when L1's held vertical estimate sits at L1_ZMAX (the injection is lambda times it)
 
 // @LoggerMessage: GEHC
 // @Description: Geometric handover trim carry, logged once per rising edge of output ownership

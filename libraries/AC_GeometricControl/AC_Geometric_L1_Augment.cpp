@@ -62,7 +62,10 @@ AC_Geometric_L1_Augment_Config AC_Geometric_L1_Augment_Params::config() const
     c.ramp_out_s = ramp(_ramp_out_s.get(), 0.5f);
     const float thr = _pause_throttle.get();
     c.pause_throttle = isfinite(thr) ? constrain_float(thr, 0.0f, 0.5f) : 0.12f;
-    c.sigma_limit = _sigma_limit.get();
+    // Outside its range the bound would be either meaningless or no bound
+    // at all; non-positive or non-finite stops L1 (see update()).
+    const float zmax = _sigma_limit.get();
+    c.sigma_limit = (isfinite(zmax) && is_positive(zmax)) ? constrain_float(zmax, 0.5f, 20.0f) : 0.0f;
     return c;
 }
 
@@ -84,6 +87,8 @@ void AC_Geometric_L1_Augment::drop(AC_Geometric_L1_Reason reason)
                         _state != AC_Geometric_L1_State::LATCHED;
     _lambda = 0.0f;
     _handover_ned_mss.zero();
+    _clamped = false;
+    _clamped_for_s = 0.0f;
     if (active) {
         _state = AC_Geometric_L1_State::OFF;
         _reason = reason;
@@ -125,7 +130,9 @@ uint8_t AC_Geometric_L1_Augment::hold_status() const
     if (active && is_positive(_hold_s)) {
         return 1;
     }
-    if (_state == AC_Geometric_L1_State::OFF && _config.enabled &&
+    const bool runnable = _config.enabled && isfinite(_config.sigma_limit) &&
+                          is_positive(_config.sigma_limit);
+    if (_state == AC_Geometric_L1_State::OFF && runnable &&
         (is_positive(_hold_s) || _held_for_s >= HOLD_MAX_S)) {
         // Off, and a hold is what is refusing admission. Gated on enabled
         // because on the ground AP_Motors keeps the limit flags set.
