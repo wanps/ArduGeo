@@ -29,15 +29,15 @@ const AP_Param::GroupInfo AC_Geometric_L1_Observer_Params::var_info[] = {
 
     // @Param: L1_OBS_SMAX
     // @DisplayName: L1 observer raw estimate backstop
-    // @Description: Clamp on the raw, unfiltered estimate. It is a guard against numerical blow-up and should never fire in flight: the raw law amplifies velocity noise by about 1/dt, so its magnitude routinely reaches tens of m/s/s while the filtered estimate stays under 5. The overrun criterion is L1_OBS_SFMAX, not this. Zero disables the clamp.
+    // @Description: Clamp on the raw, unfiltered estimate. It is a guard against numerical blow-up and should never fire in flight: the raw law amplifies velocity noise by about 1/dt, so its magnitude routinely reaches tens of m/s/s while the filtered estimate stays under 5. The limit on the filtered estimate is L1_OBS_SFMAX, not this. Zero disables the clamp.
     // @Range: 0 100
     // @Units: m/s/s
     // @User: Advanced
     AP_GROUPINFO("L1_OBS_SMAX", 4, AC_Geometric_L1_Observer_Params, _sigma_max, 60.0f),
 
     // @Param: L1_OBS_SFMAX
-    // @DisplayName: L1 estimate limit
-    // @Description: Magnitude of the filtered estimate below which L1 may be admitted, and the largest vertical estimate L1 injects once engaged: above it the vertical injection is clamped to it and L1 stays engaged; a large value is not treated as a fault. The Ovr log flag reports the 3-axis magnitude against it. 5.0 is 1.03 times the largest filtered value seen in a nominal-load flight. Zero disables the flag and makes admission impossible.
+    // @DisplayName: L1 admission limit
+    // @Description: Magnitude (3-axis) of the filtered estimate below which L1 may be admitted; the Ovr log flag reports it. It is not a fault threshold and does not bound the injection (that is GEO_L1_ZMAX). 5.0 is 1.03 times the largest filtered value seen in a nominal-load flight; it is a starting point and must be recalibrated before any offset-load flight. Zero disables the flag and makes admission impossible.
     // @Range: 0 50
     // @Units: m/s/s
     // @User: Advanced
@@ -248,7 +248,7 @@ void AC_Geometric_L1_Observer::update(const AC_Geometric_State& state,
     _output.sigma_filtered_ned_mss = _sigma_filtered_ned_mss;
     _output.valid = true;
 
-    // Overrun criterion, on the filtered estimate (8.4 decision one).
+    // Range flag on the filtered estimate (8.4 decision one): feeds admission and the log only.
     const float filtered_mag = _sigma_filtered_ned_mss.length();
     const bool limit_set = is_positive(_config.sigma_filtered_max);
     _output.filtered_over_limit = limit_set && filtered_mag > _config.sigma_filtered_max;

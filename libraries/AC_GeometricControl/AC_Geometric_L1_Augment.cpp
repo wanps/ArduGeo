@@ -4,7 +4,7 @@ const AP_Param::GroupInfo AC_Geometric_L1_Augment_Params::var_info[] = {
 
     // @Param: L1_EN
     // @DisplayName: L1 force augmentation enable
-    // @Description: Lets the L1 estimate enter the position loop, vertical axis only. Requires GEO_L1_OBS_EN; with the observer off nothing is ever admitted. Engagement is checked once, when the observer reports it admissible (GEO_L1_OBS_SFMAX, GEO_L1_OBS_ADMV, GEO_L1_OBS_ADMQ). Switching GEO_L1_OBS_EN off while engaged is treated as a clean exit, not a fault. An observer fault after that latches L1 off until the vehicle is disarmed; the geometric controller carries on without it.
+    // @Description: Lets the L1 estimate enter the position loop, vertical axis only. Requires GEO_L1_OBS_EN; with the observer off nothing is ever admitted. Engagement is checked once, when the observer reports it admissible (GEO_L1_OBS_SFMAX, GEO_L1_OBS_ADMV, GEO_L1_OBS_ADMQ). Switching GEO_L1_OBS_EN off while engaged is treated as a clean exit, not a fault. An observer integrity fault after that (invalid, re-seeded, non-finite) latches L1 off until the vehicle is disarmed; the geometric controller carries on without it. A large estimate is not a fault: it is clamped to GEO_L1_ZMAX.
     // @Values: 0:Disabled,1:Enabled
     // @User: Advanced
     AP_GROUPINFO("L1_EN", 1, AC_Geometric_L1_Augment_Params, _enable, 0),
@@ -27,11 +27,19 @@ const AP_Param::GroupInfo AC_Geometric_L1_Augment_Params::var_info[] = {
 
     // @Param: L1_PTHR
     // @DisplayName: L1 pause collective
-    // @Description: Collective below which L1 pauses rather than faults. At low collective the nominal thrust model overstates how little thrust there is, and the estimate grows: a hard throttle cut on x400b took it to 6-10 m/s/s. Pausing is not a fault and does not latch; L1 re-enters through admission once collective recovers. Absolute, not relative to hover: ground contact is only certain to pause before it overruns while this is at least about half the hover throttle (0.49 x hover at the default overrun limit), which holds on x400b (hover ~0.19) but not on an airframe hovering above ~0.25.
+    // @Description: Collective below which L1 pauses. At low collective the nominal thrust model overstates how little thrust there is, and the estimate grows: a hard throttle cut on x400b took it to 6-10 m/s/s. Pausing keeps L1 from injecting that distorted value (clamped to GEO_L1_ZMAX); it is not a fault and does not latch, and L1 re-enters through admission once collective recovers. Absolute, not relative to hover: set it to roughly half the hover throttle or more (x400b hovers at ~0.19).
     // @Range: 0 0.5
     // @Increment: 0.01
     // @User: Advanced
     AP_GROUPINFO("L1_PTHR", 4, AC_Geometric_L1_Augment_Params, _pause_throttle, 0.12f),
+
+    // @Param: L1_ZMAX
+    // @DisplayName: L1 vertical injection limit
+    // @Description: Largest vertical estimate L1 injects. Above it the injection is clamped and L1 stays engaged; the remainder is left to the position integrator. This is L1's authority on the collective, separate from the admission limit GEO_L1_OBS_SFMAX. 5.0 is the value that used to be the fault threshold; a real load step can need more on an airframe with thrust to spare (SITL x400b: 10 matched native on a 25% thrust loss). It is a starting point and must be recalibrated per airframe before any offset-load flight. Zero, negative or invalid means no bound, and L1 then does not run.
+    // @Range: 0.5 20
+    // @Units: m/s/s
+    // @User: Advanced
+    AP_GROUPINFO("L1_ZMAX", 5, AC_Geometric_L1_Augment_Params, _sigma_limit, 5.0f),
 
     AP_GROUPEND
 };
@@ -54,6 +62,7 @@ AC_Geometric_L1_Augment_Config AC_Geometric_L1_Augment_Params::config() const
     c.ramp_out_s = ramp(_ramp_out_s.get(), 0.5f);
     const float thr = _pause_throttle.get();
     c.pause_throttle = isfinite(thr) ? constrain_float(thr, 0.0f, 0.5f) : 0.12f;
+    c.sigma_limit = _sigma_limit.get();
     return c;
 }
 
@@ -137,19 +146,20 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
     // A large estimate is not evidence that the estimate is broken: a real
     // step in load overshoots in it, and on an airframe with thrust to spare
     // a real disturbance can stay above any fixed limit for seconds with
-    // collective free. So the estimate is clamped and injected, as a
-    // projection onto a bounded set, rather than dropped. The bound is the
-    // same value that used to be the fault threshold, so L1's authority is
-    // what it was. Integrity faults (invalid, reset, non-finite) still latch.
-    // Only the vertical axis counts, since only the vertical axis is
-    // injected; horizontal drag at speed is no reason to drop it.
+    // collective free. So the control side saturates it: the vertical
+    // estimate is clamped to the limit and injected, the remainder left to
+    // the position integrator. The observer itself is not constrained, so
+    // its predictor stays consistent. Integrity faults (invalid, reset,
+    // non-finite) still latch. Only the vertical axis counts, since only the
+    // vertical axis is injected; horizontal drag at speed is no reason to
+    // drop it. Without a valid bound L1 does not run at all.
     const float limit = _config.sigma_limit;
-    const bool over = finite && is_positive(limit) && fabsf(sigma_v.z) > limit;
+    const bool limit_ok = isfinite(limit) && is_positive(limit);
+    const bool enabled = _config.enabled && limit_ok;
     Vector3f target = sigma_v;
-    if (over) {
+    if (limit_ok && finite) {
         target.z = constrain_float(sigma_v.z, -limit, limit);
     }
-    _clamped = false;
 
     if (in.thrust_limited) {
         _hold_s = HOLD_SETTLE_S;
@@ -179,7 +189,7 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         // After a timeout the count stays at the ceiling until a quiet
         // second clears it; admitting before that would time out again on
         // the next limited frame, once per flicker.
-        if (_config.enabled && in.owns_output && !pause_landed && !pause_throttle &&
+        if (enabled && in.owns_output && !pause_landed && !pause_throttle &&
             !holding && _held_for_s < HOLD_MAX_S && in.observer_admissible && finite) {
             _held_ned_mss = target;
             _rejoining = false;
@@ -192,7 +202,7 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
     case AC_Geometric_L1_State::ENGAGED: {
         // A deliberate disable is a clean exit even if the observer has just
         // been switched off with it: the held value is the last healthy one.
-        if (!_config.enabled) {
+        if (!enabled) {
             _state = AC_Geometric_L1_State::RAMP_OUT;
             _reason = AC_Geometric_L1_Reason::DISABLED;
             move_lambda(0.0f, rate_out, dt, true);
@@ -244,7 +254,6 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
             _rejoining = true;
             break;
         }
-        _clamped = over;
         if (_rejoining) {
             const float step = REJOIN_RATE_MSS_PER_S * dt;
             const float gap = target.z - _held_ned_mss.z;
@@ -284,4 +293,11 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         move_lambda(0.0f, 1.0f / FAULT_RAMP_S, dt, false);
         break;
     }
+
+    // Clp reports what is actually injected: held at the limit while
+    // tracking, holding through saturation or walking back.
+    const bool active = _state == AC_Geometric_L1_State::RAMP_IN ||
+                        _state == AC_Geometric_L1_State::ENGAGED;
+    _clamped = active && limit_ok && fabsf(_held_ned_mss.z) >= limit - 1.0e-6f;
+    _clamped_for_s = _clamped ? _clamped_for_s + dt : 0.0f;
 }

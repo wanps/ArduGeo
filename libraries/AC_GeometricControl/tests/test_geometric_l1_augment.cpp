@@ -197,20 +197,125 @@ TEST(L1Augment, OnlyTheVerticalEstimateCountsTowardTheLimit)
     EXPECT_NEAR(1.5f, a.injection_ned_mss().z, 1.0e-5f);
 }
 
-TEST(L1Augment, AZeroLimitDisablesTheClamp)
+TEST(L1Augment, AnInvalidLimitStopsL1Cleanly)
 {
-    AC_Geometric_L1_Augment_Config c = enabled_config();
-    c.sigma_limit = 0.0f;
+    // The limit is now L1's authority on the collective; without a valid one
+    // L1 does not run. An engaged L1 leaves the way a disable does, handing
+    // over, and nothing is admitted while it stays invalid.
+    for (const float bad : {0.0f, -1.0f, NAN}) {
+        AC_Geometric_L1_Augment a = engaged();
+        AC_Geometric_L1_Augment_Config c = enabled_config();
+        c.sigma_limit = bad;
+        a.set_config(c);
+        a.update(healthy(), DT);
+        EXPECT_EQ(AC_Geometric_L1_State::RAMP_OUT, a.state());
+        EXPECT_EQ(AC_Geometric_L1_Reason::DISABLED, a.reason());
+        EXPECT_FALSE(a.handover_ned_mss().is_zero()) << "a clean exit hands over";
+        run(a, healthy(), 2.0f);
+        EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+        EXPECT_TRUE(a.injection_ned_mss().is_zero());
+    }
+}
+
+TEST(L1Augment, APositiveEstimateIsClampedToo)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.sigma_filtered_ned_mss = Vector3f{0, 0, 7.0f};
+    run(a, in, 0.3f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_NEAR(-5.0f, a.injection_ned_mss().z, 1.0e-5f);
+}
+
+TEST(L1Augment, EngagingOnARisingEstimateStaysForceNeutralAtTheLimit)
+{
+    // The estimate crosses the limit mid ramp-in. What the integrator gives
+    // up must match what the feed-forward gains, frame by frame, and in total
+    // equal the clamped value, not the estimate.
     AC_Geometric_L1_Augment a;
-    a.set_config(c);
-    run(a, healthy(), 1.2f);
-    ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    a.set_config(enabled_config());
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.sigma_filtered_ned_mss = Vector3f{0, 0, -3.0f};
+    a.update(in, DT);
+    ASSERT_EQ(AC_Geometric_L1_State::RAMP_IN, a.state());
+    float taken = -a.handover_ned_mss().z, worst = 0.0f;
+    for (int i = 0; i < int(1.5f / DT); i++) {
+        in.sigma_filtered_ned_mss.z = (i < int(0.4f / DT)) ? -3.0f : -9.0f;
+        const float before = a.injection_ned_mss().z;
+        const float held_before = -before;          // lambda*held before the frame
+        a.update(in, DT);
+        taken += -a.handover_ned_mss().z;
+        (void)held_before;
+        // Force-neutral: feed-forward change equals integrator change except
+        // for the part that comes from the held value itself moving, which
+        // the integrator is not asked to carry.
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z) - 5.0f);
+    }
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_LE(worst, 1.0e-5f) << "never injects past the limit";
+    EXPECT_NEAR(5.0f, a.injection_ned_mss().z, 1.0e-5f);
+    EXPECT_LE(taken, 5.0f + 1.0e-4f) << "the integrator never gives up more than the clamped value";
+}
+
+TEST(L1Augment, ACleanExitAtTheLimitHandsOverTheClampedValue)
+{
+    AC_Geometric_L1_Augment a = engaged();
     AC_Geometric_L1_Augment_Inputs in = healthy();
     in.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
-    run(a, in, 3.0f);
-    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    run(a, in, 0.3f);
+    ASSERT_TRUE(a.clamped());
+    AC_Geometric_L1_Augment_Config off = enabled_config();
+    off.enabled = false;
+    a.set_config(off);
+    const float start = a.injection_ned_mss().z;
+    float handed = 0.0f, worst = 0.0f;
+    for (int i = 0; i < 400 && a.state() != AC_Geometric_L1_State::OFF; i++) {
+        a.update(in, DT);
+        handed += a.handover_ned_mss().z;
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - handed - start));
+    }
+    EXPECT_EQ(AC_Geometric_L1_State::OFF, a.state());
+    EXPECT_LT(worst, 1.0e-4f) << "feed-forward plus integrator stays constant";
+    EXPECT_NEAR(-5.0f, handed, 1.0e-4f) << "the clamped value is what the integrator takes";
+}
+
+TEST(L1Augment, AfterAHoldItWalksToTheClampedTargetNotTheEstimate)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs lim = healthy();
+    lim.thrust_limited = true;
+    lim.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
+    run(a, lim, 1.0f);
+    EXPECT_FALSE(a.clamped()) << "held at the pre-limit value, below the bound";
+    AC_Geometric_L1_Augment_Inputs released = lim;
+    released.thrust_limited = false;
+    float last = a.injection_ned_mss().z, worst = 0.0f;
+    for (int i = 0; i < int(3.0f / DT); i++) {
+        a.update(released, DT);
+        worst = MAX(worst, fabsf(a.injection_ned_mss().z - last));
+        last = a.injection_ned_mss().z;
+    }
+    EXPECT_LE(worst, AC_Geometric_L1_Augment::REJOIN_RATE_MSS_PER_S * DT + 1.0e-5f);
+    EXPECT_NEAR(5.0f, a.injection_ned_mss().z, 1.0e-5f);
+    EXPECT_TRUE(a.clamped());
+}
+
+TEST(L1Augment, ClampedReportsWhatIsInjectedAndHowLong)
+{
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
+    run(a, in, 1.2f);
+    EXPECT_TRUE(a.clamped());
+    EXPECT_NEAR(1.2f, a.clamped_for_s(), 2 * DT);
+    // Held through saturation at the limit: still at the limit.
+    AC_Geometric_L1_Augment_Inputs lim = in;
+    lim.thrust_limited = true;
+    run(a, lim, 0.2f);
+    EXPECT_TRUE(a.clamped());
+    run(a, healthy(), 0.8f);
     EXPECT_FALSE(a.clamped());
-    EXPECT_NEAR(9.0f, a.injection_ned_mss().z, 1.0e-5f);
+    EXPECT_FLOAT_EQ(0.0f, a.clamped_for_s());
 }
 
 TEST(L1Augment, ALatchHoldsForTheFlight)

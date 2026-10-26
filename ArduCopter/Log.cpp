@@ -611,7 +611,7 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Field: Vld: True when the estimate may be read
 // @Field: Sat: True when the raw estimate hit its limit this step
 // @Field: Rst: Cumulative re-seeds of the predictor
-// @Field: Ovr: True when the filtered estimate exceeds L1_OBS_SFMAX (the overrun criterion)
+// @Field: Ovr: True when the filtered estimate exceeds L1_OBS_SFMAX (blocks admission; not a fault)
 // @Field: Adm: True when L1 could be engaged now (valid, quiet, inside the limit); computed only
 
 // @LoggerMessage: GEL3
@@ -624,7 +624,7 @@ void Copter::Log_Write_Geometric_Attitude_Moment(const AC_Geometric_Attitude_Out
 // @Field: HOc: Cumulative vertical acceleration the position integrator actually took from L1 (negative while engaging, positive on clean exits)
 // @Field: Lim: True when collective was at a limit, in the mapper or in AP_Motors (logged in every state)
 // @Field: Hld: 0 tracking the estimate, 1 holding it through a limit (when off with L1 enabled: admission refused because of a hold or an uncleared timeout), 2 walking back to it; 0 while ramping out, paused or latched
-// @Field: Clp: True when the vertical estimate was clamped to L1_OBS_SFMAX before injection
+// @Field: Clp: True when what L1 injects sits at L1_ZMAX
 
 // @LoggerMessage: GEHC
 // @Description: Geometric handover trim carry, logged once per rising edge of output ownership

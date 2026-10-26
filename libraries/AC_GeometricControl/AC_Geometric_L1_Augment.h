@@ -18,15 +18,20 @@
 //
 // The contract it implements:
 //  - admission is checked once, at engage, using the observer's own verdict;
-//  - an observer fault latches L1 off for the rest of the flight, while the
-//    geometric controller carries on, and the estimate is discarded;
+//  - an observer integrity fault (invalid, re-seeded, non-finite) latches L1
+//    off for the rest of the flight, while the geometric controller carries
+//    on, and the estimate is discarded;
+//  - a large estimate is not a fault: the vertical estimate is clamped to
+//    sigma_limit (GEO_L1_ZMAX) before injection and L1 stays engaged, the
+//    remainder left to the position integrator; an invalid limit is a clean
+//    exit;
 //  - engaging and a clean exit both move lambda*sigma between the
 //    feed-forward and the position integrator frame by frame, so the
 //    resultant force does not step: the integrator already holds whatever
 //    deficit sigma reports, and engaging without the transfer would command
 //    it twice;
 //  - while collective is at a limit, and for HOLD_SETTLE_S after, the
-//    estimate is held and overrun is not judged, because what was commanded
+//    estimate is held, because what was commanded
 //    is not what was applied; the held value then walks back, never steps;
 //  - a hold that runs past HOLD_MAX_S, as a limit flag that keeps re-arming
 //    would make it, ends in a clean exit: past that point the frozen value
@@ -66,9 +71,9 @@ struct AC_Geometric_L1_Augment_Config {
     float ramp_in_s = 1.0f;
     float ramp_out_s = 0.5f;
     float pause_throttle = 0.12f;
-    // Largest vertical estimate L1 will inject, m/s^2 (GEO_L1_OBS_SFMAX).
-    // Zero disables the clamp.
-    float sigma_limit = 0.0f;
+    // Largest vertical estimate L1 will inject, m/s^2 (GEO_L1_ZMAX). Not
+    // positive or not finite means no valid bound, and L1 does not run.
+    float sigma_limit = 5.0f;
 };
 
 // What the observer and the vehicle report on one frame.
@@ -93,7 +98,7 @@ public:
     static constexpr float FAULT_RAMP_S = 0.2f;
     // After collective leaves its limit, the estimate is still settling out
     // of what the saturation put into it (predictor plus the 2 Hz filter), so
-    // the hold, and the suspension of the overrun check, outlast the flag.
+    // the hold outlasts the flag.
     static constexpr float HOLD_SETTLE_S = 0.5f;
     // Then the held value walks back to the estimate at this rate rather than
     // stepping: 0.01 m/s^2 per frame at 400 Hz.
@@ -137,8 +142,10 @@ public:
     // count has not yet been cleared), 2 walking back. 0 while ramping out,
     // paused or latched.
     uint8_t hold_status() const;
-    // True on frames where the injected estimate was clamped to sigma_limit.
+    // True on frames where what L1 injects sits at sigma_limit.
     bool clamped() const { return _clamped; }
+    // How long it has sat there without a break, for the operator notice.
+    float clamped_for_s() const { return _clamped_for_s; }
 
 private:
     void move_lambda(float target, float rate_per_s, float dt, bool hand_over);
@@ -157,6 +164,7 @@ private:
     float _quiet_s = 0.0f;
     bool _rejoining = false;
     bool _clamped = false;
+    float _clamped_for_s = 0.0f;
 };
 
 class AC_Geometric_L1_Augment_Params {
@@ -172,4 +180,5 @@ private:
     AP_Float _ramp_in_s;
     AP_Float _ramp_out_s;
     AP_Float _pause_throttle;
+    AP_Float _sigma_limit;
 };

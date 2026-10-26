@@ -358,7 +358,6 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         // No observer, no L1; and switching the observer off is an operator
         // action, so it exits cleanly rather than looking like a fault.
         cfg.enabled = cfg.enabled && _l1_observer_params.enabled();
-        cfg.sigma_limit = _l1_observer_params.config().sigma_filtered_max;
         _l1_augment.set_config(cfg);
         _l1_augment.update(in, dt);
         if (!_l1_augment.handover_ned_mss().is_zero()) {
