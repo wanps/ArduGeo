@@ -186,12 +186,13 @@ struct AC_Geometric_L1_Observer_Config {
     // multiplies EKF velocity noise by roughly 1/dt, so on log_20 the raw
     // magnitude has a median of 9.8 and a maximum of 54.9 while the filtered
     // one has 0.88 and 4.86. A bound here can only guard against numerical
-    // blow-up; it cannot be the overrun criterion, which is
-    // sigma_filtered_max. Zero disables it.
+    // blow-up; the range check that matters is sigma_filtered_max.
+    // Zero disables it.
     float sigma_max = 0.0f;
-    // Overrun criterion on the filtered estimate [m/s/s] (architecture 8.4,
-    // decision one). It flags; it does not clamp, so the log keeps what the
-    // estimator actually produced. Zero disables the flag and, because
+    // Range limit on the filtered estimate [m/s/s] (architecture 8.4,
+    // decision one). It flags for admission and the log; it does not clamp
+    // the estimate, and it is not a fault threshold (L1 clamps its own
+    // injection, GEO_L1_ZMAX). Zero disables the flag and, because
     // admission needs it, also makes admission impossible.
     float sigma_filtered_max = 0.0f;
     // Engage-time admission (architecture 8.4, decision three): the estimate
@@ -222,7 +223,7 @@ struct AC_Geometric_L1_Observer_Output {
     // True when the raw estimate hit the sigma_max backstop on this step.
     bool saturated = false;
     // True when the filtered estimate exceeds sigma_filtered_max on this step.
-    // This, not saturated, is the overrun criterion.
+    // Admission and the log read it; nothing faults on it.
     bool filtered_over_limit = false;
     // True when L1 could be engaged on this step: valid continuously for
     // admit_valid_s, no re-seed for admit_quiet_s, and the filtered estimate

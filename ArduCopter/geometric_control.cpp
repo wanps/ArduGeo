@@ -47,5 +47,21 @@ bool Copter::update_geometric_controller(const AC_TrajectoryReference& trajector
     geometric_control.set_hover_throttle_reference(motors->get_throttle_hover());
     geometric_control.update(state, target, G_Dt);
     geometric_controller_update_count++;
+
+    // Once per episode: L1 has been injecting its clamped value for a second,
+    // so the vehicle is outside the range GEO_L1_ZMAX was calibrated for.
+    // Informational; nothing is changed by it.
+    // Re-armed only after 3 s off the limit, so an estimate hovering at the
+    // bound does not repeat it every second.
+    const float l1_clamped_s = geometric_control.l1_augment().clamped_for_s();
+    if (is_positive(l1_clamped_s)) {
+        geometric_l1_clamp_last_ms = now_ms;
+    }
+    if (l1_clamped_s >= 1.0f && !geometric_l1_clamp_notified) {
+        gcs().send_text(MAV_SEVERITY_INFO, "L1: vertical estimate at GEO_L1_ZMAX for 1 s");
+        geometric_l1_clamp_notified = true;
+    } else if (geometric_l1_clamp_notified && now_ms - geometric_l1_clamp_last_ms > 3000U) {
+        geometric_l1_clamp_notified = false;
+    }
     return true;
 }

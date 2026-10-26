@@ -347,7 +347,6 @@ void AC_GeometricControl::update(const AC_Geometric_State& state,
         const AC_Geometric_L1_Observer_Output& obs = _l1_observer.get_output();
         AC_Geometric_L1_Augment_Inputs in {};
         in.observer_valid = obs.valid;
-        in.observer_over_limit = obs.filtered_over_limit;
         in.observer_admissible = obs.admissible;
         in.observer_resets = obs.resets;
         in.sigma_filtered_ned_mss = obs.sigma_filtered_ned_mss;

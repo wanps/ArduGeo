@@ -483,6 +483,8 @@ private:
     AC_PosControl *pos_control;
     AC_GeometricControl geometric_control;
     uint32_t geometric_controller_update_count = 0;
+    bool geometric_l1_clamp_notified = false;
+    uint32_t geometric_l1_clamp_last_ms = 0;
     uint32_t geometric_motor_output_last_ms = 0;
     uint32_t main_rate_controller_frame_count = 0;
     uint32_t geometric_motor_output_frame_count = 0;
