@@ -134,6 +134,22 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
     // S3a: vertical only, by construction rather than by parameter.
     const Vector3f sigma_v { 0.0f, 0.0f, in.sigma_filtered_ned_mss.z };
     const bool finite = isfinite(in.sigma_filtered_ned_mss.z);
+    // A large estimate is not evidence that the estimate is broken: a real
+    // step in load overshoots in it, and on an airframe with thrust to spare
+    // a real disturbance can stay above any fixed limit for seconds with
+    // collective free. So the estimate is clamped and injected, as a
+    // projection onto a bounded set, rather than dropped. The bound is the
+    // same value that used to be the fault threshold, so L1's authority is
+    // what it was. Integrity faults (invalid, reset, non-finite) still latch.
+    // Only the vertical axis counts, since only the vertical axis is
+    // injected; horizontal drag at speed is no reason to drop it.
+    const float limit = _config.sigma_limit;
+    const bool over = finite && is_positive(limit) && fabsf(sigma_v.z) > limit;
+    Vector3f target = sigma_v;
+    if (over) {
+        target.z = constrain_float(sigma_v.z, -limit, limit);
+    }
+    _clamped = false;
 
     if (in.thrust_limited) {
         _hold_s = HOLD_SETTLE_S;
@@ -165,7 +181,7 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
         // the next limited frame, once per flicker.
         if (_config.enabled && in.owns_output && !pause_landed && !pause_throttle &&
             !holding && _held_for_s < HOLD_MAX_S && in.observer_admissible && finite) {
-            _held_ned_mss = sigma_v;
+            _held_ned_mss = target;
             _rejoining = false;
             _state = AC_Geometric_L1_State::RAMP_IN;
             _reason = AC_Geometric_L1_Reason::NONE;
@@ -189,9 +205,6 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
             fault = AC_Geometric_L1_Reason::FAULT_INVALID;
         } else if (in.observer_resets != _resets_seen) {
             fault = AC_Geometric_L1_Reason::FAULT_RESET;
-        } else if (in.observer_over_limit && !pause_throttle && !pause_landed &&
-                   !holding) {
-            fault = AC_Geometric_L1_Reason::FAULT_OVERRUN;
         }
         if (fault != AC_Geometric_L1_Reason::NONE) {
             // _held_ned_mss keeps the last healthy value.
@@ -231,13 +244,14 @@ void AC_Geometric_L1_Augment::update(const AC_Geometric_L1_Augment_Inputs& in, f
             _rejoining = true;
             break;
         }
+        _clamped = over;
         if (_rejoining) {
             const float step = REJOIN_RATE_MSS_PER_S * dt;
-            const float gap = sigma_v.z - _held_ned_mss.z;
+            const float gap = target.z - _held_ned_mss.z;
             _held_ned_mss.z += constrain_float(gap, -step, step);
             _rejoining = fabsf(gap) > step;
         } else {
-            _held_ned_mss = sigma_v;
+            _held_ned_mss = target;
         }
         move_lambda(1.0f, rate_in, dt, true);
         _state = (_lambda >= 1.0f) ? AC_Geometric_L1_State::ENGAGED : AC_Geometric_L1_State::RAMP_IN;

@@ -17,6 +17,7 @@ AC_Geometric_L1_Augment_Config enabled_config()
     c.ramp_in_s = 1.0f;
     c.ramp_out_s = 0.5f;
     c.pause_throttle = 0.12f;
+    c.sigma_limit = 5.0f;
     return c;
 }
 
@@ -131,20 +132,85 @@ TEST(L1Augment, CleanExitKeepsTheResultantContinuous)
     EXPECT_EQ(AC_Geometric_L1_Reason::DISABLED, a.reason());
 }
 
-TEST(L1Augment, OverrunLatchesAndDiscards)
+TEST(L1Augment, ALargeEstimateIsClampedAndKeptEngaged)
 {
     AC_Geometric_L1_Augment a = engaged();
     AC_Geometric_L1_Augment_Inputs in = healthy();
-    in.observer_over_limit = true;
     in.sigma_filtered_ned_mss = Vector3f{0, 0, -7.0f};
-    a.update(in, DT);
-    EXPECT_EQ(AC_Geometric_L1_State::LATCHED, a.state());
-    EXPECT_EQ(AC_Geometric_L1_Reason::FAULT_OVERRUN, a.reason());
-    EXPECT_TRUE(a.handover_ned_mss().is_zero()) << "a faulted estimate is not handed over";
-    // The ramp-out carries the last healthy value, not the overrun one.
-    EXPECT_LE(fabsf(a.injection_ned_mss().z), fabsf(SIGMA.z) + 1e-6f);
-    run(a, in, AC_Geometric_L1_Augment::FAULT_RAMP_S + 0.05f);
-    EXPECT_TRUE(a.injection_ned_mss().is_zero());
+    run(a, in, 0.5f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state()) << "a large estimate is not a fault";
+    EXPECT_TRUE(a.clamped());
+    EXPECT_NEAR(5.0f, a.injection_ned_mss().z, 1.0e-5f) << "injected, but no more than the limit";
+    run(a, healthy(), 0.1f);
+    EXPECT_FALSE(a.clamped());
+    EXPECT_NEAR(-SIGMA.z, a.injection_ned_mss().z, 1.0e-5f);
+}
+
+TEST(L1Augment, ATransientOvershootNeverExits)
+{
+    // What a real load step looks like in SITL: the filtered estimate
+    // overshoots for a few tenths of a second, then settles inside the limit.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs spike = healthy();
+    spike.sigma_filtered_ned_mss = Vector3f{0, 0, -8.0f};
+    AC_Geometric_L1_Augment_Inputs settled = healthy();
+    settled.sigma_filtered_ned_mss = Vector3f{0, 0, -3.9f};
+    for (int k = 0; k < 3; k++) {
+        const int n = int(0.9f / DT);
+        for (int i = 0; i < n; i++) {
+            a.update(spike, DT);
+            ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+        }
+        run(a, settled, 0.05f);
+    }
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_NEAR(3.9f, a.injection_ned_mss().z, 1.0e-5f);
+}
+
+TEST(L1Augment, ASustainedLargeEstimateStaysClampedAndEngaged)
+{
+    // On an airframe with thrust to spare a real disturbance can stay above
+    // the limit for seconds with collective free. L1 keeps injecting the
+    // clamped value; it neither latches nor steps aside.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.sigma_filtered_ned_mss = Vector3f{0, 0, -8.3f};
+    for (int i = 0; i < int(5.0f / DT); i++) {
+        a.update(in, DT);
+        ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+        ASSERT_TRUE(a.handover_ned_mss().is_zero());
+    }
+    EXPECT_TRUE(a.clamped());
+    EXPECT_NEAR(5.0f, a.injection_ned_mss().z, 1.0e-5f);
+}
+
+TEST(L1Augment, OnlyTheVerticalEstimateCountsTowardTheLimit)
+{
+    // Horizontal drag at speed can be several m/s/s; S3a injects only the
+    // vertical axis and must not drop it for the horizontal one.
+    AC_Geometric_L1_Augment a = engaged();
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.sigma_filtered_ned_mss = Vector3f{9.0f, -9.0f, -1.5f};
+    run(a, in, 3.0f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_FALSE(a.clamped());
+    EXPECT_NEAR(1.5f, a.injection_ned_mss().z, 1.0e-5f);
+}
+
+TEST(L1Augment, AZeroLimitDisablesTheClamp)
+{
+    AC_Geometric_L1_Augment_Config c = enabled_config();
+    c.sigma_limit = 0.0f;
+    AC_Geometric_L1_Augment a;
+    a.set_config(c);
+    run(a, healthy(), 1.2f);
+    ASSERT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    AC_Geometric_L1_Augment_Inputs in = healthy();
+    in.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
+    run(a, in, 3.0f);
+    EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
+    EXPECT_FALSE(a.clamped());
+    EXPECT_NEAR(9.0f, a.injection_ned_mss().z, 1.0e-5f);
 }
 
 TEST(L1Augment, ALatchHoldsForTheFlight)
@@ -185,11 +251,10 @@ TEST(L1Augment, ANonFiniteEstimateIsAFaultAndNeverInjected)
 TEST(L1Augment, LowCollectivePausesWithoutLatching)
 {
     // Decision B: a hard throttle cut is an ordinary pilot action. Even with
-    // the observer over its limit, as it is then, this is a pause.
+    // the estimate beyond its limit, as it is then, this is a pause.
     AC_Geometric_L1_Augment a = engaged();
     AC_Geometric_L1_Augment_Inputs in = healthy();
     in.throttle = 0.07f;
-    in.observer_over_limit = true;
     a.update(in, DT);
     EXPECT_EQ(AC_Geometric_L1_State::PAUSED, a.state());
     EXPECT_EQ(AC_Geometric_L1_Reason::PAUSE_THROTTLE, a.reason());
@@ -301,7 +366,6 @@ TEST(L1Augment, SaturationHoldsInsteadOfFaulting)
     const Vector3f inj = a.injection_ned_mss();
     AC_Geometric_L1_Augment_Inputs in = healthy();
     in.thrust_limited = true;
-    in.observer_over_limit = true;
     in.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
     run(a, in, 2.0f);
     EXPECT_EQ(AC_Geometric_L1_State::ENGAGED, a.state());
@@ -412,7 +476,6 @@ TEST(L1Augment, ASaturationReleaseSettlesThenWalksBack)
     const float before = a.injection_ned_mss().z;
     AC_Geometric_L1_Augment_Inputs lim = healthy();
     lim.thrust_limited = true;
-    lim.observer_over_limit = true;
     lim.sigma_filtered_ned_mss = Vector3f{0, 0, -9.0f};
     run(a, lim, 1.0f);
     AC_Geometric_L1_Augment_Inputs released = lim;

@@ -53,7 +53,7 @@ enum class AC_Geometric_L1_Reason : uint8_t {
     OWNERSHIP = 2,
     PAUSE_THROTTLE = 3,
     PAUSE_LANDED = 4,
-    FAULT_OVERRUN = 5,
+    FAULT_OVERRUN = 5,  // no longer raised; kept so older logs decode
     FAULT_INVALID = 6,
     FAULT_RESET = 7,
     FAULT_NONFINITE = 8,
@@ -66,12 +66,14 @@ struct AC_Geometric_L1_Augment_Config {
     float ramp_in_s = 1.0f;
     float ramp_out_s = 0.5f;
     float pause_throttle = 0.12f;
+    // Largest vertical estimate L1 will inject, m/s^2 (GEO_L1_OBS_SFMAX).
+    // Zero disables the clamp.
+    float sigma_limit = 0.0f;
 };
 
 // What the observer and the vehicle report on one frame.
 struct AC_Geometric_L1_Augment_Inputs {
     bool observer_valid = false;
-    bool observer_over_limit = false;
     bool observer_admissible = false;
     uint32_t observer_resets = 0;
     Vector3f sigma_filtered_ned_mss;
@@ -135,6 +137,8 @@ public:
     // count has not yet been cleared), 2 walking back. 0 while ramping out,
     // paused or latched.
     uint8_t hold_status() const;
+    // True on frames where the injected estimate was clamped to sigma_limit.
+    bool clamped() const { return _clamped; }
 
 private:
     void move_lambda(float target, float rate_per_s, float dt, bool hand_over);
@@ -152,6 +156,7 @@ private:
     float _held_for_s = 0.0f;
     float _quiet_s = 0.0f;
     bool _rejoining = false;
+    bool _clamped = false;
 };
 
 class AC_Geometric_L1_Augment_Params {

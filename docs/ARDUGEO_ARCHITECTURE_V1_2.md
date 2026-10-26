@@ -703,7 +703,8 @@ L1 下同样的推理不成立 —— 闩锁意味着长期停留在能力更弱
 
 | Scenario | Required result |
 |---|---|
-| L1 fault, Geo healthy | degrade to Geo nominal, removing the last healthy L1 contribution over 0.2 s; the faulted σ̂ is discarded, not handed over; L1 latched until disarm |
+| L1 fault, Geo healthy | degrade to Geo nominal, removing the last healthy L1 contribution over 0.2 s; the faulted σ̂ is discarded, not handed over; L1 latched until disarm. Faults are integrity faults only (invalid, observer reset, non-finite) |
+| L1 estimate beyond its limit | inject the vertical estimate clamped to the limit and stay engaged; not a fault |
 | Geo fault with L1 active | same-frame handoff to Native with rate-loop integrator preload; handoff logged |
 | L1 engage request | refused unless the engage-time admission check passes |
 | L1 latched | L1 contribution stays zero for the rest of the flight; Geo ownership unaffected |
@@ -727,6 +728,22 @@ L1 下同样的推理不成立 —— 闩锁意味着长期停留在能力更弱
 ```
 
 5.0 是起点而非结论，**偏载试飞前必须重新标定**。
+
+**2026-10-26 修订（owner 批准）：超限不再是故障。** SITL 突变载重对比显示：真实的大扰动在 σ̂ 里先冲高约 1.8 倍再回落，
+加重 23% 时滤波后冲到 5.04，被判 `FAULT_OVERRUN` 闩锁，L1 在最需要的时候退出，飞机回到弱 6 倍的几何竖直环。
+「数值大」不等于「估计坏了」，按 L1 理论的投影算子做法改为：
+
+```text
+完整性故障（无效 / 观测器重置 / 非有限）   退出并闩锁（不变）
+工况不适用（落地 / 低油门 / 饱和保持）     暂停或保持（不变）
+竖直 σ̂ 超过上限                          注入截在上限，继续接管（GEL3.Clp=1）
+```
+
+曾考虑「持续超限 1 s 且油门未饱和则退出」，SITL 否决：x400b 悬停油门 0.19、推力余量大，突降 25% 推力时
+真实 σ̂ 达 8.3 m/s² 持续 1.5 s 而油门只到 0.44，按该规则 L1 被反复踢出再接入。限幅值沿用原故障门限，
+所以 L1 的最大注入权限与修订前相同，只是拿掉了「数值大就关掉」。
+
+只看竖直分量：S3a 只注入竖直，水平 σ̂（高速阻力可达数 m/s²）不应关掉竖直补偿。准入（决定三③）仍用三轴幅值。
 
 **决定二　第 1 层降级时 σ̂ 是否继承：继承，但只在 σ̂ 健康时，且接收方是位置环积分器。**
 

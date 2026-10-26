@@ -36,8 +36,8 @@ const AP_Param::GroupInfo AC_Geometric_L1_Observer_Params::var_info[] = {
     AP_GROUPINFO("L1_OBS_SMAX", 4, AC_Geometric_L1_Observer_Params, _sigma_max, 60.0f),
 
     // @Param: L1_OBS_SFMAX
-    // @DisplayName: L1 observer overrun limit
-    // @Description: Magnitude of the filtered estimate above which it is flagged as out of range, and below which L1 may be admitted. 5.0 is 1.03 times the largest filtered value seen in a nominal-load flight; it is a starting point and must be recalibrated before any offset-load flight. Zero disables the flag and makes admission impossible.
+    // @DisplayName: L1 estimate limit
+    // @Description: Magnitude of the filtered estimate below which L1 may be admitted, and the largest vertical estimate L1 injects once engaged: above it the vertical injection is clamped to it and L1 stays engaged; a large value is not treated as a fault. The Ovr log flag reports the 3-axis magnitude against it. 5.0 is 1.03 times the largest filtered value seen in a nominal-load flight. Zero disables the flag and makes admission impossible.
     // @Range: 0 50
     // @Units: m/s/s
     // @User: Advanced
